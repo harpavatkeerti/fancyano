@@ -1,0 +1,22 @@
+{
+  "name": "rental-booking-system",
+  "version": "1.0.0",
+  "description": "Rental Store Booking Management System",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend",
+    "mobile",
+    "shared"
+  ],
+  "scripts": {
+    "dev:frontend": "cd frontend && npm run dev",
+    "dev:backend": "cd backend && npm run dev",
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "install:all": "npm install && cd frontend && npm install && cd ../backend && npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
+
