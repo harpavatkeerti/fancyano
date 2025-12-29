@@ -2,6 +2,34 @@
 
 A full-stack application for managing rental store bookings with support for Admin, Salesman, and Customer roles.
 
+To open terminal window, ctrl + `
+Ensure that phone and machine are connected to same wifi
+Open new WSL window, use + sign (or down arrow near +)
+In first window, run
+```bash
+cd backend
+npm run dev
+```
+
+For web, open another terminal window in same manner
+```bash
+cd frontend
+npm run dev
+```
+To view, open http://localhost:3000/ in chrome
+
+For mobile app, open another termninal window
+```bash
+cd mobile
+npm run start:lan
+```
+To view, open Expo Go app (SDK version 49) in phone and scan QR
+Note: Use Expo Go SDK 49 - SDK 54 has compatibility issues with React Navigation
+
+To kill any running process, Ctrl + C
+To copy in a terminal window, Ctrl + shift + C
+To paste, Ctrl + V
+
 ## Project Structure
 
 ```
