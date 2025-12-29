@@ -17,7 +17,8 @@ const getApiUrl = () => {
       // For Physical Android Device (use Windows IP, not WSL IP):
       // Port forwarding makes Windows:3001 forward to WSL:3001
       // So phone should connect to Windows IP, not WSL IP
-      return 'http://192.168.29.233:3001/api'; // Windows IP (forwards to WSL backend)
+      // NOTE: If using tunnel mode, phone won't be on same network - use LAN mode instead
+      return 'http://192.168.29.238:3001/api'; // Windows IP (forwards to WSL backend)
     }
     // iOS simulator can use localhost
     if (Constants.platform?.ios) {
@@ -28,7 +29,9 @@ const getApiUrl = () => {
 };
 
 // Create API instance using shared package
-export const api = createApi({ baseURL: getApiUrl() });
+const apiUrl = getApiUrl();
+console.log('🔗 API Base URL:', apiUrl);
+export const api = createApi({ baseURL: apiUrl });
 
 // Export APIs for convenience
 export const productsApi = api.products;
