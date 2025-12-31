@@ -2,20 +2,20 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { productsApi } from '@/lib/api';
+import { productsApi, bookingsApi } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
 
-export default function SalesmanHome() {
+export default function ProductsPage() {
   const searchParams = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   
-  // Filter states
+  // Filter states matching admin inventory page
   const [filterProductType, setFilterProductType] = useState('');
-  const [filterCategory, setFilterCategory] = useState('');
+  const [filterCategory, setFilterCategory] = useState(''); // Gender
   const [filterSize, setFilterSize] = useState('');
   const [sortBy, setSortBy] = useState('');
 
@@ -47,24 +47,28 @@ export default function SalesmanHome() {
     setSortBy('');
   }
 
-  // Get filtered products
+  // Get filtered products (same logic as admin inventory)
   const filteredProducts = products.filter((product) => {
+    // Search term filter
     const matchesSearch =
       product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       product.code.toLowerCase().includes(searchTerm.toLowerCase());
 
+    // Product type filter
     const matchesProductType =
       !filterProductType || product.name === filterProductType;
 
+    // Category filter (gender)
     const matchesCategory =
       !filterCategory || (product as any).gender === filterCategory;
 
+    // Size filter
     const matchesSize = !filterSize || (product as any).size === filterSize;
 
     return matchesSearch && matchesProductType && matchesCategory && matchesSize;
   });
 
-  // Sort products
+  // Sort products (same logic as admin inventory)
   const sortedProducts = [...filteredProducts].sort((a, b) => {
     if (sortBy === 'price-low-high') {
       return a.rent_per_day - b.rent_per_day;
@@ -81,33 +85,13 @@ export default function SalesmanHome() {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
-        <div className="text-xl">Loading...</div>
+        <div className="text-xl">Loading products...</div>
       </div>
     );
   }
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      {/* Hero Banner */}
-      <div className="bg-gradient-to-r from-yellow-100 to-yellow-200 rounded-lg p-12 mb-8 relative overflow-hidden">
-        <div className="flex items-center justify-between">
-          <div className="flex-1">
-            <div className="mb-4">
-              <span className="text-sm font-semibold text-gray-700">FOR MEN</span>
-            </div>
-            <h1 className="text-4xl font-bold text-red-600 mb-2">
-              EXPLORE NEW TRENDS
-            </h1>
-            <p className="text-red-500 text-lg">
-              one stop destination for all your rental needs
-            </p>
-          </div>
-          <div className="flex-1 text-right">
-            <span className="text-sm font-semibold text-gray-700">FOR WOMEN</span>
-          </div>
-        </div>
-      </div>
-
       {/* Search Bar */}
       <div className="mb-6">
         <div className="flex items-center gap-4">
@@ -117,7 +101,7 @@ export default function SalesmanHome() {
               placeholder="Search products by name or code..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-3 pl-10 border-2 border-red-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
             />
             <svg
               className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400"
@@ -134,19 +118,20 @@ export default function SalesmanHome() {
             </svg>
           </div>
           <span className="text-sm text-gray-600 whitespace-nowrap">
-            Showing: {sortedProducts.length} / {products.length}
+            Showing: {filteredProducts.length} / {products.length}
           </span>
         </div>
       </div>
 
       {/* Filters Section */}
-      <div className="bg-white p-6 rounded-lg shadow-md border border-gray-200 mb-8">
+      <div className="bg-white p-6 rounded-lg shadow mb-6">
         <h2 className="text-lg font-bold text-gray-900 mb-4">Filters</h2>
         
         <div className="space-y-4">
+          {/* Product Type Filter */}
           <div className="grid grid-cols-4 gap-4">
             <div>
-              <label className="block text-xs text-gray-600 mb-1 font-semibold">Product Type</label>
+              <label className="block text-xs text-gray-600 mb-1">Product Type</label>
               <select
                 value={filterProductType}
                 onChange={(e) => setFilterProductType(e.target.value)}
@@ -166,8 +151,9 @@ export default function SalesmanHome() {
               </select>
             </div>
 
+            {/* Category (Gender) Filter */}
             <div>
-              <label className="block text-xs text-gray-600 mb-1 font-semibold">Category</label>
+              <label className="block text-xs text-gray-600 mb-1">Category</label>
               <select
                 value={filterCategory}
                 onChange={(e) => setFilterCategory(e.target.value)}
@@ -179,8 +165,9 @@ export default function SalesmanHome() {
               </select>
             </div>
 
+            {/* Size Filter */}
             <div>
-              <label className="block text-xs text-gray-600 mb-1 font-semibold">Size</label>
+              <label className="block text-xs text-gray-600 mb-1">Size</label>
               <select
                 value={filterSize}
                 onChange={(e) => setFilterSize(e.target.value)}
@@ -203,20 +190,24 @@ export default function SalesmanHome() {
                   <option value="44">44</option>
                   <option value="46">46</option>
                 </optgroup>
-                <optgroup label="Age-Based">
+                <optgroup label="Age-Based (Fancy Costumes)">
                   <option value="2-3 years">2-3 years</option>
                   <option value="3-4 years">3-4 years</option>
+                  <option value="3-5 years">3-5 years</option>
                   <option value="4-6 years">4-6 years</option>
+                  <option value="5-6 years">5-6 years</option>
                   <option value="5-7 years">5-7 years</option>
                   <option value="8-10 years">8-10 years</option>
                   <option value="12-14 years">12-14 years</option>
+                  <option value="14-16 years">14-16 years</option>
                   <option value="Adult Size">Adult Size</option>
                 </optgroup>
               </select>
             </div>
 
+            {/* Sort By */}
             <div>
-              <label className="block text-xs text-gray-600 mb-1 font-semibold">Sort By</label>
+              <label className="block text-xs text-gray-600 mb-1">Sort By</label>
               <select
                 value={sortBy}
                 onChange={(e) => setSortBy(e.target.value)}
@@ -231,6 +222,7 @@ export default function SalesmanHome() {
             </div>
           </div>
 
+          {/* Clear Filters Button */}
           <div className="flex justify-end">
             <button
               onClick={handleResetFilters}
@@ -243,16 +235,16 @@ export default function SalesmanHome() {
       </div>
 
       {/* Products Grid */}
-      <div className="mb-12">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">
-          Categories ({sortedProducts.length} Products)
+      <div>
+        <h2 className="text-lg font-bold text-gray-900 mb-6">
+          Products ({sortedProducts.length})
         </h2>
         <div className="grid grid-cols-4 gap-6">
           {sortedProducts.map((product) => (
             <Link
               key={product.id}
               href={`/salesman/products/${product.id}`}
-              className="group bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow"
+              className="group bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow relative"
             >
               <div className="relative aspect-[3/4] bg-gray-100">
                 {getImageUrl((product as any).image) ? (
@@ -266,6 +258,7 @@ export default function SalesmanHome() {
                     <span className="text-4xl">👔</span>
                   </div>
                 )}
+                {/* Availability indicator */}
                 {!product.availability && (
                   <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full">
                     ⚠️ Unavailable
@@ -274,7 +267,9 @@ export default function SalesmanHome() {
               </div>
               <div className="p-4">
                 <p className="text-xs text-gray-500 mb-1">{product.code}</p>
-                <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">{product.name}</h3>
+                <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">
+                  {product.name}
+                </h3>
                 {(product as any).size && (
                   <p className="text-xs text-gray-600 mb-1">Size: {(product as any).size}</p>
                 )}
@@ -288,7 +283,7 @@ export default function SalesmanHome() {
         </div>
 
         {sortedProducts.length === 0 && (
-          <div className="text-center py-12 bg-white rounded-lg border-2 border-dashed border-gray-300">
+          <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
             <div className="text-6xl mb-4">🔍</div>
             <p className="text-gray-600 font-medium mb-2">No products found</p>
             <p className="text-sm text-gray-500">Try adjusting your search or filters</p>
