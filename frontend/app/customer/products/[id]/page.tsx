@@ -46,7 +46,7 @@ export default function ProductDetailPage() {
       await bookingsApi.create({
         ...bookingData,
         booking_date: today,
-        products: [{ id: product.id, quantity: 1 }],
+        products: [{ id: product.id }],
         total_amount: calculateTotal(),
       });
       alert('Booking created successfully!');

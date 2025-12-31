@@ -37,11 +37,11 @@ export default function CustomerBookings() {
                 <div>
                   <h3 className="text-xl font-semibold mb-2">Booking #{booking.id}</h3>
                   <p className="text-gray-600 mb-1">
-                    <strong>Date:</strong> {new Date(booking.booking_date).toLocaleDateString()}
+                    <strong>Date:</strong> {new Date(booking.booking_date).toLocaleDateString('en-GB')}
                   </p>
                   <p className="text-gray-600 mb-1">
-                    <strong>Period:</strong> {new Date(booking.booked_from).toLocaleDateString()} -{' '}
-                    {new Date(booking.booked_to).toLocaleDateString()}
+                    <strong>Period:</strong> {new Date(booking.booked_from).toLocaleDateString('en-GB')} -{' '}
+                    {new Date(booking.booked_to).toLocaleDateString('en-GB')}
                   </p>
                   {booking.total_amount && (
                     <p className="text-gray-600 mb-1">

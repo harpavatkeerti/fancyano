@@ -1,0 +1,12 @@
+========================================
+IMPORTANT: RUN THIS SQL COMMAND FIRST!
+========================================
+
+Open a NEW terminal and run this command:
+
+PGPASSWORD=1234 psql -h localhost -U postgres -d rental_db -c "ALTER TABLE booking_products ADD COLUMN IF NOT EXISTS booked_from DATE, ADD COLUMN IF NOT EXISTS booked_to DATE;"
+
+This will add the individual date columns to the database.
+
+After running this, refresh your browser and the booking system will work!
+

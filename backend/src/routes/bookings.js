@@ -15,7 +15,9 @@ router.get('/', async (req, res) => {
               'id', p.id,
               'name', p.name,
               'code', p.code,
-              'quantity', bp.quantity
+              'rent_per_day', p.rent_per_day,
+              'booked_from', bp.booked_from,
+              'booked_to', bp.booked_to
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -64,7 +66,8 @@ router.get('/:id', async (req, res) => {
               'name', p.name,
               'code', p.code,
               'rent_per_day', p.rent_per_day,
-              'quantity', bp.quantity
+              'booked_from', bp.booked_from,
+              'booked_to', bp.booked_to
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -94,25 +97,55 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const { customer_name, customer_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount } = req.body;
+    const { customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount } = req.body;
 
-    if (!customer_name || !booking_date || !booked_from || !booked_to || !products || products.length === 0) {
+    if (!customer_name || !booking_date || !products || products.length === 0) {
       return res.status(400).json({ error: 'Required fields missing' });
     }
 
-    // Create booking
+    // Log products for debugging
+    console.log('Products received:', JSON.stringify(products, null, 2));
+
+    // Calculate booking-level dates from products (earliest pickup, latest return)
+    const productDates = products.filter(p => {
+      // Check if dates exist and are not empty strings
+      const hasFrom = p.booked_from && p.booked_from.trim() !== '';
+      const hasTo = p.booked_to && p.booked_to.trim() !== '';
+      return hasFrom && hasTo;
+    });
+    
+    console.log('Products with valid dates:', productDates.length, 'out of', products.length);
+    
+    if (productDates.length === 0) {
+      return res.status(400).json({ 
+        error: 'At least one product must have dates',
+        details: 'Please ensure pickup and return dates are set for all products'
+      });
+    }
+
+    const earliestPickup = productDates.reduce((earliest, p) => 
+      !earliest || new Date(p.booked_from) < new Date(earliest) ? p.booked_from : earliest, null
+    );
+    const latestReturn = productDates.reduce((latest, p) => 
+      !latest || new Date(p.booked_to) > new Date(latest) ? p.booked_to : latest, null
+    );
+
+    const finalBookedFrom = booked_from || earliestPickup;
+    const finalBookedTo = booked_to || latestReturn;
+
+    // Create booking (use calculated dates)
     const bookingResult = await client.query(
-      'INSERT INTO bookings (customer_name, customer_phone, customer_address, booking_date, booked_from, booked_to, total_amount, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-      [customer_name, customer_phone || null, customer_address || null, booking_date, booked_from, booked_to, total_amount || null, 'pending']
+      'INSERT INTO bookings (customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, total_amount, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
+      [customer_name, customer_phone || null, alternate_phone || null, customer_address || null, booking_date, finalBookedFrom, finalBookedTo, total_amount || null, 'pending']
     );
 
     const booking = bookingResult.rows[0];
 
-    // Add products to booking
+    // Add products to booking with individual dates
     for (const product of products) {
       await client.query(
-        'INSERT INTO booking_products (booking_id, product_id, quantity) VALUES ($1, $2, $3)',
-        [booking.id, product.id, product.quantity || 1]
+        'INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to) VALUES ($1, $2, $3, $4)',
+        [booking.id, product.id, product.booked_from, product.booked_to]
       );
     }
 
@@ -128,7 +161,9 @@ router.post('/', async (req, res) => {
               'id', p.id,
               'name', p.name,
               'code', p.code,
-              'quantity', bp.quantity
+              'rent_per_day', p.rent_per_day,
+              'booked_from', bp.booked_from,
+              'booked_to', bp.booked_to
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -155,11 +190,11 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { customer_name, customer_phone, customer_address, booked_from, booked_to, status, total_amount } = req.body;
+    const { customer_name, customer_phone, alternate_phone, customer_address, booked_from, booked_to, status, total_amount } = req.body;
 
     const result = await pool.query(
-      'UPDATE bookings SET customer_name = $1, customer_phone = $2, customer_address = $3, booked_from = $4, booked_to = $5, status = $6, total_amount = $7, updated_at = CURRENT_TIMESTAMP WHERE id = $8 RETURNING *',
-      [customer_name, customer_phone, customer_address, booked_from, booked_to, status, total_amount, id]
+      'UPDATE bookings SET customer_name = $1, customer_phone = $2, alternate_phone = $3, customer_address = $4, booked_from = $5, booked_to = $6, status = $7, total_amount = $8, updated_at = CURRENT_TIMESTAMP WHERE id = $9 RETURNING *',
+      [customer_name, customer_phone, alternate_phone, customer_address, booked_from, booked_to, status, total_amount, id]
     );
 
     if (result.rows.length === 0) {
@@ -187,6 +222,37 @@ router.delete('/:id', async (req, res) => {
   } catch (error) {
     console.error('Error deleting booking:', error);
     res.status(500).json({ error: 'Failed to delete booking' });
+  }
+});
+
+// GET bookings for a specific product
+router.get('/product/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    
+    const query = `
+      SELECT 
+        b.id,
+        b.customer_name,
+        b.customer_phone,
+        bp.booked_from,
+        bp.booked_to,
+        b.status
+      FROM bookings b
+      INNER JOIN booking_products bp ON b.id = bp.booking_id
+      WHERE bp.product_id = $1
+        AND b.status NOT IN ('cancelled', 'completed')
+        AND bp.booked_from IS NOT NULL
+        AND bp.booked_to IS NOT NULL
+      ORDER BY bp.booked_from ASC
+    `;
+    
+    const result = await pool.query(query, [productId]);
+    console.log(`📅 Fetching bookings for product ${productId}:`, result.rows);
+    res.json(result.rows);
+  } catch (error) {
+    console.error('Error fetching product bookings:', error);
+    res.status(500).json({ error: 'Failed to fetch product bookings' });
   }
 });
 

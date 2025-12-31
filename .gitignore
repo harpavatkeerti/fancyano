@@ -37,7 +37,8 @@ Thumbs.db
 
 # File uploads (local storage)
 uploads/
-storage/
+storage/uploads/**
+!storage/uploads/products/.gitkeep
 
 # Logs
 logs/
@@ -51,3 +52,4 @@ tmp/
 temp/
 
 *.pdf
+storage/

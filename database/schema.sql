@@ -42,7 +42,6 @@ CREATE TABLE IF NOT EXISTS booking_products (
     id SERIAL PRIMARY KEY,
     booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
     product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
-    quantity INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

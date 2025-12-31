@@ -13,10 +13,14 @@ CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     code VARCHAR(100) UNIQUE NOT NULL,
+    purchase_price DECIMAL(10, 2),
     rent_per_day DECIMAL(10, 2) NOT NULL,
     category VARCHAR(100),
+    gender VARCHAR(10),
+    size VARCHAR(10),
     description TEXT,
     availability BOOLEAN DEFAULT true,
+    image TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -26,12 +30,20 @@ CREATE TABLE IF NOT EXISTS bookings (
     id SERIAL PRIMARY KEY,
     customer_name VARCHAR(255) NOT NULL,
     customer_phone VARCHAR(20),
+    alternate_phone VARCHAR(20),
     customer_address TEXT,
     booking_date DATE NOT NULL,
     booked_from DATE NOT NULL,
     booked_to DATE NOT NULL,
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'in_progress', 'completed', 'cancelled')),
     total_amount DECIMAL(10, 2),
+    paid_amount DECIMAL(10, 2) DEFAULT 0,
+    due_amount DECIMAL(10, 2),
+    payment_method VARCHAR(50),
+    payment_status VARCHAR(20) DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'partial', 'paid')),
+    transportation_opted BOOLEAN DEFAULT FALSE,
+    special_requirements TEXT,
+    measurements JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -41,7 +53,6 @@ CREATE TABLE IF NOT EXISTS booking_products (
     id SERIAL PRIMARY KEY,
     booking_id INTEGER REFERENCES bookings(id) ON DELETE CASCADE,
     product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,
-    quantity INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

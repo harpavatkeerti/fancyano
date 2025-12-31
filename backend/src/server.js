@@ -9,8 +9,8 @@ const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json({ limit: '10mb' })); // Increased limit for image uploads
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve uploaded files
 const uploadDir = path.join(__dirname, '../../storage/uploads');
@@ -21,6 +21,9 @@ app.use('/api/health', require('./routes/health'));
 app.use('/api/products', require('./routes/products'));
 app.use('/api/bookings', require('./routes/bookings'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/settings', require('./routes/settings'));
+app.use('/api/product-tracking', require('./routes/productTracking'));
+app.use('/api/invoices', require('./routes/invoices'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

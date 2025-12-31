@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../database/connection');
+const imageStorage = require('../services/imageStorage');
 
 // GET all products
 router.get('/', async (req, res) => {
@@ -58,15 +59,36 @@ router.get('/:id', async (req, res) => {
 // POST create product
 router.post('/', async (req, res) => {
   try {
-    const { name, code, rent_per_day, category, description, availability } = req.body;
+    const { name, code, purchase_price, rent_per_day, category, gender, size, description, availability, image } = req.body;
+    
+    console.log('📥 Received product creation request:');
+    console.log('   Name:', name);
+    console.log('   Code:', code);
+    console.log('   Purchase Price:', purchase_price);
+    console.log('   Rent per Day:', rent_per_day);
+    console.log('   Category:', category);
+    console.log('   Gender:', gender);
+    console.log('   Size:', size);
+    console.log('   Has Image:', image ? 'Yes' : 'No');
     
     if (!name || !code || !rent_per_day) {
       return res.status(400).json({ error: 'Name, code, and rent_per_day are required' });
     }
 
+    // Determine rental policy based on product type
+    // Fancy Costumes: 24 hours rental
+    // All other categories: 3 days rental (default)
+    const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
+
+    // Process image if provided
+    let imageUrl = null;
+    if (image && image.startsWith('data:image')) {
+      imageUrl = await imageStorage.saveImage(image, code);
+    }
+
     const result = await pool.query(
-      'INSERT INTO products (name, code, rent_per_day, category, description, availability) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [name, code, rent_per_day, category || null, description || null, availability !== undefined ? availability : true]
+      'INSERT INTO products (name, code, purchase_price, rent_per_day, rental_policy, category, gender, size, description, availability, image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
+      [name, code, purchase_price || null, rent_per_day, rental_policy, category || null, gender || null, size || null, description || null, availability !== undefined ? availability : true, imageUrl]
     );
 
     res.status(201).json(result.rows[0]);
@@ -74,8 +96,11 @@ router.post('/', async (req, res) => {
     if (error.code === '23505') { // Unique violation
       return res.status(409).json({ error: 'Product code already exists' });
     }
-    console.error('Error creating product:', error);
-    res.status(500).json({ error: 'Failed to create product' });
+    console.error('❌ Error creating product:', error);
+    console.error('   Error code:', error.code);
+    console.error('   Error message:', error.message);
+    console.error('   Error detail:', error.detail);
+    res.status(500).json({ error: 'Failed to create product', details: error.message });
   }
 });
 
@@ -83,16 +108,36 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, code, rent_per_day, category, description, availability } = req.body;
+    const { name, code, purchase_price, rent_per_day, category, gender, size, description, availability, image } = req.body;
 
-    const result = await pool.query(
-      'UPDATE products SET name = $1, code = $2, rent_per_day = $3, category = $4, description = $5, availability = $6, updated_at = CURRENT_TIMESTAMP WHERE id = $7 RETURNING *',
-      [name, code, rent_per_day, category, description, availability, id]
-    );
+    // Determine rental policy based on product type
+    const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
 
-    if (result.rows.length === 0) {
+    // Get existing product to check for old image
+    const existingProduct = await pool.query('SELECT image FROM products WHERE id = $1', [id]);
+    
+    if (existingProduct.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
+
+    let imageUrl = image;
+
+    // If new image is provided (base64), process it
+    if (image && image.startsWith('data:image')) {
+      // Delete old image if exists
+      const oldImage = existingProduct.rows[0].image;
+      if (oldImage && oldImage.startsWith('/uploads/')) {
+        await imageStorage.deleteImage(oldImage);
+      }
+      
+      // Save new image
+      imageUrl = await imageStorage.saveImage(image, code);
+    }
+
+    const result = await pool.query(
+      'UPDATE products SET name = $1, code = $2, purchase_price = $3, rent_per_day = $4, rental_policy = $5, category = $6, gender = $7, size = $8, description = $9, availability = $10, image = $11, updated_at = CURRENT_TIMESTAMP WHERE id = $12 RETURNING *',
+      [name, code, purchase_price, rent_per_day, rental_policy, category, gender, size, description, availability, imageUrl, id]
+    );
 
     res.json(result.rows[0]);
   } catch (error) {
@@ -112,6 +157,12 @@ router.delete('/:id', async (req, res) => {
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // Delete associated image if exists
+    const deletedProduct = result.rows[0];
+    if (deletedProduct.image && deletedProduct.image.startsWith('/uploads/')) {
+      await imageStorage.deleteImage(deletedProduct.image);
     }
 
     res.json({ message: 'Product deleted successfully' });

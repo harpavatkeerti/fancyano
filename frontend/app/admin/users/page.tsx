@@ -140,7 +140,7 @@ export default function UsersPage() {
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{user.phone}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {new Date(user.created_at).toLocaleDateString()}
+                  {new Date(user.created_at).toLocaleDateString('en-GB')}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium space-x-2">
                   <button
