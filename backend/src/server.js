@@ -24,12 +24,18 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/settings', require('./routes/settings'));
 app.use('/api/product-tracking', require('./routes/productTracking'));
 app.use('/api/invoices', require('./routes/invoices'));
+app.use('/api/payment-transactions', require('./routes/paymentTransactions'));
+app.use('/api/auto-cancel', require('./routes/autoCancelBookings'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });
+
+// Start auto-cancel scheduler
+const { startScheduler } = require('./utils/autoCancelScheduler');
+startScheduler();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on http://localhost:${PORT}`);

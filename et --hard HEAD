@@ -1,0 +1,224 @@
+[1mdiff --git a/frontend/app/admin/bookings/page.tsx b/frontend/app/admin/bookings/page.tsx[m
+[1mindex 157e65a..57b1b7c 100644[m
+[1m--- a/frontend/app/admin/bookings/page.tsx[m
+[1m+++ b/frontend/app/admin/bookings/page.tsx[m
+[36m@@ -1,7 +1,7 @@[m
+ 'use client';[m
+ [m
+ import { useEffect, useState } from 'react';[m
+[31m-import { bookingsApi, productsApi } from '@/lib/api';[m
+[32m+[m[32mimport { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';[m
+ import { Booking, Product } from '@/types';[m
+ import { Button, Input, DateRangePicker, PhoneInput, QRScanner, BookingProductTrackingModal } from '@/components/common';[m
+ import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';[m
+[36m@@ -16,6 +16,7 @@[m [mexport default function BookingsPage() {[m
+   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);[m
+   const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});[m
+   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);[m
+[32m+[m[32m  const [viewingBookingTransactions, setViewingBookingTransactions] = useState<any[]>([]);[m
+   const [showModifyModal, setShowModifyModal] = useState(false);[m
+   const [showAddModal, setShowAddModal] = useState(false);[m
+   const [showMeasurements, setShowMeasurements] = useState(false);[m
+[36m@@ -274,6 +275,7 @@[m [mexport default function BookingsPage() {[m
+         code: product.code,[m
+         size: product.size,[m
+         rent_per_day: product.rent_per_day,[m
+[32m+[m[32m        security_deposit: (product as any).security_deposit || 0,[m
+       });[m
+       setShowDateConfirmModal(true);[m
+     } else {[m
+[36m@@ -286,6 +288,7 @@[m [mexport default function BookingsPage() {[m
+           code: product.code,[m
+           size: product.size,[m
+           rent_per_day: product.rent_per_day,[m
+[32m+[m[32m          security_deposit: (product as any).security_deposit || 0,[m
+           booked_from: '',[m
+           booked_to: '',[m
+         }],[m
+[36m@@ -433,6 +436,90 @@[m [mexport default function BookingsPage() {[m
+     return Math.floor(subtotal + transport);[m
+   }[m
+ [m
+[32m+[m[32m  // Calculate security deposit from all products[m
+[32m+[m[32m  function calculateSecurityDeposit() {[m
+[32m+[m[32m    return addFormData.products.reduce((sum, product) => {[m
+[32m+[m[32m      const securityDeposit = (product as any).security_deposit || 0;[m
+[32m+[m[32m      return sum + (typeof securityDeposit === 'number' ? securityDeposit : parseFloat(securityDeposit) || 0);[m
+[32m+[m[32m    }, 0);[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  // Calculate booking status based on payments and refunds (same logic as salesman portal)[m
+[32m+[m[32m  function calculateBookingStatus(booking: Booking, transactions: any[] = []): string {[m
+[32m+[m[32m    if (!booking) return 'pending';[m
+[32m+[m
+[32m+[m[32m    const totalAmount = typeof booking.total_amount === 'number'[m
+[32m+[m[32m      ? booking.total_amount[m
+[32m+[m[32m      : parseFloat(booking.total_amount || '0') || 0;[m
+[32m+[m[32m    const securityDeposit = typeof booking.security_deposit === 'number'[m
+[32m+[m[32m      ? booking.security_deposit[m
+[32m+[m[32m      : parseFloat(booking.security_deposit || '0') || 0;[m
+[32m+[m[32m    const paidAmount = typeof booking.paid_amount === 'number'[m
+[32m+[m[32m      ? booking.paid_amount[m
+[32m+[m[32m      : parseFloat(booking.paid_amount || '0') || 0;[m
+[32m+[m
+[32m+[m[32m    // Check if refund has been processed[m
+[32m+[m[32m    const hasRefund = transactions.some((t: any) => t.type === 'refund');[m
+[32m+[m[41m    [m
+[32m+[m[32m    // If refund is processed, status is completed[m
+[32m+[m[32m    if (hasRefund) {[m
+[32m+[m[32m      return 'completed';[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    // Check if Rent + Deposit is fully received[m
+[32m+[m[32m    const totalRequired = totalAmount + securityDeposit;[m
+[32m+[m[32m    const isFullyPaid = paidAmount >= totalRequired;[m
+[32m+[m
+[32m+[m[32m    if (isFullyPaid) {[m
+[32m+[m[32m      // Check if multiple products with different dates[m
+[32m+[m[32m      const products = Array.isArray(booking.products) ? booking.products : [];[m
+[32m+[m[32m      if (products.length > 1) {[m
+[32m+[m[32m        // Check if products have different dates[m
+[32m+[m[32m        const dates = products.map((p: any) => ({[m
+[32m+[m[32m          from: p.booked_from || booking.booked_from,[m
+[32m+[m[32m          to: p.booked_to || booking.booked_to[m
+[32m+[m[32m        }));[m
+[32m+[m[41m        [m
+[32m+[m[32m        const uniqueDates = new Set(dates.map(d => `${d.from}-${d.to}`));[m
+[32m+[m[32m        if (uniqueDates.size > 1) {[m
+[32m+[m[32m          // Multiple products with different dates - Partially Completed[m
+[32m+[m[32m          return 'in_progress'; // Will display as "Partially Completed" or "Under Process"[m
+[32m+[m[32m        }[m
+[32m+[m[32m      }[m
+[32m+[m[32m      // All paid, single date or same dates - Under Process[m
+[32m+[m[32m      return 'in_progress';[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    // Check if any rental payment has been recorded[m
+[32m+[m[32m    const rentalDue = totalAmount - paidAmount;[m
+[32m+[m[32m    const hasRentalPayment = paidAmount > 0;[m
+[32m+[m
+[32m+[m[32m    if (hasRentalPayment) {[m
+[32m+[m[32m      // At least some rental payment recorded - Confirmed[m
+[32m+[m[32m      return 'confirmed';[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    // No payment recorded - Pending[m
+[32m+[m[32m    return 'pending';[m
+[32m+[m[32m  }[m
+[32m+[m
+[32m+[m[32m  function getStatusDisplay(status: string, booking: Booking, transactions: any[] = []): { text: string; color: string; badgeColor: string } {[m
+[32m+[m[32m    const calculatedStatus = calculateBookingStatus(booking, transactions);[m
+[32m+[m[41m    [m
+[32m+[m[32m    switch (calculatedStatus) {[m
+[32m+[m[32m      case 'completed':[m
+[32m+[m[32m        return { text: 'Completed', color: 'text-blue-600', badgeColor: 'bg-blue-100 text-blue-800' };[m
+[32m+[m[32m      case 'in_progress':[m
+[32m+[m[32m        return { text: 'Under Process', color: 'text-blue-600', badgeColor: 'bg-blue-100 text-blue-800' };[m
+[32m+[m[32m      case 'confirmed':[m
+[32m+[m[32m        return { text: 'Confirmed', color: 'text-green-600', badgeColor: 'bg-green-100 text-green-800' };[m
+[32m+[m[32m      case 'pending':[m
+[32m+[m[32m        return { text: 'Payment Due', color: 'text-red-600', badgeColor: 'bg-yellow-100 text-yellow-800' };[m
+[32m+[m[32m      default:[m
+[32m+[m[32m        return { text: 'Pending', color: 'text-yellow-600', badgeColor: 'bg-yellow-100 text-yellow-800' };[m
+[32m+[m[32m    }[m
+[32m+[m[32m  }[m
+[32m+[m
+   function handleRemoveProduct(productId: number) {[m
+     setAddFormData({[m
+       ...addFormData,[m
+[36m@@ -491,7 +578,25 @@[m [mexport default function BookingsPage() {[m
+ [m
+     try {[m
+       const finalTotal = calculateTotal();[m
+[32m+[m[32m      const totalSecurityDeposit = calculateSecurityDeposit();[m
+[32m+[m[41m      [m
+[32m+[m[32m      // Get logged-in admin/salesman name from localStorage[m
+[32m+[m[32m      // Try multiple possible keys where user name might be stored[m
+[32m+[m[32m      const userData = localStorage.getItem('user');[m
+[32m+[m[32m      let createdByName = 'Admin';[m
+       [m
+[32m+[m[32m      if (userData) {[m
+[32m+[m[32m        try {[m
+[32m+[m[32m          const user = JSON.parse(userData);[m
+[32m+[m[32m          createdByName = user.name || user.userName || createdByName;[m
+[32m+[m[32m        } catch (e) {[m
+[32m+[m[32m          // If parsing fails, try direct keys[m
+[32m+[m[32m          createdByName = localStorage.getItem('admin_name') || localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Admin';[m
+[32m+[m[32m        }[m
+[32m+[m[32m      } else {[m
+[32m+[m[32m        createdByName = localStorage.getItem('admin_name') || localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Admin';[m
+[32m+[m[32m      }[m
+[32m+[m
+       await bookingsApi.create({[m
+         customer_name: addFormData.customer_name,[m
+         customer_phone: fullPhone1,[m
+[36m@@ -506,8 +611,10 @@[m [mexport default function BookingsPage() {[m
+           booked_to: p.booked_to[m
+         })),[m
+         total_amount: finalTotal,[m
+[32m+[m[32m        security_deposit: totalSecurityDeposit,[m
+         transportation_opted: addFormData.transportation_opted,[m
+         status: 'pending',[m
+[32m+[m[32m        created_by: createdByName, // Store admin/salesman name who created the booking[m
+       } as any);[m
+       [m
+       await fetchBookings();[m
+[36m@@ -683,9 +790,9 @@[m [mexport default function BookingsPage() {[m
+                           setShowProductTrackingList(true);[m
+                         }}[m
+                         className="px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"[m
+[31m-                        title="Track Products"[m
+[32m+[m[32m                        title="View Order Status & Details"[m
+                       >[m
+[31m-                        📦 Track ({products.length})[m
+[32m+[m[32m                        📋 View Details[m
+                       </button>[m
+                     ) : ([m
+                       <span className="text-xs text-gray-400 italic">No products</span>[m
+[36m@@ -704,7 +811,17 @@[m [mexport default function BookingsPage() {[m
+ [m
+                       {/* Watch Button */}[m
+                       <button[m
+[31m-                        onClick={() => setViewingBooking(booking)}[m
+[32m+[m[32m                        onClick={async () => {[m
+[32m+[m[32m                          setViewingBooking(booking);[m
+[32m+[m[32m                          // Fetch transactions for status calculation[m
+[32m+[m[32m                          try {[m
+[32m+[m[32m                            const transactionsResponse = await paymentTransactionsApi.getByBookingId(booking.id);[m
+[32m+[m[32m                            setViewingBookingTransactions(transactionsResponse.data || []);[m
+[32m+[m[32m                          } catch (error) {[m
+[32m+[m[32m                            console.error('Error fetching transactions:', error);[m
+[32m+[m[32m                            setViewingBookingTransactions([]);[m
+[32m+[m[32m                          }[m
+[32m+[m[32m                        }}[m
+                         className="relative text-gray-600 hover:text-blue-600 transition-colors p-2 rounded-lg hover:bg-blue-50"[m
+                         title="Quick View"[m
+                       >[m
+[36m@@ -1382,19 +1499,14 @@[m [mexport default function BookingsPage() {[m
+                   </div>[m
+                   <div>[m
+                     <p className="text-sm text-gray-600">Status</p>[m
+[31m-                    <span[m
+[31m-                      className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full ${[m
+[31m-                        viewingBooking.status === 'confirmed'[m
+[31m-                          ? 'bg-green-100 text-green-800'[m
+[31m-                          : viewingBooking.status === 'cancelled'[m
+[31m-                          ? 'bg-red-100 text-red-800'[m
+[31m-                          : viewingBooking.status === 'completed'[m
+[31m-                          ? 'bg-blue-100 text-blue-800'[m
+[31m-                          : 'bg-yellow-100 text-yellow-800'[m
+[31m-                      }`}[m
+[31m-                    >[m
+[31m-                      {viewingBooking.status.charAt(0).toUpperCase() + viewingBooking.status.slice(1)}[m
+[31m-                    </span>[m
+[32m+[m[32m                    {(() => {[m
+[32m+[m[32m                      const statusDisplay = getStatusDisplay(viewingBooking.status, viewingBooking, viewingBookingTransactions);[m
+[32m+[m[32m                      return ([m
+[32m+[m[32m                        <span className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full ${statusDisplay.badgeColor}`}>[m
+[32m+[m[32m                          {statusDisplay.text}[m
+[32m+[m[32m                        </span>[m
+[32m+[m[32m                      );[m
+[32m+[m[32m                    })()}[m
+                   </div>[m
+                   <div>[m
+                     <p className="text-sm text-gray-600">Pickup Date</p>[m

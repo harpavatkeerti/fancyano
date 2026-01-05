@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import { usersApi } from '@/lib/api';
 import { User } from '@/types';
 import { Button, Input } from '@/components/common';
+import { toast } from '@/lib/toast';
+import { useConfirm } from '@/hooks/useConfirm';
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -43,9 +45,10 @@ export default function UsersPage() {
       setShowAddModal(false);
       setEditingUser(null);
       resetForm();
+      toast.success('User saved successfully');
     } catch (error) {
       console.error('Error saving user:', error);
-      alert('Error saving user');
+      toast.error('Error saving user');
     }
   }
 
@@ -60,15 +63,27 @@ export default function UsersPage() {
   }
 
   async function handleDelete(id: number, userName: string) {
-    if (!confirm(`Are you sure you want to remove user "${userName}"? This action cannot be undone.`)) {
+    const confirmed = await confirm({
+      title: 'Delete User',
+      message: `Are you sure you want to remove user "${userName}"? This action cannot be undone.`,
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      confirmColor: 'red',
+      onConfirm: () => {},
+      onCancel: () => {},
+    });
+
+    if (!confirmed) {
       return;
     }
+
     try {
       await usersApi.delete(id);
       await fetchUsers();
+      toast.success('User deleted successfully');
     } catch (error) {
       console.error('Error deleting user:', error);
-      alert('Error deleting user');
+      toast.error('Error deleting user');
     }
   }
 

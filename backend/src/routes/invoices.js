@@ -28,13 +28,63 @@ router.post('/estimate/:bookingId', async (req, res) => {
       WHERE b.id = $1
       GROUP BY b.id
     `, [bookingId]);
-
+    
     if (bookingResult.rows.length === 0) {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
+    // Group products by product_id to calculate quantity
     const booking = bookingResult.rows[0];
+    if (booking && booking.products) {
+      const productMap = new Map();
+      booking.products.forEach((product) => {
+        if (product.id) {
+          const key = product.id;
+          if (productMap.has(key)) {
+            productMap.get(key).quantity += 1;
+          } else {
+            productMap.set(key, {
+              ...product,
+              quantity: 1
+            });
+          }
+        }
+      });
+      booking.products = Array.from(productMap.values());
+    }
     const products = booking.products.filter(p => p.id !== null);
+
+    // Fetch payment transactions
+    const transactionsResult = await pool.query(
+      `SELECT * FROM payment_transactions 
+       WHERE booking_id = $1 
+       ORDER BY created_at ASC`,
+      [bookingId]
+    );
+    const transactions = transactionsResult.rows;
+
+    // Fetch payment summary
+    const summaryResult = await pool.query(
+      `SELECT 
+        COUNT(*) as transaction_count,
+        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as total_payments,
+        SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
+        SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
+        SUM(CASE 
+          WHEN type = 'refund' THEN -amount 
+          ELSE amount 
+        END) as net_amount
+       FROM payment_transactions 
+       WHERE booking_id = $1`,
+      [bookingId]
+    );
+    const paymentSummary = summaryResult.rows[0] || {
+      transaction_count: 0,
+      total_payments: 0,
+      total_refunds: 0,
+      total_adjustments: 0,
+      net_amount: 0
+    };
 
     // Generate PDF
     const fileName = `estimate_${bookingId}_${Date.now()}.pdf`;
@@ -46,7 +96,7 @@ router.post('/estimate/:bookingId', async (req, res) => {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    await InvoiceGenerator.generateEstimate(booking, products, outputPath);
+    await InvoiceGenerator.generateEstimate(booking, products, transactions, paymentSummary, outputPath);
 
     // Send file
     res.download(outputPath, `Estimate_${bookingId}.pdf`, (err) => {
@@ -73,7 +123,9 @@ router.post('/invoice/:bookingId', async (req, res) => {
           'id', p.id,
           'name', p.name,
           'code', p.code,
-          'rent_per_day', p.rent_per_day
+          'rent_per_day', p.rent_per_day,
+          'booked_from', COALESCE(bp.booked_from, b.booked_from),
+          'booked_to', COALESCE(bp.booked_to, b.booked_to)
         )) as products
       FROM bookings b
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
@@ -86,8 +138,58 @@ router.post('/invoice/:bookingId', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
+    // Group products by product_id to calculate quantity
     const booking = bookingResult.rows[0];
+    if (booking && booking.products) {
+      const productMap = new Map();
+      booking.products.forEach((product) => {
+        if (product.id) {
+          const key = product.id;
+          if (productMap.has(key)) {
+            productMap.get(key).quantity += 1;
+          } else {
+            productMap.set(key, {
+              ...product,
+              quantity: 1
+            });
+          }
+        }
+      });
+      booking.products = Array.from(productMap.values());
+    }
     const products = booking.products.filter(p => p.id !== null);
+
+    // Fetch payment transactions
+    const transactionsResult = await pool.query(
+      `SELECT * FROM payment_transactions 
+       WHERE booking_id = $1 
+       ORDER BY created_at ASC`,
+      [bookingId]
+    );
+    const transactions = transactionsResult.rows;
+
+    // Fetch payment summary
+    const summaryResult = await pool.query(
+      `SELECT 
+        COUNT(*) as transaction_count,
+        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as total_payments,
+        SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
+        SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
+        SUM(CASE 
+          WHEN type = 'refund' THEN -amount 
+          ELSE amount 
+        END) as net_amount
+       FROM payment_transactions 
+       WHERE booking_id = $1`,
+      [bookingId]
+    );
+    const paymentSummary = summaryResult.rows[0] || {
+      transaction_count: 0,
+      total_payments: 0,
+      total_refunds: 0,
+      total_adjustments: 0,
+      net_amount: 0
+    };
 
     const fileName = `invoice_${bookingId}_${Date.now()}.pdf`;
     const outputPath = path.join(__dirname, '../../uploads', fileName);
@@ -97,7 +199,7 @@ router.post('/invoice/:bookingId', async (req, res) => {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    await InvoiceGenerator.generateInvoice(booking, products, outputPath);
+    await InvoiceGenerator.generateInvoice(booking, products, transactions, paymentSummary, outputPath);
 
     res.download(outputPath, `Invoice_${bookingId}.pdf`, (err) => {
       if (err) {
@@ -122,7 +224,9 @@ router.post('/tax-invoice/:bookingId', async (req, res) => {
           'id', p.id,
           'name', p.name,
           'code', p.code,
-          'rent_per_day', p.rent_per_day
+          'rent_per_day', p.rent_per_day,
+          'booked_from', COALESCE(bp.booked_from, b.booked_from),
+          'booked_to', COALESCE(bp.booked_to, b.booked_to)
         )) as products
       FROM bookings b
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
@@ -135,8 +239,58 @@ router.post('/tax-invoice/:bookingId', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
+    // Group products by product_id to calculate quantity
     const booking = bookingResult.rows[0];
+    if (booking && booking.products) {
+      const productMap = new Map();
+      booking.products.forEach((product) => {
+        if (product.id) {
+          const key = product.id;
+          if (productMap.has(key)) {
+            productMap.get(key).quantity += 1;
+          } else {
+            productMap.set(key, {
+              ...product,
+              quantity: 1
+            });
+          }
+        }
+      });
+      booking.products = Array.from(productMap.values());
+    }
     const products = booking.products.filter(p => p.id !== null);
+
+    // Fetch payment transactions
+    const transactionsResult = await pool.query(
+      `SELECT * FROM payment_transactions 
+       WHERE booking_id = $1 
+       ORDER BY created_at ASC`,
+      [bookingId]
+    );
+    const transactions = transactionsResult.rows;
+
+    // Fetch payment summary
+    const summaryResult = await pool.query(
+      `SELECT 
+        COUNT(*) as transaction_count,
+        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as total_payments,
+        SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
+        SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
+        SUM(CASE 
+          WHEN type = 'refund' THEN -amount 
+          ELSE amount 
+        END) as net_amount
+       FROM payment_transactions 
+       WHERE booking_id = $1`,
+      [bookingId]
+    );
+    const paymentSummary = summaryResult.rows[0] || {
+      transaction_count: 0,
+      total_payments: 0,
+      total_refunds: 0,
+      total_adjustments: 0,
+      net_amount: 0
+    };
 
     const fileName = `tax_invoice_${bookingId}_${Date.now()}.pdf`;
     const outputPath = path.join(__dirname, '../../uploads', fileName);
@@ -146,7 +300,7 @@ router.post('/tax-invoice/:bookingId', async (req, res) => {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    await InvoiceGenerator.generateTaxInvoice(booking, products, outputPath);
+    await InvoiceGenerator.generateTaxInvoice(booking, products, transactions, paymentSummary, outputPath);
 
     res.download(outputPath, `TaxInvoice_${bookingId}.pdf`, (err) => {
       if (err) {

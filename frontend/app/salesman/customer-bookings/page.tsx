@@ -5,13 +5,19 @@ import { bookingsApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import Link from 'next/link';
+import { toast } from '@/lib/toast';
+import { useConfirm } from '@/hooks/useConfirm';
 
 export default function CustomerBookingsPage() {
+  const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchBookings();
+    // Refresh bookings every 10 seconds to check for auto-cancelled bookings
+    const interval = setInterval(fetchBookings, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   async function fetchBookings() {
@@ -24,6 +30,41 @@ export default function CustomerBookingsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleDelete(bookingId: number, e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const confirmed = await confirm({
+      title: 'Delete Booking',
+      message: 'Are you sure you want to delete this booking? This action cannot be undone.',
+      confirmText: 'Delete',
+      cancelText: 'Cancel',
+      confirmColor: 'red',
+      onConfirm: () => {},
+      onCancel: () => {},
+    });
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await bookingsApi.delete(bookingId);
+      await fetchBookings();
+      toast.success('Booking deleted successfully');
+    } catch (error) {
+      console.error('Error deleting booking:', error);
+      toast.error('Failed to delete booking. Please try again.');
+    }
+  }
+
+  function isPending(booking: Booking): boolean {
+    const paidAmount = typeof booking.paid_amount === 'number'
+      ? booking.paid_amount
+      : parseFloat(booking.paid_amount || '0') || 0;
+    return paidAmount === 0 && booking.status === 'pending';
   }
 
   function getStatusIcon(status: string) {
@@ -88,72 +129,89 @@ export default function CustomerBookingsPage() {
             const products = Array.isArray(booking.products) ? booking.products : [];
             const urgent = isUrgent(booking);
             
+            const canDelete = isPending(booking);
+            
             return (
-              <Link
+              <div
                 key={booking.id}
-                href={`/salesman/order-details/${booking.id}`}
-                className="bg-white border border-gray-200 rounded-lg p-6 relative hover:shadow-lg transition-shadow cursor-pointer"
+                className="bg-white border border-gray-200 rounded-lg p-6 relative hover:shadow-lg transition-shadow"
               >
-                {/* Urgent Badge */}
-                {urgent && (
-                  <div className="absolute top-4 right-4">
-                    <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
-                      URGENT
-                    </span>
+                <Link
+                  href={`/salesman/order-details/${booking.id}`}
+                  className="block"
+                >
+                  {/* Urgent Badge */}
+                  {urgent && (
+                    <div className="absolute top-4 right-20">
+                      <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                        URGENT
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex items-start gap-6">
+                    {/* Product Images */}
+                    <div className="flex gap-2">
+                      {products.slice(0, 3).map((product: any, idx: number) => (
+                        <div key={idx} className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden">
+                          {getImageUrl(product.image) ? (
+                            <img
+                              src={getImageUrl(product.image)!}
+                              alt={product.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <span className="text-2xl">👔</span>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Booking Details */}
+                    <div className="flex-1">
+                      {getStatusIcon(booking.status)}
+                      <p className="text-red-600 font-semibold mt-2">
+                        Dates:{' '}
+                        {new Date(booking.booked_from).toLocaleDateString('en-GB')} To{' '}
+                        {new Date(booking.booked_to).toLocaleDateString('en-GB')}
+                      </p>
+                      <p className="text-sm text-gray-600 mt-1">
+                        Customer: {booking.customer_name}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Phone: {booking.customer_phone}
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        Total: ₹{Math.floor(booking.total_amount || 0)}
+                      </p>
+                    </div>
+
+                    {/* Created By Badge */}
+                    <div>
+                      <span className="inline-block border-2 border-red-600 text-red-600 text-xs font-semibold px-3 py-1 rounded-full">
+                        {booking.created_by || 'By Customer'}
+                      </span>
+                    </div>
                   </div>
+                </Link>
+                
+                {/* Delete Button for Pending Bookings */}
+                {canDelete && (
+                  <button
+                    onClick={(e) => handleDelete(booking.id, e)}
+                    className="absolute top-4 right-4 bg-red-600 text-white px-3 py-1 rounded-lg text-sm font-medium hover:bg-red-700 transition-colors"
+                  >
+                    Delete
+                  </button>
                 )}
-
-                <div className="flex items-start gap-6">
-                  {/* Product Images */}
-                  <div className="flex gap-2">
-                    {products.slice(0, 3).map((product: any, idx: number) => (
-                      <div key={idx} className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden">
-                        {getImageUrl(product.image) ? (
-                          <img
-                            src={getImageUrl(product.image)!}
-                            alt={product.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <span className="text-2xl">👔</span>
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Booking Details */}
-                  <div className="flex-1">
-                    {getStatusIcon(booking.status)}
-                    <p className="text-red-600 font-semibold mt-2">
-                      Dates:{' '}
-                      {new Date(booking.booked_from).toLocaleDateString('en-GB')} To{' '}
-                      {new Date(booking.booked_to).toLocaleDateString('en-GB')}
-                    </p>
-                    <p className="text-sm text-gray-600 mt-1">
-                      Customer: {booking.customer_name}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Phone: {booking.customer_phone}
-                    </p>
-                    <p className="text-sm text-gray-600">
-                      Total: ₹{Math.floor(booking.total_amount || 0)}
-                    </p>
-                  </div>
-
-                  {/* By Customer Badge */}
-                  <div>
-                    <span className="inline-block border-2 border-red-600 text-red-600 text-xs font-semibold px-3 py-1 rounded-full">
-                      By Customer
-                    </span>
-                  </div>
-                </div>
-              </Link>
+              </div>
             );
           })}
         </div>
       )}
+      {ConfirmDialogComponent}
     </div>
   );
 }

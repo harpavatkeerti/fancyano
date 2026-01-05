@@ -11,82 +11,125 @@ class InvoiceGenerator {
   /**
    * Generate Estimate PDF
    */
-  static async generateEstimate(bookingData, products, outputPath) {
+  static async generateEstimate(bookingData, products, transactions = [], paymentSummary = {}, outputPath) {
     return new Promise((resolve, reject) => {
       const doc = new PDFDocument({ size: 'A4', margin: 50 });
       const stream = fs.createWriteStream(outputPath);
       
       doc.pipe(stream);
 
-      // Header with Logo
-      doc.fontSize(20).font('Helvetica-Bold')
+      // Header with Logo - Compact layout
+      doc.fontSize(18).font('Helvetica-Bold')
         .fillColor('#FF0000')
-        .text('FAN-C-YA-NO', 50, 50);
+        .text('FAN-C-YA-NO', 50, 40);
       
-      doc.fontSize(10).font('Helvetica')
+      doc.fontSize(9).font('Helvetica')
         .fillColor('#000000')
-        .text('Wedding Dress Rental', 50, 75)
-        .text('23, 1st Floor, Shobhagapura, Main 100 Feet Road,', 50, 90)
-        .text('Near SBI Bank, Udaipur (Raj.), 313001', 50, 102);
+        .text('Wedding Dress Rental', 50, 60)
+        .text('23, 1st Floor, Shobhagapura, Main 100 Feet Road,', 50, 72)
+        .text('Near SBI Bank, Udaipur (Raj.), 313001', 50, 84);
 
-      // Order ID and Shop Timings (Right side)
-      doc.fontSize(10)
-        .text(`Order ID: ${bookingData.id}`, 400, 50)
-        .fontSize(8)
-        .text('Shop Timings:', 400, 70)
-        .text('Mon to Sat: 11 am to 6 pm', 400, 82)
-        .text('Sunday Closed', 400, 94)
-        .text(`Phone: ${bookingData.customer_phone || '9876543210'}`, 400, 110);
+      // Contact Information - Centered
+      const centerX = 297.5; // Center of A4 page (595px width / 2)
+      doc.fontSize(8).font('Helvetica-Bold')
+        .text('WhatsApp: 8696521097', centerX, 40, { align: 'center', width: 200 })
+        .text('Call: 7877538766', centerX, 52, { align: 'center', width: 200 })
+        .text('GPay: 9950545800', centerX, 64, { align: 'center', width: 200 });
 
-      // Booking and Customer Details
-      doc.fontSize(10).font('Helvetica-Bold')
-        .text('Booking Date:', 50, 150)
+      // Order ID and Shop Timings (Right side) - Moved right to avoid overlap
+      doc.fontSize(9)
+        .text(`Order ID: ${bookingData.id}`, 450, 40)
+        .fontSize(7)
+        .text('Shop Timings:', 450, 55)
+        .text('Mon to Sat: 11 AM - 8 PM', 450, 65)
+        .text('Sunday Closed', 450, 75);
+
+      // Booking and Customer Details - Compact
+      doc.fontSize(9).font('Helvetica-Bold')
+        .text('Booking Date:', 50, 115)
         .font('Helvetica')
-        .text(new Date(bookingData.booking_date).toLocaleDateString('en-GB'), 150, 150);
+        .text(new Date(bookingData.booking_date).toLocaleDateString('en-GB'), 150, 115);
 
       doc.font('Helvetica-Bold')
-        .text('Customer Details:', 300, 150)
+        .text('Customer Details:', 300, 115)
         .font('Helvetica')
-        .text(bookingData.customer_name, 300, 165)
-        .text(bookingData.customer_phone || '', 300, 177);
+        .text(bookingData.customer_name, 300, 128);
+      
+      // Show both phone numbers on same line separated by comma
+      let phoneNumbers = [];
+      if (bookingData.customer_phone) {
+        phoneNumbers.push(bookingData.customer_phone);
+      }
+      if (bookingData.alternate_phone) {
+        phoneNumbers.push(bookingData.alternate_phone);
+      }
+      const phoneY = 140;
+      if (phoneNumbers.length > 0) {
+        doc.fontSize(8).text(phoneNumbers.join(', '), 300, phoneY);
+      }
 
-      // Rental Dates
-      doc.font('Helvetica-Bold')
-        .text('Rental Dates:', 50, 190)
+      // Address section - Compact
+      const addressStartY = phoneY + 12;
+      doc.fontSize(8).font('Helvetica-Bold')
+        .text('Address:', 300, addressStartY)
         .font('Helvetica')
-        .text(`${new Date(bookingData.booked_from).toLocaleDateString('en-GB')} - ${new Date(bookingData.booked_to).toLocaleDateString('en-GB')}`, 150, 190);
+        .text(bookingData.customer_address || 'Lorem ipsum dolor sit amet', 300, addressStartY + 10, { width: 250 });
 
-      doc.font('Helvetica-Bold')
-        .text('Address:', 300, 190)
-        .font('Helvetica')
-        .text(bookingData.customer_address || 'Lorem ipsum dolor sit amet', 300, 205, { width: 250 });
-
-      // Products Table
-      const tableTop = 250;
+      // Products Table - Adjust position dynamically based on content above
+      // Removed Rental Dates section since each product shows pickup/drop dates
+      const tableTop = addressStartY + 25;
       doc.fontSize(10).font('Helvetica-Bold');
       
-      // Table Headers
-      doc.text('S.NO.', 50, tableTop)
+      // Table Headers - Compact
+      doc.fontSize(9).text('S.NO.', 50, tableTop)
         .text('ITEMS', 100, tableTop)
-        .text('RENT', 380, tableTop);
+        .text('QTY', 270, tableTop)
+        .text('RENT', 340, tableTop)
+        .text('TOTAL', 450, tableTop);
 
       // Table Line
       doc.moveTo(50, tableTop + 15)
         .lineTo(550, tableTop + 15)
         .stroke();
 
-      // Table Rows
-      let currentY = tableTop + 25;
-      doc.font('Helvetica');
+      // Table Rows - Compact spacing
+      let currentY = tableTop + 18;
+      doc.fontSize(8).font('Helvetica');
+      
+      let calculatedSubtotal = 0;
       
       products.forEach((product, index) => {
-        const rent = product.rent_per_day;
+        const quantity = product.quantity || 1;
+        const rentPerDay = parseFloat(product.rent_per_day || 0);
+        const total = rentPerDay * quantity;
+        calculatedSubtotal += total;
+        
+        // Format: "Product Name - Product Code"
+        const itemName = `${product.name} - ${product.code || ''}`;
+
+        // Get pickup and drop dates for this product
+        const pickupDate = product.booked_from ? new Date(product.booked_from).toLocaleDateString('en-GB') : 
+                          bookingData.booked_from ? new Date(bookingData.booked_from).toLocaleDateString('en-GB') : '';
+        const dropDate = product.booked_to ? new Date(product.booked_to).toLocaleDateString('en-GB') : 
+                        bookingData.booked_to ? new Date(bookingData.booked_to).toLocaleDateString('en-GB') : '';
+        const dateRange = pickupDate && dropDate ? `${pickupDate} - ${dropDate}` : '';
 
         doc.text(index + 1, 50, currentY)
-          .text(product.name, 100, currentY, { width: 280 })
-          .text(`₹${rent}`, 380, currentY);
+          .text(itemName, 100, currentY, { width: 160 })
+          .text(quantity.toString(), 270, currentY)
+          .text(`₹${rentPerDay.toFixed(2)}`, 340, currentY)
+          .text(`₹${total.toFixed(2)}`, 450, currentY);
 
-        currentY += 30;
+        // Add pickup and drop dates below the item - Increased font size for importance
+        currentY += 12;
+        if (dateRange) {
+          doc.fontSize(9).font('Helvetica-Bold')
+            .fillColor('#000000')
+            .text(`Pickup: ${pickupDate} | Drop: ${dropDate}`, 100, currentY)
+            .fillColor('#000000');
+        }
+
+        currentY += 16; // Slightly increased spacing for better readability
       });
 
       // Totals
@@ -96,39 +139,164 @@ class InvoiceGenerator {
         .stroke();
 
       doc.font('Helvetica-Bold')
-        .text('Total', 380, currentY)
-        .text(`₹${bookingData.total_amount || 0}`, 480, currentY);
+        .text('Subtotal', 300, currentY)
+        .text(`₹${calculatedSubtotal.toFixed(2)}`, 450, currentY);
 
-      currentY += 25;
-      doc.font('Helvetica')
-        .text('Other Charges', 380, currentY)
-        .text(`₹${bookingData.other_charges || 0}`, 480, currentY);
+      // Show Transportation Charges only if transportation was opted AND charge > 0
+      // Check both transportation_opted flag and ensure other_charges is actually set
+      const isTransportationOpted = bookingData.transportation_opted === true || 
+                                    bookingData.transportation_opted === 'true' || 
+                                    bookingData.transportation_opted === 1;
+      const transportationCharge = isTransportationOpted ? parseFloat(bookingData.other_charges || 0) : 0;
+      
+      if (isTransportationOpted && transportationCharge > 0) {
+        currentY += 25;
+        doc.font('Helvetica')
+          .text('Local Transportation Charges', 300, currentY, { width: 140 })
+          .text(`₹${transportationCharge.toFixed(2)}`, 450, currentY);
+      }
 
       currentY += 25;
       doc.font('Helvetica-Bold')
-        .text('Grand Total', 380, currentY)
-        .text(`₹${(bookingData.total_amount || 0) + (bookingData.other_charges || 0)}`, 480, currentY);
+        .text('Total Rent', 300, currentY)
+        .text(`₹${(calculatedSubtotal + transportationCharge).toFixed(2)}`, 450, currentY);
 
       // Payment Details Section
       currentY += 50;
       doc.fontSize(12).font('Helvetica-Bold')
-        .text('PAY DETAILS:', 50, currentY);
+        .text('PAYMENT DETAILS:', 50, currentY);
 
       currentY += 20;
-      doc.fontSize(10).font('Helvetica')
-        .text('Total Rent + Security Deposit', 50, currentY);
+      const totalRent = parseFloat(bookingData.total_amount || 0);
+      const securityDeposit = parseFloat(bookingData.security_deposit || 0);
+      const totalRequired = totalRent + securityDeposit;
+      
+      // Calculate Advance Paid (sum of all payment transactions only, excluding refunds and adjustments)
+      const advancePaid = transactions && transactions.length > 0
+        ? transactions
+            .filter(t => t.type === 'payment')
+            .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0)
+        : parseFloat(bookingData.paid_amount || 0);
+      
+      doc.fontSize(10).font('Helvetica-Bold')
+        .text('Subtotal (Rent):', 50, currentY)
+        .font('Helvetica')
+        .text(`₹${totalRent.toFixed(2)}`, 200, currentY);
 
       currentY += 20;
+      doc.font('Helvetica-Bold')
+        .text('Security Deposit:', 50, currentY)
+        .font('Helvetica')
+        .text(`₹${securityDeposit.toFixed(2)}`, 200, currentY);
+
+      currentY += 20;
+      doc.moveTo(50, currentY - 5)
+        .lineTo(250, currentY - 5)
+        .stroke();
+      
+      currentY += 15;
+      doc.font('Helvetica-Bold')
+        .text('Total Required:', 50, currentY)
+        .font('Helvetica')
+        .text(`₹${totalRequired.toFixed(2)}`, 200, currentY);
+
+      currentY += 25;
       doc.font('Helvetica-Bold')
         .text('Advance Paid:', 50, currentY)
         .font('Helvetica')
-        .text(`₹${bookingData.paid_amount || 0}`, 150, currentY);
+        .text(`₹${advancePaid.toFixed(2)}`, 200, currentY);
 
       currentY += 20;
+      doc.moveTo(50, currentY - 5)
+        .lineTo(250, currentY - 5)
+        .stroke();
+      
+      currentY += 15;
+      const balanceDue = totalRequired - advancePaid;
       doc.font('Helvetica-Bold')
-        .text('Due:', 50, currentY)
+        .text('Balance Due:', 50, currentY)
         .font('Helvetica')
-        .text(`₹${bookingData.due_amount || 0}`, 150, currentY);
+        .text(`₹${Math.max(0, balanceDue).toFixed(2)}`, 200, currentY);
+
+      // Payment Transactions History
+      if (transactions && transactions.length > 0) {
+        currentY += 30;
+        doc.fontSize(11).font('Helvetica-Bold')
+          .text('Payment History:', 50, currentY);
+
+        currentY += 20;
+        doc.fontSize(9).font('Helvetica-Bold');
+        doc.text('Date', 50, currentY)
+          .text('Type', 120, currentY)
+          .text('Method', 180, currentY)
+          .text('Amount', 250, currentY)
+          .text('Notes', 320, currentY);
+
+        currentY += 15;
+        doc.moveTo(50, currentY - 5)
+          .lineTo(550, currentY - 5)
+          .stroke();
+
+        doc.fontSize(9).font('Helvetica');
+        transactions.forEach((transaction) => {
+          const transDate = new Date(transaction.created_at).toLocaleDateString('en-GB');
+          const transType = transaction.type === 'payment' ? 'Payment' : 
+                           transaction.type === 'refund' ? 'Refund' : 
+                           'Adjustment';
+          const transMethod = transaction.method || 'N/A';
+          const transAmount = parseFloat(transaction.amount || 0);
+          const transNotes = transaction.notes || '-';
+          
+          // Wrap long notes
+          const maxNotesWidth = 200;
+          const notesLines = doc.heightOfString(transNotes, { width: maxNotesWidth });
+          
+          doc.text(transDate, 50, currentY)
+            .text(transType, 120, currentY)
+            .text(transMethod, 180, currentY)
+            .text(`₹${transAmount.toFixed(2)}`, 250, currentY)
+            .text(transNotes.substring(0, 30) + (transNotes.length > 30 ? '...' : ''), 320, currentY, { width: maxNotesWidth });
+
+          currentY += Math.max(20, notesLines * 15);
+          
+          // Check if we need a new page
+          if (currentY > 700) {
+            doc.addPage();
+            currentY = 50;
+          }
+        });
+
+        currentY += 10;
+        doc.moveTo(50, currentY - 5)
+          .lineTo(550, currentY - 5)
+          .stroke();
+      }
+
+      // Payment Summary (if there are refunds or adjustments, show them)
+      const totalRefunded = parseFloat(paymentSummary.total_refunds || 0);
+      const totalAdjustments = parseFloat(paymentSummary.total_adjustments || 0);
+      
+      if (totalRefunded > 0 || totalAdjustments > 0) {
+        currentY += 30;
+        doc.fontSize(10).font('Helvetica-Bold')
+          .text('Payment Summary:', 50, currentY);
+
+        if (totalRefunded > 0) {
+          currentY += 20;
+          doc.font('Helvetica-Bold')
+            .text('Total Refunded:', 50, currentY)
+            .font('Helvetica')
+            .text(`₹${totalRefunded.toFixed(2)}`, 200, currentY);
+        }
+
+        if (totalAdjustments > 0) {
+          currentY += 20;
+          doc.font('Helvetica-Bold')
+            .text('Total Adjustments:', 50, currentY)
+            .font('Helvetica')
+            .text(`₹${totalAdjustments.toFixed(2)}`, 200, currentY);
+        }
+      }
 
       // Authorized Balance Section
       currentY += 30;
@@ -171,17 +339,17 @@ class InvoiceGenerator {
   /**
    * Generate Invoice PDF (similar to Estimate)
    */
-  static async generateInvoice(bookingData, products, outputPath) {
+  static async generateInvoice(bookingData, products, transactions = [], paymentSummary = {}, outputPath) {
     // Same as estimate but with "INVOICE" header
-    return this.generateEstimate(bookingData, products, outputPath);
+    return this.generateEstimate(bookingData, products, transactions, paymentSummary, outputPath);
   }
 
   /**
    * Generate Tax Invoice PDF
    */
-  static async generateTaxInvoice(bookingData, products, outputPath) {
+  static async generateTaxInvoice(bookingData, products, transactions = [], paymentSummary = {}, outputPath) {
     // Similar to invoice but with GST details
-    return this.generateEstimate(bookingData, products, outputPath);
+    return this.generateEstimate(bookingData, products, transactions, paymentSummary, outputPath);
   }
 }
 

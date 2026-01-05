@@ -2,6 +2,7 @@
 
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { ToastContainer } from '@/components/common';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -11,6 +12,9 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <Header />
         <main className="p-6">{children}</main>
       </div>
+      <ToastContainer>
+        <div />
+      </ToastContainer>
     </div>
   );
 }

@@ -59,20 +59,21 @@ router.get('/:id', async (req, res) => {
 // POST create product
 router.post('/', async (req, res) => {
   try {
-    const { name, code, purchase_price, rent_per_day, category, gender, size, description, availability, image } = req.body;
+    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image } = req.body;
     
     console.log('📥 Received product creation request:');
     console.log('   Name:', name);
     console.log('   Code:', code);
     console.log('   Purchase Price:', purchase_price);
     console.log('   Rent per Day:', rent_per_day);
+    console.log('   Security Deposit:', security_deposit);
     console.log('   Category:', category);
     console.log('   Gender:', gender);
     console.log('   Size:', size);
     console.log('   Has Image:', image ? 'Yes' : 'No');
     
-    if (!name || !code || !rent_per_day) {
-      return res.status(400).json({ error: 'Name, code, and rent_per_day are required' });
+    if (!name || !code || !rent_per_day || security_deposit === undefined || security_deposit === null) {
+      return res.status(400).json({ error: 'Name, code, rent_per_day, and security_deposit are required' });
     }
 
     // Determine rental policy based on product type
@@ -87,8 +88,8 @@ router.post('/', async (req, res) => {
     }
 
     const result = await pool.query(
-      'INSERT INTO products (name, code, purchase_price, rent_per_day, rental_policy, category, gender, size, description, availability, image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *',
-      [name, code, purchase_price || null, rent_per_day, rental_policy, category || null, gender || null, size || null, description || null, availability !== undefined ? availability : true, imageUrl]
+      'INSERT INTO products (name, code, purchase_price, rent_per_day, security_deposit, rental_policy, category, gender, size, description, availability, image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
+      [name, code, purchase_price || null, rent_per_day, security_deposit || 0, rental_policy, category || null, gender || null, size || null, description || null, availability !== undefined ? availability : true, imageUrl]
     );
 
     res.status(201).json(result.rows[0]);
@@ -108,7 +109,11 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, code, purchase_price, rent_per_day, category, gender, size, description, availability, image } = req.body;
+    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image } = req.body;
+
+    if (security_deposit === undefined || security_deposit === null) {
+      return res.status(400).json({ error: 'security_deposit is required' });
+    }
 
     // Determine rental policy based on product type
     const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
@@ -135,8 +140,8 @@ router.put('/:id', async (req, res) => {
     }
 
     const result = await pool.query(
-      'UPDATE products SET name = $1, code = $2, purchase_price = $3, rent_per_day = $4, rental_policy = $5, category = $6, gender = $7, size = $8, description = $9, availability = $10, image = $11, updated_at = CURRENT_TIMESTAMP WHERE id = $12 RETURNING *',
-      [name, code, purchase_price, rent_per_day, rental_policy, category, gender, size, description, availability, imageUrl, id]
+      'UPDATE products SET name = $1, code = $2, purchase_price = $3, rent_per_day = $4, security_deposit = $5, rental_policy = $6, category = $7, gender = $8, size = $9, description = $10, availability = $11, image = $12, updated_at = CURRENT_TIMESTAMP WHERE id = $13 RETURNING *',
+      [name, code, purchase_price, rent_per_day, security_deposit || 0, rental_policy, category, gender, size, description, availability, imageUrl, id]
     );
 
     res.json(result.rows[0]);

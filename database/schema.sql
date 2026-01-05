@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     booked_to DATE NOT NULL,
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'in_progress', 'completed', 'cancelled')),
     total_amount DECIMAL(10, 2),
+    paid_amount DECIMAL(10, 2) DEFAULT 0,
+    due_amount DECIMAL(10, 2),
+    payment_status VARCHAR(20) DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'partial', 'paid')),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

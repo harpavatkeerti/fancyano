@@ -7,6 +7,7 @@ import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
 import { DateRangePicker } from '@/components/common';
+import { toast } from '@/lib/toast';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -16,10 +17,10 @@ export default function ProductDetailPage() {
   const [selectedColor, setSelectedColor] = useState(0);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [specialNotes, setSpecialNotes] = useState('');
   const [showWarning, setShowWarning] = useState(false);
   const [isAvailable, setIsAvailable] = useState(true);
   const [productBookings, setProductBookings] = useState<any[]>([]);
+  const [availabilityError, setAvailabilityError] = useState<string>('');
 
   useEffect(() => {
     if (params.id) {
@@ -27,6 +28,32 @@ export default function ProductDetailPage() {
       fetchProductBookings();
     }
   }, [params.id]);
+
+  // Listen for cart updates to re-validate availability
+  useEffect(() => {
+    function handleCartUpdate() {
+      // Re-validate if dates are already selected
+      if (dateFrom && dateTo && product) {
+        const availability = checkAvailability(dateFrom, dateTo, product.id);
+        if (!availability.available) {
+          if (availability.conflictType === 'cart_item') {
+            setAvailabilityError(availability.conflictDetails || 'This product is already in your cart for these dates');
+          } else if (availability.conflictType === 'existing_booking') {
+            setAvailabilityError(availability.conflictDetails || 'This product is already booked for these dates');
+          } else {
+            setAvailabilityError('Selected dates are not available');
+          }
+          setIsAvailable(false);
+        } else {
+          setAvailabilityError('');
+          setIsAvailable(true);
+        }
+      }
+    }
+
+    window.addEventListener('cartUpdated', handleCartUpdate);
+    return () => window.removeEventListener('cartUpdated', handleCartUpdate);
+  }, [dateFrom, dateTo, product]);
 
   async function fetchProduct() {
     try {
@@ -49,9 +76,136 @@ export default function ProductDetailPage() {
     }
   }
 
+  // Check if dates overlap with existing bookings or cart items
+  function checkAvailability(dateFrom: string, dateTo: string, productId: number): { available: boolean; conflictType: string; conflictDetails?: string } {
+    if (!dateFrom || !dateTo || !productId) {
+      return { available: false, conflictType: 'invalid_dates' };
+    }
+
+    const fromDate = new Date(dateFrom);
+    const toDate = new Date(dateTo);
+    fromDate.setHours(0, 0, 0, 0);
+    toDate.setHours(0, 0, 0, 0);
+
+    // Check against existing bookings in database
+    for (const booking of productBookings) {
+      if (!booking.booked_from || !booking.booked_to) continue;
+      
+      const bookingFrom = new Date(booking.booked_from);
+      const bookingTo = new Date(booking.booked_to);
+      bookingFrom.setHours(0, 0, 0, 0);
+      bookingTo.setHours(0, 0, 0, 0);
+      
+      // Check if dates overlap: fromDate <= bookingTo && toDate >= bookingFrom
+      if (fromDate <= bookingTo && toDate >= bookingFrom) {
+        return {
+          available: false,
+          conflictType: 'existing_booking',
+          conflictDetails: `Product is already booked from ${new Date(booking.booked_from).toLocaleDateString('en-GB')} to ${new Date(booking.booked_to).toLocaleDateString('en-GB')}`
+        };
+      }
+    }
+
+    // Check against items already in cart
+    try {
+      const cart = JSON.parse(localStorage.getItem('salesman_cart') || '[]');
+      console.log('🔍 Checking cart for conflicts:', {
+        productId,
+        cartLength: cart.length,
+        requestedDates: { from: dateFrom, to: dateTo }
+      });
+      
+      for (const item of cart) {
+        // Check if this cart item is for the same product
+        const itemProductId = item.product?.id || item.product_id;
+        if (!itemProductId || itemProductId !== productId) {
+          continue;
+        }
+        
+        // Get dates from cart item (handle both dateFrom/dateTo and booked_from/booked_to)
+        const cartDateFrom = item.dateFrom || item.booked_from;
+        const cartDateTo = item.dateTo || item.booked_to;
+        
+        if (!cartDateFrom || !cartDateTo) {
+          console.log('⚠️ Cart item missing dates:', item);
+          continue;
+        }
+        
+        const cartFrom = new Date(cartDateFrom);
+        const cartTo = new Date(cartDateTo);
+        cartFrom.setHours(0, 0, 0, 0);
+        cartTo.setHours(0, 0, 0, 0);
+        
+        console.log('🔍 Comparing dates:', {
+          requested: { from: fromDate.toISOString(), to: toDate.toISOString() },
+          cartItem: { from: cartFrom.toISOString(), to: cartTo.toISOString() },
+          overlap: fromDate <= cartTo && toDate >= cartFrom
+        });
+        
+        // Check if dates overlap: fromDate <= cartTo && toDate >= cartFrom
+        if (fromDate <= cartTo && toDate >= cartFrom) {
+          console.log('❌ Overlap detected!');
+          return {
+            available: false,
+            conflictType: 'cart_item',
+            conflictDetails: `This product is already in your cart for dates ${new Date(cartDateFrom).toLocaleDateString('en-GB')} to ${new Date(cartDateTo).toLocaleDateString('en-GB')}`
+          };
+        }
+      }
+      
+      console.log('✅ No cart conflicts found');
+    } catch (error) {
+      console.error('Error checking cart:', error);
+    }
+
+    return { available: true, conflictType: 'none' };
+  }
+
+  // Validate dates when they change
+  useEffect(() => {
+    if (dateFrom && dateTo && product) {
+      const availability = checkAvailability(dateFrom, dateTo, product.id);
+      if (!availability.available) {
+        if (availability.conflictType === 'cart_item') {
+          setAvailabilityError(availability.conflictDetails || 'This product is already in your cart for these dates');
+        } else if (availability.conflictType === 'existing_booking') {
+          setAvailabilityError(availability.conflictDetails || 'This product is already booked for these dates');
+        } else {
+          setAvailabilityError('Selected dates are not available');
+        }
+        setIsAvailable(false);
+      } else {
+        setAvailabilityError('');
+        setIsAvailable(true);
+      }
+    } else {
+      setAvailabilityError('');
+      setIsAvailable(true);
+    }
+  }, [dateFrom, dateTo, product]);
+
   function handleAddToCart() {
     if (!dateFrom || !dateTo) {
-      alert('Please select rental dates');
+      toast.warning('Please select rental dates');
+      return;
+    }
+
+    if (!product) {
+      toast.error('Product information is missing');
+      return;
+    }
+
+    // Check availability before adding to cart
+    const availability = checkAvailability(dateFrom, dateTo, product.id);
+    
+    if (!availability.available) {
+      if (availability.conflictType === 'existing_booking') {
+        toast.error(`Product Not Available!\n\n${availability.conflictDetails}\n\nPlease select different dates.`);
+      } else if (availability.conflictType === 'cart_item') {
+        toast.warning(`Product Already in Cart!\n\n${availability.conflictDetails}\n\nPlease remove it from cart first or select different dates.`);
+      } else {
+        toast.error('Selected dates are not available. Please choose different dates.');
+      }
       return;
     }
 
@@ -60,20 +214,30 @@ export default function ProductDetailPage() {
       product,
       dateFrom,
       dateTo,
-      specialNotes,
+      specialNotes: '', // Will be set on cart page
     };
 
     // Store in localStorage
     const cart = JSON.parse(localStorage.getItem('salesman_cart') || '[]');
+    const isFirstItem = cart.length === 0;
     cart.push(cartItem);
     localStorage.setItem('salesman_cart', JSON.stringify(cart));
 
-    alert('Product added to cart!');
+    // Store timestamp when first product is added to cart
+    if (isFirstItem) {
+      localStorage.setItem('salesman_cart_created_at', Date.now().toString());
+      console.log('🕐 Cart timer started:', new Date().toISOString());
+    }
+
+    // Dispatch event to update cart count in header
+    window.dispatchEvent(new Event('cartUpdated'));
+
+    toast.success('Product added to cart!');
   }
 
   function handleBookNow() {
     if (!dateFrom || !dateTo) {
-      alert('Please select rental dates');
+      toast.warning('Please select rental dates');
       return;
     }
 
@@ -186,31 +350,39 @@ export default function ProductDetailPage() {
               productName={product.name}
               minDate={new Date().toISOString().split('T')[0]}
             />
-          </div>
-
-          {/* Special Notes */}
-          <div className="mb-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-2">Special Notes (if any):</h3>
-            <input
-              type="text"
-              placeholder="Enter"
-              value={specialNotes}
-              onChange={(e) => setSpecialNotes(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-            />
+            {availabilityError && (
+              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                <div className="flex items-start">
+                  <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <p className="text-sm text-red-700 font-medium">{availabilityError}</p>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
           <div className="flex gap-4">
             <button
               onClick={handleAddToCart}
-              className="flex-1 px-6 py-3 text-red-600 bg-white border-2 border-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
+              disabled={!isAvailable || !dateFrom || !dateTo}
+              className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
+                !isAvailable || !dateFrom || !dateTo
+                  ? 'text-gray-400 bg-gray-100 border-2 border-gray-300 cursor-not-allowed'
+                  : 'text-red-600 bg-white border-2 border-red-600 hover:bg-red-50'
+              }`}
             >
               🛒 ADD TO CART
             </button>
             <button
               onClick={handleBookNow}
-              className="flex-1 px-6 py-3 text-white bg-red-600 rounded-lg font-medium hover:bg-red-700 transition-colors"
+              disabled={!isAvailable || !dateFrom || !dateTo}
+              className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
+                !isAvailable || !dateFrom || !dateTo
+                  ? 'text-gray-400 bg-gray-300 cursor-not-allowed'
+                  : 'text-white bg-red-600 hover:bg-red-700'
+              }`}
             >
               BOOK NOW
             </button>

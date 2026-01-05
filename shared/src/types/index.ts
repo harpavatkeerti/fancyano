@@ -4,6 +4,7 @@ export interface Product {
   code: string;
   purchase_price?: number;
   rent_per_day: number;
+  security_deposit: number;
   rental_policy?: string; // '3_days' or '24_hours'
   availability: boolean;
   category?: string;
@@ -33,6 +34,7 @@ export interface Booking {
   payment_status?: 'unpaid' | 'partial' | 'paid';
   transportation_opted?: boolean;
   special_requirements?: string;
+  created_by?: string; // Name of salesman/admin who created the booking
   measurements?: {
     chest?: string;
     waist?: string;
@@ -55,5 +57,25 @@ export interface User {
   role: 'admin' | 'salesman' | 'customer';
   created_at: string;
   updated_at: string;
+}
+
+export interface PaymentTransaction {
+  id: number;
+  booking_id: number;
+  amount: number;
+  type: 'payment' | 'refund' | 'adjustment' | 'date_change_charge';
+  method?: string;
+  recorded_by: string;
+  notes?: string;
+  created_at: string;
+}
+
+export interface PaymentSummary {
+  transaction_count: number;
+  total_payments: number;
+  total_refunds: number;
+  total_adjustments: number;
+  total_date_change_charges?: number;
+  net_amount: number;
 }
 

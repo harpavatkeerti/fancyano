@@ -5,7 +5,8 @@ import { useRouter } from 'next/navigation';
 import { bookingsApi } from '@/lib/api';
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
-import { PhoneInput } from '@/components/common';
+import { PhoneInput, QRScanner } from '@/components/common';
+import { toast } from '@/lib/toast';
 
 interface CartItem {
   product: any;
@@ -17,11 +18,12 @@ interface CartItem {
 export default function CartPage() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
-  const [specialNotes, setSpecialNotes] = useState('');
   const [transportationRequired, setTransportationRequired] = useState<'yes' | 'no'>('no');
+  const [transportationCharge, setTransportationCharge] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cash'>('upi');
   const [showUPIModal, setShowUPIModal] = useState(false);
-  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
+  const [paymentScanned, setPaymentScanned] = useState(false);
   
   // Customer details
   const [customerName, setCustomerName] = useState('');
@@ -32,52 +34,232 @@ export default function CartPage() {
   
   // Measurements
   const [measurements, setMeasurements] = useState<{[key: number]: any}>({});
+  const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
+  const [specialRequirements, setSpecialRequirements] = useState<{[key: number]: string}>({});
+  
+  // Cart timeout timer
+  const [timeRemaining, setTimeRemaining] = useState<{ minutes: number; seconds: number } | null>(null);
+
+  // Calculate time remaining before cart expires
+  function calculateTimeRemaining(): { minutes: number; seconds: number } | null {
+    try {
+      const cartCreatedAt = localStorage.getItem('salesman_cart_created_at');
+      if (!cartCreatedAt) {
+        return null;
+      }
+
+      const createdAt = parseInt(cartCreatedAt, 10);
+      const now = Date.now();
+      const elapsedMs = now - createdAt;
+      const totalMs = 5 * 60 * 1000; // 5 minutes in milliseconds
+      const remainingMs = totalMs - elapsedMs;
+
+      if (remainingMs <= 0) {
+        return { minutes: 0, seconds: 0 };
+      }
+
+      const minutes = Math.floor(remainingMs / (1000 * 60));
+      const seconds = Math.floor((remainingMs % (1000 * 60)) / 1000);
+
+      return { minutes, seconds };
+    } catch (error) {
+      console.error('Error calculating time remaining:', error);
+      return null;
+    }
+  }
+
+  // Check if cart should be cleared (5 minutes timeout)
+  function checkCartTimeout() {
+    try {
+      const cartCreatedAt = localStorage.getItem('salesman_cart_created_at');
+      if (!cartCreatedAt) {
+        setTimeRemaining(null);
+        return;
+      }
+
+      const timeRem = calculateTimeRemaining();
+      setTimeRemaining(timeRem);
+
+      if (timeRem && timeRem.minutes === 0 && timeRem.seconds === 0) {
+        console.log('⏰ Cart expired (5 minutes passed), clearing cart...');
+        localStorage.removeItem('salesman_cart');
+        localStorage.removeItem('salesman_cart_created_at');
+        setCartItems([]);
+        setTimeRemaining(null);
+        window.dispatchEvent(new Event('cartUpdated'));
+        
+        // Show notification to user
+        toast.info('Your cart has been cleared because no payment was recorded within 5 minutes of adding the first product.');
+      }
+    } catch (error) {
+      console.error('Error checking cart timeout:', error);
+    }
+  }
 
   useEffect(() => {
     // Load cart from localStorage
-    const cart = JSON.parse(localStorage.getItem('salesman_cart') || '[]');
-    setCartItems(cart);
+    try {
+      const cart = JSON.parse(localStorage.getItem('salesman_cart') || '[]');
+      // Validate cart items have required product data
+      const validCart = cart.filter((item: any) => item?.product && item?.product?.rent_per_day !== undefined);
+      setCartItems(validCart);
+      if (validCart.length !== cart.length) {
+        // Update localStorage with valid items only
+        localStorage.setItem('salesman_cart', JSON.stringify(validCart));
+      }
+
+      // Check if cart should be cleared due to timeout
+      checkCartTimeout();
+    } catch (error) {
+      console.error('Error loading cart:', error);
+      setCartItems([]);
+    }
+
+    // Set up interval to update timer every second
+    const intervalId = setInterval(() => {
+      checkCartTimeout();
+    }, 1000); // Update every second for real-time countdown
+
+    return () => clearInterval(intervalId);
   }, []);
 
   function removeFromCart(index: number) {
     const newCart = cartItems.filter((_, i) => i !== index);
     setCartItems(newCart);
     localStorage.setItem('salesman_cart', JSON.stringify(newCart));
+    
+    // If cart is now empty, clear the timestamp and timer
+    if (newCart.length === 0) {
+      localStorage.removeItem('salesman_cart_created_at');
+      setTimeRemaining(null);
+    }
+    
+    // Dispatch event to update cart count in header
+    window.dispatchEvent(new Event('cartUpdated'));
   }
 
   function calculateSubtotal() {
-    return cartItems.reduce((sum, item) => sum + item.product.rent_per_day, 0);
+    if (!cartItems || cartItems.length === 0) return 0;
+    return cartItems.reduce((sum, item) => {
+      const rentPerDay = item?.product?.rent_per_day || 0;
+      return sum + (typeof rentPerDay === 'number' ? rentPerDay : parseFloat(rentPerDay) || 0);
+    }, 0);
   }
 
   function calculateDeliveryFee() {
-    return transportationRequired === 'yes' ? 199 : 0;
+    return transportationRequired === 'yes' ? transportationCharge : 0;
   }
 
   function calculateSecurityDeposit() {
-    return 4000; // Fixed for now
+    if (!cartItems || cartItems.length === 0) return 0;
+    return cartItems.reduce((sum, item) => {
+      const securityDeposit = item?.product?.security_deposit || 0;
+      return sum + (typeof securityDeposit === 'number' ? securityDeposit : parseFloat(securityDeposit) || 0);
+    }, 0);
   }
 
   function calculateTotal() {
-    return calculateSubtotal() + calculateDeliveryFee();
+    const subtotal = calculateSubtotal();
+    const deliveryFee = calculateDeliveryFee();
+    return subtotal + deliveryFee;
+  }
+
+  // Check availability for all cart items before checkout
+  async function validateCartAvailability(): Promise<{ valid: boolean; errors: string[] }> {
+    const errors: string[] = [];
+
+    for (const item of cartItems) {
+      if (!item.product || !item.dateFrom || !item.dateTo) {
+        errors.push(`Invalid cart item: ${item.product?.name || 'Unknown product'}`);
+        continue;
+      }
+
+      try {
+        // Fetch current bookings for this product
+        const response = await bookingsApi.getByProductId(item.product.id);
+        const bookings = response.data || [];
+
+        const fromDate = new Date(item.dateFrom);
+        const toDate = new Date(item.dateTo);
+        fromDate.setHours(0, 0, 0, 0);
+        toDate.setHours(0, 0, 0, 0);
+
+        // Check against existing bookings
+        for (const booking of bookings) {
+          if (!booking.booked_from || !booking.booked_to) continue;
+          
+          const bookingFrom = new Date(booking.booked_from);
+          const bookingTo = new Date(booking.booked_to);
+          bookingFrom.setHours(0, 0, 0, 0);
+          bookingTo.setHours(0, 0, 0, 0);
+          
+          // Check if dates overlap
+          if (fromDate <= bookingTo && toDate >= bookingFrom) {
+            errors.push(
+              `${item.product.name} (${item.product.code || 'N/A'}): Already booked from ${new Date(booking.booked_from).toLocaleDateString('en-GB')} to ${new Date(booking.booked_to).toLocaleDateString('en-GB')}`
+            );
+          }
+        }
+
+        // Check for duplicate products in cart with overlapping dates
+        for (const otherItem of cartItems) {
+          if (otherItem === item) continue;
+          if (otherItem.product.id !== item.product.id) continue;
+          if (!otherItem.dateFrom || !otherItem.dateTo) continue;
+
+          const otherFrom = new Date(otherItem.dateFrom);
+          const otherTo = new Date(otherItem.dateTo);
+          otherFrom.setHours(0, 0, 0, 0);
+          otherTo.setHours(0, 0, 0, 0);
+
+          if (fromDate <= otherTo && toDate >= otherFrom) {
+            errors.push(
+              `${item.product.name} (${item.product.code || 'N/A'}): Duplicate in cart with overlapping dates (${new Date(otherItem.dateFrom).toLocaleDateString('en-GB')} to ${new Date(otherItem.dateTo).toLocaleDateString('en-GB')})`
+            );
+          }
+        }
+      } catch (error) {
+        console.error(`Error checking availability for product ${item.product.id}:`, error);
+        errors.push(`Failed to verify availability for ${item.product.name}`);
+      }
+    }
+
+    return {
+      valid: errors.length === 0,
+      errors
+    };
   }
 
   async function handleConfirm() {
     if (!customerName || !customerPhone || !alternatePhone) {
-      alert('Please fill in all customer details');
+      toast.warning('Please fill in all customer details');
       return;
     }
 
     if (!isValidPhoneNumber(customerPhone, customerPhoneCountry)) {
-      alert('Please enter a valid phone number');
+      toast.warning('Please enter a valid phone number');
       return;
     }
 
     if (!isValidPhoneNumber(alternatePhone, alternatePhoneCountry)) {
-      alert('Please enter a valid alternate phone number');
+      toast.warning('Please enter a valid alternate phone number');
+      return;
+    }
+
+    if (cartItems.length === 0) {
+      toast.warning('Your cart is empty');
+      return;
+    }
+
+    // Validate availability before proceeding
+    const validation = await validateCartAvailability();
+    if (!validation.valid) {
+      toast.error(`Cannot proceed with checkout:\n\n${validation.errors.join('\n')}\n\nPlease remove conflicting items or update dates.`);
       return;
     }
 
     if (paymentMethod === 'upi') {
+      setPaymentScanned(false); // Reset payment scanned state
       setShowUPIModal(true);
     } else {
       await createBooking();
@@ -89,42 +271,124 @@ export default function CartPage() {
       const country1 = getCountryByCode(customerPhoneCountry);
       const country2 = getCountryByCode(alternatePhoneCountry);
 
-      // Create booking for each cart item
-      for (const item of cartItems) {
-        await bookingsApi.create({
-          customer_name: customerName,
-          customer_phone: `${country1?.callingCode}${customerPhone}`,
-          alternate_phone: `${country2?.callingCode}${alternatePhone}`,
-          customer_address: '',
-          booking_date: new Date().toISOString().split('T')[0],
-          booked_from: item.dateFrom,
-          booked_to: item.dateTo,
-          products: [{ id: item.product.id, booked_from: item.dateFrom, booked_to: item.dateTo }],
-          total_amount: calculateTotal(),
-          transportation_opted: transportationRequired === 'yes',
-          status: 'confirmed',
-          special_requirements: specialNotes,
-        } as any);
+      // Calculate total security deposit from all products
+      const totalSecurityDeposit = calculateSecurityDeposit();
+
+      // Get logged-in salesman name from localStorage
+      // Try multiple possible keys where user name might be stored
+      const userData = localStorage.getItem('user');
+      let salesmanName = 'Salesman';
+      
+      if (userData) {
+        try {
+          const user = JSON.parse(userData);
+          salesmanName = user.name || user.userName || salesmanName;
+        } catch (e) {
+          // If parsing fails, try direct keys
+          salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
+        }
+      } else {
+        salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
       }
 
-      // Clear cart
+      // Create one booking with all products
+      const bookingResponse = await bookingsApi.create({
+        customer_name: customerName,
+        customer_phone: `${country1?.callingCode}${customerPhone}`,
+        alternate_phone: `${country2?.callingCode}${alternatePhone}`,
+        customer_address: '',
+        booking_date: new Date().toISOString().split('T')[0],
+        booked_from: '', // Will be calculated from products
+        booked_to: '', // Will be calculated from products
+        products: cartItems.map(item => ({
+          id: item.product.id,
+          booked_from: item.dateFrom,
+          booked_to: item.dateTo
+        })),
+        total_amount: calculateTotal(),
+        security_deposit: totalSecurityDeposit,
+        transportation_opted: transportationRequired === 'yes',
+        other_charges: transportationRequired === 'yes' ? transportationCharge : 0,
+        status: 'pending', // Will be updated to 'confirmed' when payment is recorded
+        special_requirements: '',
+        created_by: salesmanName, // Store salesman name who created the booking
+      } as any);
+
+      // Clear cart and reset timer
       localStorage.removeItem('salesman_cart');
+      localStorage.removeItem('salesman_cart_created_at');
+      setTimeRemaining(null);
+      // Dispatch event to update cart count in header
+      window.dispatchEvent(new Event('cartUpdated'));
       setShowUPIModal(false);
-      setShowConfirmation(true);
-    } catch (error) {
+      setPaymentScanned(false); // Reset payment scanned state
+      
+      // Redirect to order details page using the booking ID from response
+      const bookingId = bookingResponse.data?.id;
+      if (bookingId) {
+        router.push(`/salesman/order-details/${bookingId}`);
+      } else {
+        router.push('/salesman/my-bookings');
+      }
+    } catch (error: any) {
       console.error('Error creating booking:', error);
-      alert('Error creating booking');
+      const errorData = error.response?.data || {};
+      const errorMessage = errorData.error || errorData.details || error.message || 'Unknown error occurred';
+      const errorDetail = errorData.detail || '';
+      const errorHint = errorData.hint || '';
+      
+      let fullErrorMessage = `Error creating booking: ${errorMessage}`;
+      if (errorDetail) {
+        fullErrorMessage += `\n\nDetails: ${errorDetail}`;
+      }
+      if (errorHint) {
+        fullErrorMessage += `\n\nHint: ${errorHint}`;
+      }
+      
+      toast.error(fullErrorMessage);
     }
   }
 
   function handleMeasurementChange(productId: number, field: string, value: string) {
+    // Remove any non-digit characters
+    const numericValue = value.replace(/\D/g, '');
+    
+    // Check if more than 2 digits
+    if (numericValue.length > 2) {
+      const errorKey = `${productId}-${field}`;
+      setMeasurementErrors({
+        ...measurementErrors,
+        [errorKey]: 'Please enter correct measurement (maximum 2 digits)',
+      });
+      return;
+    }
+    
+    // Clear error if valid
+    const errorKey = `${productId}-${field}`;
+    setMeasurementErrors({
+      ...measurementErrors,
+      [errorKey]: '',
+    });
+    
     setMeasurements({
       ...measurements,
       [productId]: {
         ...measurements[productId],
-        [field]: value,
+        [field]: numericValue,
       },
     });
+  }
+
+  // Determine if product is female clothing (Lehenga, Gown, Girlish Crop Top)
+  function isFemaleClothing(productName: string): boolean {
+    const femaleTypes = ['Lehenga', 'Gown', 'Gowns', 'Girlish Crop Top'];
+    return femaleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
+  }
+
+  // Determine if product is male clothing (Sherwani, Suit, Kurta Pajama, Indo Western)
+  function isMaleClothing(productName: string): boolean {
+    const maleTypes = ['Sherwani', 'Suit', 'Kurta Pajama', 'Indo Western'];
+    return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
   }
 
   if (cartItems.length === 0) {
@@ -145,7 +409,28 @@ export default function CartPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      <h1 className="text-3xl font-bold text-gray-900 mb-8">Cart</h1>
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="text-3xl font-bold text-gray-900">Cart</h1>
+        {timeRemaining && (
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 ${
+            timeRemaining.minutes < 1 
+              ? 'bg-red-50 border-red-500 text-red-700' 
+              : timeRemaining.minutes < 2
+              ? 'bg-yellow-50 border-yellow-500 text-yellow-700'
+              : 'bg-blue-50 border-blue-500 text-blue-700'
+          }`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex items-baseline gap-1">
+              <span className="text-sm font-medium">Cart expires in:</span>
+              <span className="text-xl font-bold tabular-nums">
+                {String(timeRemaining.minutes).padStart(2, '0')}:{String(timeRemaining.seconds).padStart(2, '0')}
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-3 gap-8">
         {/* Cart Items */}
@@ -166,8 +451,13 @@ export default function CartPage() {
                 )}
               </div>
               <div className="flex-1">
-                <h3 className="font-semibold text-gray-900">{item.product.name}</h3>
-                <p className="text-sm text-gray-600">₹{Math.floor(item.product.rent_per_day)} / Day</p>
+                <div className="mb-1">
+                  <h3 className="font-semibold text-gray-900 text-lg">{item.product.name}</h3>
+                  {item.product.code && (
+                    <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {item.product.code}</p>
+                  )}
+                </div>
+                <p className="text-sm text-gray-600 mt-1">₹{Math.floor(item.product.rent_per_day || 0)} / Day</p>
                 <p className="text-sm text-red-600 mt-2">
                   Dates: {new Date(item.dateFrom).toLocaleDateString('en-GB')} To{' '}
                   {new Date(item.dateTo).toLocaleDateString('en-GB')}
@@ -188,24 +478,10 @@ export default function CartPage() {
             </div>
           ))}
 
-          {/* Special Notes */}
-          <div className="mt-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Special Notes (if any):
-            </label>
-            <input
-              type="text"
-              placeholder="Enter"
-              value={specialNotes}
-              onChange={(e) => setSpecialNotes(e.target.value)}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-            />
-          </div>
-
           {/* Transportation */}
           <div className="mt-6">
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              Transportation Required?
+              Local Transportation Required?
             </label>
             <div className="flex gap-4">
               <label className="flex items-center">
@@ -221,12 +497,43 @@ export default function CartPage() {
                 <input
                   type="radio"
                   checked={transportationRequired === 'no'}
-                  onChange={() => setTransportationRequired('no')}
+                  onChange={() => {
+                    setTransportationRequired('no');
+                    setTransportationCharge(0);
+                  }}
                   className="mr-2"
                 />
                 No
               </label>
             </div>
+            
+            {/* Transportation Charge Input - Shows when Yes is selected */}
+            {transportationRequired === 'yes' && (
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Enter Local Transportation Charge*
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-700 font-medium">₹</span>
+                  <input
+                    type="number"
+                    value={transportationCharge}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      // Only allow positive numbers
+                      if (value === '' || parseFloat(value) >= 0) {
+                        setTransportationCharge(parseFloat(value) || 0);
+                      }
+                    }}
+                    placeholder="Enter amount"
+                    min="0"
+                    step="1"
+                    className="w-48 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    required
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Customer Contact Details */}
@@ -255,7 +562,7 @@ export default function CartPage() {
                         const full1 = `${c1.callingCode}${value}`;
                         const full2 = `${c2.callingCode}${alternatePhone}`;
                         if (full1 === full2) {
-                          alert('❌ Phone numbers cannot be the same');
+                          toast.warning('Phone numbers cannot be the same');
                         }
                       }
                     }
@@ -277,7 +584,7 @@ export default function CartPage() {
                         const full1 = `${c1.callingCode}${customerPhone}`;
                         const full2 = `${c2.callingCode}${value}`;
                         if (full1 === full2) {
-                          alert('❌ Phone numbers cannot be the same');
+                          toast.warning('Phone numbers cannot be the same');
                         }
                       }
                     }
@@ -294,23 +601,23 @@ export default function CartPage() {
         <div>
           <div className="bg-white border border-gray-200 rounded-lg p-6 sticky top-24">
             <h2 className="text-xl font-bold text-gray-900 mb-6">Order Summary</h2>
-            <div className="space-y-3 mb-6">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Subtotal</span>
-                <span className="font-medium">₹{calculateSubtotal().toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Delivery Fee</span>
-                <span className="font-medium">₹{calculateDeliveryFee()}</span>
-              </div>
-              <div className="flex justify-between text-lg font-bold border-t pt-3">
-                <span>Total Payable Now:</span>
-                <span>₹{calculateTotal().toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-600">Security Deposit</span>
-                <span className="font-medium">₹{calculateSecurityDeposit().toLocaleString()}</span>
-              </div>
+             <div className="space-y-3 mb-6">
+               <div className="flex justify-between">
+                 <span className="text-gray-600">Subtotal</span>
+                 <span className="font-medium">₹{isNaN(calculateSubtotal()) ? '0' : Math.floor(calculateSubtotal()).toLocaleString('en-IN')}</span>
+               </div>
+               <div className="flex justify-between">
+                 <span className="text-gray-600">Delivery Fee</span>
+                 <span className="font-medium">₹{isNaN(calculateDeliveryFee()) ? '0' : Math.floor(calculateDeliveryFee()).toLocaleString('en-IN')}</span>
+               </div>
+               <div className="flex justify-between text-lg font-bold border-t pt-3">
+                 <span>Total Payable Now:</span>
+                 <span>₹{isNaN(calculateTotal()) ? '0' : Math.floor(calculateTotal()).toLocaleString('en-IN')}</span>
+               </div>
+               <div className="flex justify-between text-sm">
+                 <span className="text-gray-600">Security Deposit</span>
+                 <span className="font-medium">₹{isNaN(calculateSecurityDeposit()) ? '0' : Math.floor(calculateSecurityDeposit()).toLocaleString('en-IN')}</span>
+               </div>
               <p className="text-xs text-gray-500 italic">
                 Note: The Payment of Security will only be collected at the time of delivery
               </p>
@@ -353,91 +660,86 @@ export default function CartPage() {
 
       {/* UPI Payment Modal */}
       {showUPIModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md mx-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowUPIModal(false)}>
+          <div className="bg-white rounded-lg p-6 max-w-md mx-4 relative" onClick={(e) => e.stopPropagation()}>
+            {/* Close Button */}
+            <button
+              onClick={() => {
+                setShowUPIModal(false);
+                setPaymentScanned(false);
+              }}
+              className="absolute top-4 right-4 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+            >
+              ×
+            </button>
+            
             <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
-            <p className="text-center text-gray-700 mb-4">Amount Due: ₹{calculateTotal().toLocaleString()}</p>
+            <p className="text-center text-gray-700 mb-4">Amount Due: ₹{Math.floor(calculateTotal()).toLocaleString('en-IN')}</p>
             <div className="flex justify-center mb-4">
-              <div className="w-48 h-48 bg-gray-200 rounded-lg flex items-center justify-center">
-                <span className="text-4xl">QR Code</span>
+              <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                <img 
+                  src="/upi-qr.png" 
+                  alt="UPI QR Code" 
+                  className="rounded-lg"
+                  style={{ 
+                    maxWidth: '280px', 
+                    maxHeight: '310px', 
+                    width: 'auto', 
+                    height: 'auto'
+                  }}
+                />
               </div>
             </div>
             <p className="text-center text-gray-600 mb-4">OR</p>
             <p className="text-center text-sm text-gray-700 mb-6">
-              Pay on UPI ID: <span className="font-semibold">fancyano@oksbi</span>
+              Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
             </p>
-            <button
-              onClick={() => createBooking()}
-              className="w-full px-6 py-3 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700"
-            >
-              Confirm Payment
-            </button>
+            <div className="space-y-3">
+              <button
+                onClick={() => setShowQRScanner(true)}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                Scan Payment QR
+              </button>
+              {paymentScanned && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-3">
+                  <p className="text-sm text-green-800 text-center">
+                    ✅ Payment QR scanned successfully!
+                  </p>
+                </div>
+              )}
+              <button
+                onClick={() => createBooking()}
+                className={`w-full px-6 py-3 rounded-lg font-bold transition-colors ${
+                  paymentScanned
+                    ? 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-red-600 text-white hover:bg-red-700'
+                }`}
+              >
+                {paymentScanned ? '✅ Confirm Payment' : 'Confirm Payment'}
+              </button>
+            </div>
           </div>
         </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          title="📷 Scan Payment QR Code"
+          onScan={(code) => {
+            console.log('Payment QR scanned:', code);
+            setPaymentScanned(true);
+            setShowQRScanner(false);
+          }}
+          onClose={() => setShowQRScanner(false)}
+        />
       )}
 
       {/* Confirmation & Measurements Modal */}
-      {showConfirmation && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <div className="bg-white rounded-lg p-6 max-w-2xl mx-4 my-8">
-            <div className="flex items-center mb-6">
-              <svg className="w-8 h-8 text-green-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              <h2 className="text-2xl font-bold text-gray-900">Your Payment Has Been Confirmed</h2>
-            </div>
-
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Confirm your measurements to confirm your order
-            </h3>
-
-            {cartItems.map((item, index) => (
-              <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
-                <div className="flex gap-4 mb-4">
-                  <div className="w-16 h-20 bg-gray-200 rounded overflow-hidden flex-shrink-0">
-                    {getImageUrl(item.product.image) && (
-                      <img src={getImageUrl(item.product.image)!} alt={item.product.name} className="w-full h-full object-cover" />
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <h4 className="font-semibold">{item.product.name}</h4>
-                    <p className="text-sm text-gray-600">₹{Math.floor(item.product.rent_per_day)} / Day</p>
-                    <p className="text-sm text-red-600">
-                      Dates: {new Date(item.dateFrom).toLocaleDateString('en-GB')} To {new Date(item.dateTo).toLocaleDateString('en-GB')}
-                    </p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-4 gap-3">
-                  <input type="text" placeholder="Waist (in inches)" className="px-3 py-2 border rounded" />
-                  <input type="text" placeholder="Bust (in inches)" className="px-3 py-2 border rounded" />
-                  <input type="text" placeholder="Chest (in inches)" className="px-3 py-2 border rounded" />
-                  <input type="text" placeholder="Shoulder (in inches)" className="px-3 py-2 border rounded" />
-                </div>
-              </div>
-            ))}
-
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => router.push('/salesman/my-bookings')}
-                className="flex-1 px-6 py-3 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={() => router.push('/salesman/my-bookings')}
-                className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700"
-              >
-                SAVE
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

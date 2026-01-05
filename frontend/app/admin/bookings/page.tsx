@@ -1,12 +1,25 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { bookingsApi, productsApi } from '@/lib/api';
+import { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';
 import { Booking, Product } from '@/types';
-import { Button, Input, DateRangePicker, PhoneInput, QRScanner, BookingProductTrackingModal } from '@/components/common';
+import { Button, Input, DateRangePicker, PhoneInput, BookingProductTrackingModal } from '@/components/common';
+import dynamic from 'next/dynamic';
+
+// Dynamically import QRScanner to avoid SSR issues with html5-qrcode
+const QRScanner = dynamic(
+  () => import('@/components/common/QRScanner'),
+  { 
+    ssr: false,
+    loading: () => <div className="p-4 text-center">Loading scanner...</div>
+  }
+);
 import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 import { settingsApi } from '@/lib/settingsApi';
 import { productTrackingApi } from '@/lib/productTrackingApi';
+import { getImageUrl } from '@/lib/imageHelper';
+import { toast } from '@/lib/toast';
+import { useConfirm } from '@/hooks/useConfirm';
 
 export default function BookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -18,7 +31,9 @@ export default function BookingsPage() {
   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);
   const [showModifyModal, setShowModifyModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showMeasurements, setShowMeasurements] = useState(false);
+  const [showMeasurements, setShowMeasurements] = useState<{[key: number]: boolean}>({});
+  const [parsedMeasurements, setParsedMeasurements] = useState<{[key: number]: any}>({});
+  const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{[key: number]: string}>({});
   const [formData, setFormData] = useState({
     customer_name: '',
     customer_phone: '',
@@ -48,6 +63,21 @@ export default function BookingsPage() {
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [productSearchCode, setProductSearchCode] = useState('');
   const [transportationCharge, setTransportationCharge] = useState(0);
+  
+  // Date change functionality for modify modal - simplified like salesman portal
+  const [selectedProductForDateChange, setSelectedProductForDateChange] = useState<any>(null);
+  const [changeDateFrom, setChangeDateFrom] = useState('');
+  const [changeDateTo, setChangeDateTo] = useState('');
+  const [dateChangeCharge, setDateChangeCharge] = useState(0);
+  const [productBookingsForDateChange, setProductBookingsForDateChange] = useState<any[]>([]);
+  
+  const [dateChangeChargeSettings, setDateChangeChargeSettings] = useState({
+    charge_type: 'manual' as 'fixed' | 'variable' | 'manual',
+    fixed_amount: 0,
+    variable_per_day: 0,
+    min_charge: 0,
+    max_charge: 0,
+  });
   const [customTransportationCharge, setCustomTransportationCharge] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
@@ -60,7 +90,69 @@ export default function BookingsPage() {
     fetchBookings();
     fetchProducts();
     fetchTransportationCharge();
+    fetchDateChangeChargeSettings();
   }, []);
+
+  async function fetchDateChangeChargeSettings() {
+    try {
+      const settings = [
+        'date_change_charge_type',
+        'date_change_fixed_amount',
+        'date_change_variable_per_day',
+        'date_change_min_charge',
+        'date_change_max_charge',
+      ];
+
+      const values: any = {};
+      for (const key of settings) {
+        try {
+          const response = await settingsApi.getByKey(key);
+          values[key] = response.data?.setting_value || null;
+        } catch (error) {
+          // Setting doesn't exist, use default
+        }
+      }
+
+      setDateChangeChargeSettings({
+        charge_type: (values.date_change_charge_type || 'manual') as 'fixed' | 'variable' | 'manual',
+        fixed_amount: parseFloat(values.date_change_fixed_amount || '0') || 0,
+        variable_per_day: parseFloat(values.date_change_variable_per_day || '0') || 0,
+        min_charge: parseFloat(values.date_change_min_charge || '0') || 0,
+        max_charge: parseFloat(values.date_change_max_charge || '0') || 0,
+      });
+    } catch (error) {
+      console.error('Error fetching date change charge settings:', error);
+    }
+  }
+
+  function calculateDateChangeCharge(oldFrom: string, oldTo: string, newFrom: string, newTo: string): number {
+    if (!oldFrom || !oldTo || !newFrom || !newTo) return 0;
+
+    const oldStart = new Date(oldFrom);
+    const oldEnd = new Date(oldTo);
+    const newStart = new Date(newFrom);
+    const newEnd = new Date(newTo);
+
+    // Calculate days changed (absolute difference in date range)
+    const oldDays = Math.ceil((oldEnd.getTime() - oldStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const newDays = Math.ceil((newEnd.getTime() - newStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+    const daysChanged = Math.abs(newDays - oldDays);
+
+    if (daysChanged === 0) return 0;
+
+    switch (dateChangeChargeSettings.charge_type) {
+      case 'fixed':
+        return dateChangeChargeSettings.fixed_amount || 0;
+      case 'variable':
+        const baseCharge = daysChanged * dateChangeChargeSettings.variable_per_day;
+        const minCharge = dateChangeChargeSettings.min_charge || 0;
+        const maxCharge = dateChangeChargeSettings.max_charge || Infinity;
+        return Math.max(minCharge, Math.min(baseCharge, maxCharge));
+      case 'manual':
+      default:
+        return 0; // Will be entered manually
+    }
+  }
 
   async function fetchTransportationCharge() {
     try {
@@ -68,7 +160,7 @@ export default function BookingsPage() {
       setTransportationCharge(parseFloat(response.data.setting_value) || 0);
     } catch (error) {
       console.error('Error fetching transportation charge:', error);
-      setTransportationCharge(500); // Default fallback
+      setTransportationCharge(0); // Default to 0
     }
   }
 
@@ -108,7 +200,7 @@ export default function BookingsPage() {
     }
   }
 
-  function handleModify(booking: Booking) {
+  async function handleModify(booking: Booking) {
     setSelectedBooking(booking);
     setFormData({
       customer_name: booking.customer_name,
@@ -118,6 +210,36 @@ export default function BookingsPage() {
       booked_to: booking.booked_to.split('T')[0],
       status: booking.status,
     });
+    
+    // Reset date change states
+    setSelectedProductForDateChange(null);
+    setChangeDateFrom('');
+    setChangeDateTo('');
+    setDateChangeCharge(0);
+    
+    // Fetch product bookings for calendar availability
+    const bookingsMap: Record<number, any[]> = {};
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    for (const product of products) {
+      try {
+        const response = await bookingsApi.getByProductId(product.id);
+        // Filter out the current booking's dates and format for DateRangePicker
+        const bookings = (response.data || []).filter((b: any) => b.id !== booking.id).map((b: any) => ({
+          booked_from: b.booked_from,
+          booked_to: b.booked_to,
+          customer_name: b.customer_name,
+          customer_phone: b.customer_phone,
+        }));
+        bookingsMap[product.id] = bookings;
+        console.log(`Fetched ${bookings.length} bookings for product ${product.id}:`, bookings);
+      } catch (error) {
+        console.error(`Error fetching bookings for product ${product.id}:`, error);
+        bookingsMap[product.id] = [];
+      }
+    }
+    setProductBookings(bookingsMap);
+    console.log('Product bookings map:', bookingsMap);
+    
     setShowModifyModal(true);
   }
 
@@ -126,7 +248,8 @@ export default function BookingsPage() {
     try {
       const oldStatus: string = selectedBooking.status;
       const newStatus: string = formData.status;
-      
+
+      // Update booking basic info (date changes handled in separate modal)
       await bookingsApi.update(selectedBooking.id, formData);
       
       // Auto-track when status changes to 'confirmed' (picked by customer)
@@ -142,9 +265,11 @@ export default function BookingsPage() {
       await fetchBookings();
       setShowModifyModal(false);
       setSelectedBooking(null);
+      
+      toast.success('Booking updated successfully!');
     } catch (error) {
       console.error('Error updating booking:', error);
-      alert('Error updating booking');
+      toast.error('Error updating booking');
     }
   }
 
@@ -207,10 +332,10 @@ export default function BookingsPage() {
       });
       
       await fetchBookings();
-      alert('✅ Booking cancelled successfully');
+      toast.success('Booking cancelled successfully');
     } catch (error) {
       console.error('Error cancelling booking:', error);
-      alert('❌ Failed to cancel booking. Please try again.');
+      toast.error('Failed to cancel booking. Please try again.');
     }
   }
 
@@ -393,7 +518,7 @@ export default function BookingsPage() {
         // Check if product is already added
         const isAlreadyAdded = addFormData.products.some(ap => ap.id === product.id);
         if (isAlreadyAdded) {
-          alert(`⚠️ Product "${product.name}" is already in the booking`);
+          toast.warning(`Product "${product.name}" is already in the booking`);
           return;
         }
         
@@ -401,13 +526,13 @@ export default function BookingsPage() {
         setProductSearchCode('');
         setShowSuggestions(false);
         setFilteredProducts([]);
-        alert(`✅ Product "${product.name}" added successfully!`);
+        toast.success(`Product "${product.name}" added successfully!`);
       } else {
-        alert(`❌ Product with code "${code}" not found`);
+        toast.error(`Product with code "${code}" not found`);
       }
     } catch (error) {
       console.error('Error searching product:', error);
-      alert('Error searching for product');
+      toast.error('Error searching for product');
     }
   }
 
@@ -444,25 +569,25 @@ export default function BookingsPage() {
   async function handleCreateBooking() {
     // Basic required field validation
     if (!addFormData.customer_name || !addFormData.customer_phone || !addFormData.alternate_phone || addFormData.products.length === 0) {
-      alert('Please fill in all required fields (name, mobile numbers) and add at least one product');
+      toast.warning('Please fill in all required fields (name, mobile numbers) and add at least one product');
       return;
     }
 
     // Validate that all products have dates
     const productsWithoutDates = addFormData.products.filter(p => !p.booked_from || !p.booked_to);
     if (productsWithoutDates.length > 0) {
-      alert('Please set pickup and return dates for all products');
+      toast.warning('Please set pickup and return dates for all products');
       return;
     }
 
     // Validate mobile numbers using the library function
     if (!isValidPhoneNumber(addFormData.customer_phone, addFormData.customer_phone_country)) {
-      alert('Please enter a valid Mobile Number');
+      toast.warning('Please enter a valid Mobile Number');
       return;
     }
 
     if (!isValidPhoneNumber(addFormData.alternate_phone, addFormData.alternate_phone_country)) {
-      alert('Please enter a valid Alternate Mobile Number');
+      toast.warning('Please enter a valid Alternate Mobile Number');
       return;
     }
 
@@ -471,7 +596,7 @@ export default function BookingsPage() {
     const country2 = getCountryByCode(addFormData.alternate_phone_country);
     
     if (!country1 || !country2) {
-      alert('Invalid country selection');
+      toast.error('Invalid country selection');
       return;
     }
 
@@ -479,13 +604,13 @@ export default function BookingsPage() {
     const fullPhone1 = `${country1.callingCode}${addFormData.customer_phone}`;
     const fullPhone2 = `${country2.callingCode}${addFormData.alternate_phone}`;
     if (fullPhone1 === fullPhone2) {
-      alert('❌ Mobile Number and Alternate Mobile Number cannot be the same. Please enter a different number.');
+      toast.warning('Mobile Number and Alternate Mobile Number cannot be the same. Please enter a different number.');
       return;
     }
 
     // Check if there's a phone number error
     if (phoneNumberError) {
-      alert(phoneNumberError);
+      toast.error(phoneNumberError);
       return;
     }
 
@@ -507,16 +632,17 @@ export default function BookingsPage() {
         })),
         total_amount: finalTotal,
         transportation_opted: addFormData.transportation_opted,
+        other_charges: addFormData.transportation_opted ? transportationCharge : 0,
         status: 'pending',
       } as any);
       
       await fetchBookings();
       setShowAddModal(false);
       setProductSearchCode('');
-      alert(`✅ Booking created successfully! Total: ₹${Math.floor(finalTotal)}`);
+      toast.success(`Booking created successfully! Total: ₹${Math.floor(finalTotal)}`);
     } catch (error) {
       console.error('Error creating booking:', error);
-      alert('Error creating booking');
+      toast.error('Error creating booking');
     }
   }
 
@@ -634,9 +760,6 @@ export default function BookingsPage() {
                 Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Product Tracking
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -674,22 +797,6 @@ export default function BookingsPage() {
                     >
                       {booking.status}
                     </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {products.length > 0 ? (
-                      <button
-                        onClick={() => {
-                          setTrackingBooking(booking);
-                          setShowProductTrackingList(true);
-                        }}
-                        className="px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-                        title="Track Products"
-                      >
-                        📦 Track ({products.length})
-                      </button>
-                    ) : (
-                      <span className="text-xs text-gray-400 italic">No products</span>
-                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                     <div className="flex items-center gap-3">
@@ -762,26 +869,7 @@ export default function BookingsPage() {
           <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <h2 className="text-2xl font-bold mb-4">Modify Booking</h2>
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">From</label>
-                  <Input
-                    type="date"
-                    value={formData.booked_from}
-                    onChange={(e) => setFormData({ ...formData, booked_from: e.target.value })}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">To</label>
-                  <Input
-                    type="date"
-                    value={formData.booked_to}
-                    onChange={(e) => setFormData({ ...formData, booked_to: e.target.value })}
-                  />
-                </div>
-              </div>
-
-              <h3 className="text-lg font-semibold mt-6">Contact Details</h3>
+              <h3 className="text-lg font-semibold">Contact Details</h3>
               <Input
                 label="Name*"
                 value={formData.customer_name}
@@ -813,6 +901,78 @@ export default function BookingsPage() {
                 <Input label="State*" />
               </div>
 
+              {/* Products List */}
+              {selectedBooking && Array.isArray(selectedBooking.products) && selectedBooking.products.length > 0 && (
+                <div className="mt-6">
+                  <h3 className="text-lg font-semibold mb-4">Products in this Booking</h3>
+                  <div className="space-y-3">
+                    {selectedBooking.products.map((product: any) => (
+                      <div key={product.id} className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex items-center justify-between">
+                        <div className="flex items-center gap-4">
+                          {/* Product Image */}
+                          <div className="w-16 h-20 bg-gray-100 rounded overflow-hidden flex-shrink-0">
+                            {(() => {
+                              const hasImage = product.image && product.image !== null && product.image !== '';
+                              const imageUrl = hasImage ? getImageUrl(product.image) : null;
+                              
+                              if (imageUrl) {
+                                return (
+                                  <img
+                                    src={imageUrl}
+                                    alt={product.name}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement;
+                                      target.style.display = 'none';
+                                      const parent = target.parentElement;
+                                      if (parent) {
+                                        parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><span class="text-2xl">👔</span></div>';
+                                      }
+                                    }}
+                                  />
+                                );
+                              } else {
+                                return (
+                                  <div className="w-full h-full flex items-center justify-center">
+                                    <span className="text-2xl">👔</span>
+                                  </div>
+                                );
+                              }
+                            })()}
+                          </div>
+
+                          {/* Product Info */}
+                          <div>
+                            <h4 className="font-semibold text-gray-900">{product.name}</h4>
+                            <p className="text-xs text-gray-600 mt-1">
+                              <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {product.code}</span>
+                            </p>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Current: {product.booked_from ? new Date(product.booked_from).toLocaleDateString('en-GB') : 'N/A'} - {product.booked_to ? new Date(product.booked_to).toLocaleDateString('en-GB') : 'N/A'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Change Dates Button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedProductForDateChange(product);
+                            setChangeDateFrom(product.booked_from?.split('T')[0] || '');
+                            setChangeDateTo(product.booked_to?.split('T')[0] || '');
+                            setDateChangeCharge(0);
+                            setProductBookingsForDateChange(productBookings[product.id] || []);
+                          }}
+                          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors"
+                        >
+                          📅 Change Dates
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
                 <select
@@ -839,6 +999,199 @@ export default function BookingsPage() {
                 >
                   Discard
                 </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Date Change Modal (like Salesman Portal) */}
+      {selectedProductForDateChange && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-2xl font-bold text-gray-900">📅 Change Booking Dates</h2>
+                <button
+                  onClick={() => {
+                    setSelectedProductForDateChange(null);
+                    setChangeDateFrom('');
+                    setChangeDateTo('');
+                    setDateChangeCharge(0);
+                  }}
+                  className="text-gray-500 hover:text-gray-700"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              {/* Product Info */}
+              <div className="mb-4 p-4 bg-gray-50 rounded-lg">
+                <div className="flex items-center gap-3">
+                  <div className="w-16 h-20 bg-gray-100 rounded overflow-hidden flex-shrink-0">
+                    {(() => {
+                      const hasImage = selectedProductForDateChange.image && selectedProductForDateChange.image !== null && selectedProductForDateChange.image !== '';
+                      const imageUrl = hasImage ? getImageUrl(selectedProductForDateChange.image) : null;
+                      
+                      if (imageUrl) {
+                        return (
+                          <img
+                            src={imageUrl}
+                            alt={selectedProductForDateChange.name}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement;
+                              target.style.display = 'none';
+                              const parent = target.parentElement;
+                              if (parent) {
+                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><span class="text-2xl">👔</span></div>';
+                              }
+                            }}
+                          />
+                        );
+                      } else {
+                        return (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <span className="text-2xl">👔</span>
+                          </div>
+                        );
+                      }
+                    })()}
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{selectedProductForDateChange.name}</h3>
+                    <p className="text-xs text-gray-600 mt-1">
+                      <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {selectedProductForDateChange.code}</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Date Picker */}
+              <div className="mb-4">
+                <label className="block text-sm font-semibold text-gray-900 mb-2">Select New Dates</label>
+                <DateRangePicker
+                  label="Check Availability"
+                  startDate={changeDateFrom}
+                  endDate={changeDateTo}
+                  onStartDateChange={setChangeDateFrom}
+                  onEndDateChange={setChangeDateTo}
+                  bookings={productBookingsForDateChange}
+                  productName={selectedProductForDateChange.name}
+                  minDate={new Date().toISOString().split('T')[0]}
+                />
+              </div>
+
+              {/* Charge Input (if manual) or Display */}
+              {changeDateFrom && changeDateTo && (changeDateFrom !== selectedProductForDateChange.booked_from?.split('T')[0] || changeDateTo !== selectedProductForDateChange.booked_to?.split('T')[0]) && (
+                <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-gray-900">Date Change Charge:</span>
+                    {dateChangeChargeSettings.charge_type === 'manual' ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-600">₹</span>
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={dateChangeCharge}
+                          onChange={(e) => setDateChangeCharge(parseFloat(e.target.value) || 0)}
+                          className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-right focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          placeholder="0"
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-lg font-bold text-blue-600">
+                        ₹{calculateDateChangeCharge(
+                          selectedProductForDateChange.booked_from?.split('T')[0] || '',
+                          selectedProductForDateChange.booked_to?.split('T')[0] || '',
+                          changeDateFrom,
+                          changeDateTo
+                        ).toLocaleString('en-IN')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex space-x-3">
+                <button
+                  onClick={async () => {
+                    if (!changeDateFrom || !changeDateTo) {
+                      toast.warning('Please select both pickup and return dates');
+                      return;
+                    }
+
+                    try {
+                      const oldFrom = selectedProductForDateChange.booked_from?.split('T')[0] || '';
+                      const oldTo = selectedProductForDateChange.booked_to?.split('T')[0] || '';
+                      const datesChanged = changeDateFrom !== oldFrom || changeDateTo !== oldTo;
+
+                      if (!datesChanged) {
+                        toast.info('No changes detected in dates');
+                        return;
+                      }
+
+                      // Calculate or use manual charge
+                      const finalCharge = dateChangeChargeSettings.charge_type === 'manual' 
+                        ? dateChangeCharge
+                        : calculateDateChangeCharge(oldFrom, oldTo, changeDateFrom, changeDateTo);
+
+                      // Update the booking with new dates
+                      await bookingsApi.update(selectedBooking!.id, {
+                        products: [{
+                          id: selectedProductForDateChange.id,
+                          booked_from: changeDateFrom,
+                          booked_to: changeDateTo,
+                        }]
+                      });
+
+                      // Record the charge if any (as date_change_charge - does not affect payment calculations)
+                      if (finalCharge > 0) {
+                        await paymentTransactionsApi.create({
+                          booking_id: selectedBooking!.id,
+                          amount: finalCharge,
+                          type: 'date_change_charge',
+                          method: 'Manual',
+                          recorded_by: 'Admin',
+                          notes: `Date change charge for ${selectedProductForDateChange.name} (${selectedProductForDateChange.code}): ${oldFrom} to ${oldTo} → ${changeDateFrom} to ${changeDateTo}`,
+                        });
+                      }
+
+                      toast.success('Booking dates updated successfully!');
+                      
+                      // Refresh bookings
+                      fetchBookings();
+                      
+                      // Close modals
+                      setSelectedProductForDateChange(null);
+                      setChangeDateFrom('');
+                      setChangeDateTo('');
+                      setDateChangeCharge(0);
+                      setShowModifyModal(false);
+                    } catch (error) {
+                      console.error('Error updating booking dates:', error);
+                      toast.error('Failed to update booking dates');
+                    }
+                  }}
+                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+                >
+                  💾 Save Changes
+                </button>
+                <button
+                  onClick={() => {
+                    setSelectedProductForDateChange(null);
+                    setChangeDateFrom('');
+                    setChangeDateTo('');
+                    setDateChangeCharge(0);
+                  }}
+                  className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 font-medium rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
               </div>
             </div>
           </div>
@@ -1152,7 +1505,7 @@ export default function BookingsPage() {
                         <div className="flex items-center gap-3">
                           <span className="text-2xl">🚚</span>
                           <div>
-                            <p className="font-semibold text-gray-800">Transportation Service</p>
+                            <p className="font-semibold text-gray-800">Local Transportation Service</p>
                             <p className="text-sm text-gray-600">Local delivery & pickup service</p>
                           </div>
                         </div>
@@ -1188,7 +1541,7 @@ export default function BookingsPage() {
                       {addFormData.transportation_opted && (
                         <div className="mt-3 pl-12">
                           <label className="block text-sm font-medium text-gray-700 mb-1">
-                            Enter Transportation Charge*
+                            Enter Local Transportation Charge*
                           </label>
                           <div className="flex items-center gap-2">
                             <span className="text-gray-700 font-medium">₹</span>
@@ -1221,7 +1574,7 @@ export default function BookingsPage() {
                           <p className="text-sm text-green-100 uppercase tracking-wide">Total Rental Amount</p>
                           {addFormData.transportation_opted && (
                             <p className="text-xs text-green-200 mt-1">
-                              (Includes local transportation: ₹{Math.floor(transportationCharge)})
+                              (Includes local transportation charge: ₹{Math.floor(transportationCharge)})
                             </p>
                           )}
                         </div>
@@ -1314,7 +1667,36 @@ export default function BookingsPage() {
       )}
 
       {/* View Booking Modal */}
-      {viewingBooking && (
+      {viewingBooking && (() => {
+        // Parse measurements and special requirements when modal opens
+        let parsedMeas: {[key: number]: any} = {};
+        let parsedSpecReqs: {[key: number]: string} = {};
+
+        if (viewingBooking.measurements) {
+          try {
+            const measurementsData = typeof viewingBooking.measurements === 'string' 
+              ? JSON.parse(viewingBooking.measurements)
+              : viewingBooking.measurements;
+            parsedMeas = measurementsData || {};
+          } catch (error) {
+            console.error('Error parsing measurements:', error);
+          }
+        }
+
+        if (viewingBooking.special_requirements) {
+          try {
+            const specialReqsData = typeof viewingBooking.special_requirements === 'string'
+              ? JSON.parse(viewingBooking.special_requirements)
+              : viewingBooking.special_requirements;
+            if (typeof specialReqsData === 'object' && specialReqsData !== null) {
+              parsedSpecReqs = specialReqsData;
+            }
+          } catch (error) {
+            console.error('Error parsing special requirements:', error);
+          }
+        }
+
+        return (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fadeIn">
           <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-3xl max-h-[90vh] overflow-y-auto animate-slideIn">
             {/* Header */}
@@ -1325,7 +1707,7 @@ export default function BookingsPage() {
               <button
                 onClick={() => {
                   setViewingBooking(null);
-                  setShowMeasurements(false);
+                  setShowMeasurements({});
                 }}
                 className="text-gray-500 hover:text-gray-700 text-3xl font-bold transition-colors"
               >
@@ -1427,22 +1809,41 @@ export default function BookingsPage() {
                 </h3>
                 {Array.isArray(viewingBooking.products) && viewingBooking.products.length > 0 ? (
                   <div className="space-y-3">
-                    {viewingBooking.products.map((product: any, index: number) => (
-                      <div key={index} className="bg-white rounded-lg p-4 shadow-sm border border-purple-200">
-                        <div className="flex justify-between items-start">
-                          <div className="flex-1">
-                            <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
-                            <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
-                            {product.size && (
-                              <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
+                    {viewingBooking.products.map((product: any, index: number) => {
+                      const hasImage = product.image && product.image !== null && product.image !== '';
+                      const imageUrl = hasImage ? getImageUrl(product.image) : null;
+                      
+                      return (
+                        <div key={index} className="bg-white rounded-lg p-4 shadow-sm border border-purple-200">
+                          <div className="flex justify-between items-start gap-4">
+                            {/* Product Image */}
+                            {imageUrl && (
+                              <div className="flex-shrink-0">
+                                <img
+                                  src={imageUrl}
+                                  alt={product.name || 'Product'}
+                                  className="w-20 h-20 object-cover rounded-lg border border-gray-200"
+                                  onError={(e) => {
+                                    const target = e.target as HTMLImageElement;
+                                    target.style.display = 'none';
+                                  }}
+                                />
+                              </div>
                             )}
-                            {product.rent_per_day && (
-                              <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent_per_day)}/day</span></p>
-                            )}
+                            <div className="flex-1">
+                              <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
+                              <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
+                              {product.size && (
+                                <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
+                              )}
+                              {product.rent_per_day && (
+                                <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent_per_day)}/day</span></p>
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className="text-gray-500 text-center py-4">No products in this booking</p>
@@ -1491,129 +1892,322 @@ export default function BookingsPage() {
                 </div>
               </div>
 
-              {/* Special Requirements */}
-              <div className="bg-gradient-to-r from-teal-50 to-cyan-50 rounded-lg p-5 border-l-4 border-teal-500">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-teal-600">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z" />
-                  </svg>
-                  Special Requirements
-                </h3>
-                <div className="space-y-3">
-                  <div className="flex items-center bg-white rounded-lg p-4 shadow-sm border-2 border-teal-200">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-3 text-teal-600">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 4.5h7.5m-7.5 0V3.375c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V4.5m-13.5 0h15m-13.5 0v9.375c0 .621.504 1.125 1.125 1.125h13.5c.621 0 1.125-.504 1.125-1.125V4.5m0 0V3.375c0-.621-.504-1.125-1.125-1.125h-1.5" />
-                    </svg>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-600">Transportation</p>
-                      <p className="text-base font-semibold text-gray-900">
-                        {viewingBooking.transportation_opted ? (
-                          <span className="text-green-600">✓ Yes - Transportation service opted</span>
-                        ) : (
-                          <span className="text-gray-600">✗ No transportation required</span>
-                        )}
-                      </p>
+              {/* Transportation (Special Requirements are shown in Measurements section) */}
+              {(() => {
+                const isTransportationOpted = viewingBooking.transportation_opted === true || 
+                                              viewingBooking.transportation_opted === 'true' || 
+                                              viewingBooking.transportation_opted === 1;
+                const transportationCharge = parseFloat(viewingBooking.other_charges || '0') || 0;
+                
+                if (isTransportationOpted) {
+                  return (
+                    <div className="bg-gradient-to-r from-teal-50 to-cyan-50 rounded-lg p-5 border-l-4 border-teal-500">
+                      <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-teal-600">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 4.5h7.5m-7.5 0V3.375c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V4.5m-13.5 0h15m-13.5 0v9.375c0 .621.504 1.125 1.125 1.125h13.5c.621 0 1.125-.504 1.125-1.125V4.5m0 0V3.375c0-.621.504-1.125-1.125-1.125h-1.5" />
+                        </svg>
+                        Local Transportation
+                      </h3>
+                      <div className="flex items-center bg-white rounded-lg p-4 shadow-sm border-2 border-teal-200">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-3 text-teal-600">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 4.5h7.5m-7.5 0V3.375c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V4.5m-13.5 0h15m-13.5 0v9.375c0 .621.504 1.125 1.125 1.125h13.5c.621 0 1.125-.504 1.125-1.125V4.5m0 0V3.375c0-.621.504-1.125-1.125-1.125h-1.5" />
+                        </svg>
+                        <div className="flex-1">
+                          <p className="text-sm text-gray-600">Local Transportation Service</p>
+                          <p className="text-base font-semibold text-green-600">✓ Yes - Local Transportation opted</p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-gray-600">Charge</p>
+                          <p className="text-lg font-bold text-teal-600">
+                            ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  {viewingBooking.special_requirements && (
-                    <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-teal-200">
-                      <p className="text-sm text-gray-600 mb-2">Additional Requirements</p>
-                      <p className="text-base text-gray-900">{viewingBooking.special_requirements}</p>
-                    </div>
-                  )}
-                  {!viewingBooking.special_requirements && !viewingBooking.transportation_opted && (
-                    <p className="text-gray-500 text-center py-2 text-sm">No special requirements specified</p>
-                  )}
-                </div>
-              </div>
+                  );
+                }
+                return null;
+              })()}
 
-              {/* Measurements - Collapsible */}
-              {viewingBooking.measurements && Object.keys(viewingBooking.measurements).length > 0 && (
-                <div className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
-                  <button
-                    onClick={() => setShowMeasurements(!showMeasurements)}
-                    className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
-                  >
-                    <h3 className="text-lg font-semibold text-gray-800 flex items-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-pink-600">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
-                      </svg>
-                      Customer Measurements
-                      <span className="ml-2 text-sm text-pink-600">(Click to {showMeasurements ? 'hide' : 'view'})</span>
-                    </h3>
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      strokeWidth={2}
-                      stroke="currentColor"
-                      className={`w-6 h-6 text-pink-600 transition-transform duration-300 ${showMeasurements ? 'rotate-180' : ''}`}
-                    >
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                    </svg>
-                  </button>
+              {/* Products with Measurements */}
+              {(() => {
+                const products = Array.isArray(viewingBooking.products) ? viewingBooking.products : [];
+                
+                // Parse measurements and special requirements
+                let parsedMeas: {[key: number]: any} = {};
+                let parsedSpecReqs: {[key: number]: string} = {};
 
-                  {showMeasurements && (
-                    <div className="mt-4 grid grid-cols-2 gap-3 animate-slideIn">
-                      {viewingBooking.measurements.chest && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Chest</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.chest}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.waist && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Waist</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.waist}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.height && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Height</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.height}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.shoulder && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Shoulder</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.shoulder}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.sleeve && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Sleeve</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.sleeve}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.length && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Length</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.length}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.hip && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Hip</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.hip}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.inseam && (
-                        <div className="bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600">Inseam</p>
-                          <p className="text-lg font-bold text-gray-900">{viewingBooking.measurements.inseam}</p>
-                        </div>
-                      )}
-                      {viewingBooking.measurements.notes && (
-                        <div className="col-span-2 bg-white rounded-lg p-3 shadow-sm border-2 border-pink-200">
-                          <p className="text-xs text-gray-600 mb-1">Additional Notes</p>
-                          <p className="text-sm text-gray-900">{viewingBooking.measurements.notes}</p>
+                if (viewingBooking.measurements) {
+                  try {
+                    const measurementsData = typeof viewingBooking.measurements === 'string' 
+                      ? JSON.parse(viewingBooking.measurements)
+                      : viewingBooking.measurements;
+                    if (typeof measurementsData === 'object' && measurementsData !== null) {
+                      // Convert all keys to numbers to match product IDs
+                      parsedMeas = Object.keys(measurementsData).reduce((acc: {[key: number]: any}, key: string) => {
+                        const productId = parseInt(key, 10);
+                        const value = measurementsData[key as keyof typeof measurementsData];
+                        if (!isNaN(productId) && value) {
+                          acc[productId] = value;
+                        }
+                        return acc;
+                      }, {});
+                    }
+                  } catch (error) {
+                    console.error('Error parsing measurements:', error);
+                  }
+                }
+
+                if (viewingBooking.special_requirements) {
+                  try {
+                    const specialReqsData = typeof viewingBooking.special_requirements === 'string'
+                      ? JSON.parse(viewingBooking.special_requirements)
+                      : viewingBooking.special_requirements;
+                    if (typeof specialReqsData === 'object' && specialReqsData !== null) {
+                      // Convert all keys to numbers to match product IDs
+                      parsedSpecReqs = Object.keys(specialReqsData).reduce((acc: {[key: number]: string}, key: string) => {
+                        const productId = parseInt(key, 10);
+                        const value = specialReqsData[key as keyof typeof specialReqsData];
+                        if (!isNaN(productId) && value && typeof value === 'string' && value.trim().length > 0) {
+                          acc[productId] = value;
+                        }
+                        return acc;
+                      }, {});
+                    }
+                  } catch (error) {
+                    console.error('Error parsing special requirements:', error);
+                  }
+                }
+
+                // Show products that have either measurements or special requirements
+                const productsWithData = products.filter((product: any) => {
+                  const productId = product.id;
+                  const productIdStr = String(productId);
+                  // Check both numeric and string keys for measurements
+                  const measData = parsedMeas[productId] || (parsedMeas as any)[productIdStr];
+                  const hasMeasurements = measData && Object.keys(measData).length > 0;
+                  // Check both numeric and string keys for special requirements
+                  const specReqData = parsedSpecReqs[productId] || (parsedSpecReqs as any)[productIdStr];
+                  const hasSpecialReqs = specReqData && specReqData.trim().length > 0;
+                  return hasMeasurements || hasSpecialReqs;
+                });
+
+                if (productsWithData.length === 0) {
+                  return null;
+                }
+
+                // Helper functions to determine clothing type
+                function isFemaleClothing(productName: string): boolean {
+                  const femaleTypes = ['lehenga', 'gown', 'girlish crop top', 'gowns'];
+                  return femaleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
+                }
+
+                function isMaleClothing(productName: string): boolean {
+                  const maleTypes = ['sherwani', 'suit', 'kurta pajama', 'indo western'];
+                  return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
+                }
+
+                return productsWithData.map((product: any) => {
+                  const productId = product.id;
+                  const productIdStr = String(productId);
+                  // Try both numeric and string keys for measurements
+                  const productMeasurements = parsedMeas[productId] || (parsedMeas as any)[productIdStr] || {};
+                  const hasMeasurements = Object.keys(productMeasurements).length > 0;
+                  const isExpanded = showMeasurements[productId] || false;
+                  const isFemale = isFemaleClothing(product.name);
+                  const isMale = isMaleClothing(product.name);
+                  // Try both numeric and string keys for special requirements
+                  const productSpecialReqs = parsedSpecReqs[productId] || (parsedSpecReqs as any)[productIdStr] || '';
+
+                  return (
+                    <div key={productId} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
+                      <button
+                        onClick={() => setShowMeasurements({
+                          ...showMeasurements,
+                          [productId]: !isExpanded
+                        })}
+                        className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
+                      >
+                        <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-pink-600">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
+                          </svg>
+                          {hasMeasurements ? 'Customer Measurements' : 'Special Requirements'} - {product.name}
+                          <span className="ml-2 text-sm text-pink-600">(Click to {isExpanded ? 'hide' : 'view'})</span>
+                        </h3>
+                        <svg
+                          xmlns="http://www.w3.org/2000/svg"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          strokeWidth={2}
+                          stroke="currentColor"
+                          className={`w-6 h-6 text-pink-600 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                        </svg>
+                      </button>
+
+                      {isExpanded && (
+                        <div className="mt-4 space-y-4">
+                          {hasMeasurements && isFemale ? (
+                            <div className="space-y-3">
+                              <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Female Measurements (in inches)</h5>
+                              <div className="grid grid-cols-2 gap-3">
+                                {productMeasurements.waist && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Waist</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.waist}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.bust && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Bust</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.bust}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.shoulder && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Shoulder</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.shoulder}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.sleevesUp && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Sleeves Up</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesUp}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.sleevesE && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Sleeves E</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesE}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.sleevesB && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Sleeves B</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesB}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.lehengaLength && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Lehenga Length</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.lehengaLength}"</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : hasMeasurements && isMale ? (
+                            <div className="space-y-3">
+                              <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Male Measurements (in inches)</h5>
+                              <div className="space-y-3">
+                                <div>
+                                  <h6 className="text-xs font-medium text-gray-600 mb-2">Tight Fit</h6>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    {productMeasurements.sideTight && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Side Tight</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sideTight}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.sleevesTight && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Sleeves Tight</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesTight}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.sleevesLength && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Sleeves Length</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLength}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.pantLength && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Pant Length</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.pantLength}"</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div>
+                                  <h6 className="text-xs font-medium text-gray-600 mb-2">Loose Fit</h6>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    {productMeasurements.sideLoose && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Side Loose</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sideLoose}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.sleevesLoose && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Sleeves Loose</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLoose}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.sleevesLengthLoose && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Sleeves Length</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLengthLoose}"</p>
+                                      </div>
+                                    )}
+                                    {productMeasurements.pantLengthLoose && (
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                        <p className="text-xs text-gray-600 mb-1">Pant Length</p>
+                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.pantLengthLoose}"</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          ) : hasMeasurements ? (
+                            <div className="space-y-3">
+                              <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Measurements (in inches)</h5>
+                              <div className="grid grid-cols-2 gap-3">
+                                {productMeasurements.waist && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Waist</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.waist}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.bust && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Bust</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.bust}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.chest && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Chest</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.chest}"</p>
+                                  </div>
+                                )}
+                                {productMeasurements.shoulder && (
+                                  <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                    <p className="text-xs text-gray-600 mb-1">Shoulder</p>
+                                    <p className="text-base font-semibold text-gray-900">{productMeasurements.shoulder}"</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          {productSpecialReqs && productSpecialReqs.trim().length > 0 && (
+                            <div className={`${hasMeasurements ? 'mt-4 pt-4 border-t border-gray-200' : ''}`}>
+                              <h5 className="text-sm font-semibold text-gray-700 mb-2">Special Requirements</h5>
+                              <div className="bg-white rounded-lg p-3 border border-gray-200">
+                                <p className="text-sm text-gray-700 whitespace-pre-wrap">{productSpecialReqs}</p>
+                              </div>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
-                  )}
-                </div>
-              )}
+                  );
+                });
+              })()}
             </div>
 
             {/* Close Button */}
@@ -1621,7 +2215,7 @@ export default function BookingsPage() {
               <button
                 onClick={() => {
                   setViewingBooking(null);
-                  setShowMeasurements(false);
+                  setShowMeasurements({});
                 }}
                 className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg transition-colors shadow-sm"
               >
@@ -1630,7 +2224,8 @@ export default function BookingsPage() {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

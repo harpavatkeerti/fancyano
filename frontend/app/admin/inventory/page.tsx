@@ -5,6 +5,7 @@ import { productsApi, bookingsApi } from '@/lib/api';
 import { Product } from '@/types';
 import { Button, Input, ImageUpload, AvailabilityCalendar, ProductTrackingModal } from '@/components/common';
 import { getImageUrl } from '@/lib/imageHelper';
+import { productTrackingApi, ProductTracking } from '@/lib/productTrackingApi';
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -16,11 +17,13 @@ export default function InventoryPage() {
   const [checkingAvailability, setCheckingAvailability] = useState<Product | null>(null);
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
+  const [productMaintenanceStatus, setProductMaintenanceStatus] = useState<Record<number, ProductTracking | null>>({});
   
   // Filter states
   const [filterProductType, setFilterProductType] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSize, setFilterSize] = useState('');
+  const [filterMaintenance, setFilterMaintenance] = useState<'all' | 'maintenance' | 'available'>('all');
 
   // Verify new code is loaded
   console.log('🔄 Inventory page loaded with IMAGE HELPER v2.0');
@@ -29,6 +32,7 @@ export default function InventoryPage() {
     code: '',
     purchase_price: '',
     rent_per_day: '',
+    security_deposit: '',
     category: '',
     gender: '', // Male or Female
     size: '',
@@ -40,6 +44,12 @@ export default function InventoryPage() {
   useEffect(() => {
     fetchProducts();
   }, []);
+
+  useEffect(() => {
+    if (products.length > 0) {
+      fetchMaintenanceStatus();
+    }
+  }, [products]);
 
 
   async function fetchProducts() {
@@ -53,6 +63,45 @@ export default function InventoryPage() {
     }
   }
 
+  async function fetchMaintenanceStatus() {
+    try {
+      const statusMap: Record<number, ProductTracking | null> = {};
+      
+      // Fetch active tracking for all products in parallel
+      const trackingPromises = products.map(async (product) => {
+        try {
+          const response = await productTrackingApi.getByProductId(product.id);
+          let data = [];
+          if (response.data && Array.isArray(response.data.data)) {
+            data = response.data.data;
+          } else if (Array.isArray(response.data)) {
+            data = response.data;
+          }
+          
+          // Find active (out) tracking that is NOT picked_by_customer (maintenance/repair)
+          const activeMaintenance = data.find((t: ProductTracking) => 
+            t.status === 'out' && 
+            t.tracking_type !== 'picked_by_customer' &&
+            (t.tracking_type === 'repair' || 
+             t.tracking_type === 'going_to_dry_clean' || 
+             t.tracking_type === 'alternation_related_work' || 
+             t.tracking_type === 'other_work')
+          );
+          
+          statusMap[product.id] = activeMaintenance || null;
+        } catch (error) {
+          console.error(`Error fetching tracking for product ${product.id}:`, error);
+          statusMap[product.id] = null;
+        }
+      });
+      
+      await Promise.all(trackingPromises);
+      setProductMaintenanceStatus(statusMap);
+    } catch (error) {
+      console.error('Error fetching maintenance status:', error);
+    }
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     try {
@@ -60,6 +109,7 @@ export default function InventoryPage() {
         ...formData,
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
         rent_per_day: Math.round(parseFloat(formData.rent_per_day)), // Ensure it's a whole number
+        security_deposit: Math.round((parseFloat(formData.security_deposit) || 0) / 100) * 100, // Round to nearest ₹100
         // Set gender to null for Fancy Costumes (uses age-based sizes instead), or if empty for Other
         // Set size to null for Artificial Jewelleries or if empty for Other
         gender: (formData.name === 'Fancy Costumes' || !formData.gender) ? null : formData.gender,
@@ -85,7 +135,7 @@ export default function InventoryPage() {
       console.error('   Error response:', error.response?.data);
       console.error('   Error status:', error.response?.status);
       const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
-      alert(`Error saving product: ${errorMessage}`);
+      toast.error(`Error saving product: ${errorMessage}`);
     }
   }
 
@@ -96,6 +146,7 @@ export default function InventoryPage() {
       code: product.code,
       purchase_price: (product as any).purchase_price?.toString() || '',
       rent_per_day: product.rent_per_day.toString(),
+      security_deposit: product.security_deposit?.toString() || '',
       category: product.category || '',
       gender: (product as any).gender || '',
       size: (product as any).size || '',
@@ -113,7 +164,7 @@ export default function InventoryPage() {
       await fetchProducts();
     } catch (error) {
       console.error('Error deleting product:', error);
-      alert('Error deleting product');
+      toast.error('Error deleting product');
     }
   }
 
@@ -123,6 +174,7 @@ export default function InventoryPage() {
       code: '',
       purchase_price: '',
       rent_per_day: '',
+      security_deposit: '',
       category: '',
       gender: '',
       size: '',
@@ -158,33 +210,54 @@ export default function InventoryPage() {
       setProductBookings(response.data);
     } catch (error) {
       console.error('Error fetching product bookings:', error);
-      alert('Error loading availability calendar');
+      toast.error('Error loading availability calendar');
     }
   }
 
-  const filteredProducts = products.filter((p) => {
-    // Search term filter
-    const matchesSearch =
-      p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      p.code.toLowerCase().includes(searchTerm.toLowerCase());
+  const filteredProducts = products
+    .filter((p) => {
+      // Search term filter
+      const matchesSearch =
+        p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        p.code.toLowerCase().includes(searchTerm.toLowerCase());
 
-    // Product type filter
-    const matchesProductType =
-      !filterProductType || p.name === filterProductType;
+      // Product type filter
+      const matchesProductType =
+        !filterProductType || p.name === filterProductType;
 
-    // Category filter (gender)
-    const matchesCategory =
-      !filterCategory || (p as any).gender === filterCategory;
+      // Category filter (gender)
+      const matchesCategory =
+        !filterCategory || (p as any).gender === filterCategory;
 
-    // Size filter
-    const matchesSize = !filterSize || (p as any).size === filterSize;
+      // Size filter
+      const matchesSize = !filterSize || (p as any).size === filterSize;
 
-    return matchesSearch && matchesProductType && matchesCategory && matchesSize;
-  });
+      // Maintenance filter
+      const isUnderMaintenance = !!productMaintenanceStatus[p.id];
+      const matchesMaintenance = 
+        filterMaintenance === 'all' ||
+        (filterMaintenance === 'maintenance' && isUnderMaintenance) ||
+        (filterMaintenance === 'available' && !isUnderMaintenance);
+
+      return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesMaintenance;
+    })
+    .sort((a, b) => {
+      // Sort: maintenance products first, then by name
+      const aMaintenance = !!productMaintenanceStatus[a.id];
+      const bMaintenance = !!productMaintenanceStatus[b.id];
+      
+      if (aMaintenance && !bMaintenance) return -1;
+      if (!aMaintenance && bMaintenance) return 1;
+      return a.name.localeCompare(b.name);
+    });
 
   if (loading) {
     return <div className="text-center py-12">Loading inventory...</div>;
   }
+
+  // Count products under maintenance
+  const maintenanceCount = Object.values(productMaintenanceStatus).filter(status => status !== null).length;
+  const maintenanceProducts = products.filter(p => !!productMaintenanceStatus[p.id]);
 
   return (
     <div className="space-y-6">
@@ -198,6 +271,49 @@ export default function InventoryPage() {
           + Add Product
         </Button>
       </div>
+
+      {/* Maintenance Alert Banner */}
+      {maintenanceCount > 0 && (
+        <div className="bg-gradient-to-r from-orange-50 to-red-50 border-l-4 border-orange-500 rounded-lg p-4 shadow-md animate-pulse">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="bg-orange-500 rounded-full p-2">
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-orange-900">
+                  ⚠️ {maintenanceCount} Product{maintenanceCount > 1 ? 's' : ''} Under Maintenance
+                </h3>
+                <p className="text-sm text-orange-700 mt-1">
+                  {maintenanceProducts.slice(0, 3).map(p => {
+                    const status = productMaintenanceStatus[p.id];
+                    const type = status?.tracking_type === 'repair' ? '🔧 Repair' :
+                                 status?.tracking_type === 'going_to_dry_clean' ? '🧼 Dry Clean' :
+                                 status?.tracking_type === 'alternation_related_work' ? '✂️ Alteration' :
+                                 '⚙️ Maintenance';
+                    return `${p.code} (${type})`;
+                  }).join(', ')}
+                  {maintenanceCount > 3 && ` and ${maintenanceCount - 3} more...`}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                setFilterMaintenance('maintenance');
+                // Scroll to table
+                setTimeout(() => {
+                  document.querySelector('table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }, 100);
+              }}
+              className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold rounded-lg transition-colors shadow-md"
+            >
+              View All Maintenance Products
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search and Filters */}
       <div className="bg-white p-4 rounded-lg shadow space-y-4">
@@ -289,6 +405,19 @@ export default function InventoryPage() {
                 </optgroup>
               </select>
             </div>
+            
+            <div className="flex-1">
+              <label className="block text-xs text-gray-600 mb-1">Maintenance Status</label>
+              <select
+                value={filterMaintenance}
+                onChange={(e) => setFilterMaintenance(e.target.value as 'all' | 'maintenance' | 'available')}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All Products</option>
+                <option value="maintenance">⚠️ Under Maintenance</option>
+                <option value="available">✅ Available</option>
+              </select>
+            </div>
           </div>
 
           {/* Second Row - Clear Button */}
@@ -311,6 +440,7 @@ export default function InventoryPage() {
                   setFilterProductType('');
                   setFilterCategory('');
                   setFilterSize('');
+                  setFilterMaintenance('all');
                   setSearchTerm('');
                 }}
                 className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
@@ -358,8 +488,36 @@ export default function InventoryPage() {
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
-            {filteredProducts.map((product) => (
-              <tr key={product.id} className="hover:bg-gray-50">
+            {filteredProducts.map((product) => {
+              const maintenanceStatus = productMaintenanceStatus[product.id];
+              const isUnderMaintenance = !!maintenanceStatus;
+              const maintenanceType = maintenanceStatus?.tracking_type;
+              
+              // Get maintenance icon and text
+              const getMaintenanceInfo = () => {
+                if (!isUnderMaintenance) return null;
+                
+                switch (maintenanceType) {
+                  case 'repair':
+                    return { icon: '🔧', text: 'Repair', color: 'text-red-600' };
+                  case 'going_to_dry_clean':
+                    return { icon: '🧼', text: 'Dry Clean', color: 'text-blue-600' };
+                  case 'alternation_related_work':
+                    return { icon: '✂️', text: 'Alteration', color: 'text-purple-600' };
+                  case 'other_work':
+                    return { icon: '⚙️', text: 'Maintenance', color: 'text-orange-600' };
+                  default:
+                    return { icon: '⚠️', text: 'Out', color: 'text-yellow-600' };
+                }
+              };
+              
+              const maintenanceInfo = getMaintenanceInfo();
+              
+              return (
+              <tr 
+                key={product.id} 
+                className={`hover:bg-gray-50 ${isUnderMaintenance ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
+              >
                 <td className="px-6 py-4 whitespace-nowrap">
                   {getImageUrl((product as any).image) ? (
                     <img 
@@ -386,12 +544,51 @@ export default function InventoryPage() {
                   {(product as any).size || <span className="text-gray-400">N/A</span>}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onClick={() => setTrackingProduct(product)}
-                    className="px-3 py-1 bg-purple-500 hover:bg-purple-600 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
-                  >
-                    📦 Track
-                  </button>
+                  <div className="relative">
+                    {isUnderMaintenance && maintenanceInfo && (
+                      <div className="absolute -top-2 -left-2 z-10 animate-pulse">
+                        <div className="bg-orange-500 text-white rounded-full p-1.5 shadow-lg border-2 border-white">
+                          <span className="text-lg">{maintenanceInfo.icon}</span>
+                        </div>
+                      </div>
+                    )}
+                    <button
+                      onClick={() => {
+                        setTrackingProduct(product);
+                        // Refresh maintenance status after closing modal
+                        setTimeout(() => fetchMaintenanceStatus(), 500);
+                      }}
+                      className={`px-3 py-1 text-white text-sm font-medium rounded-lg transition-all flex items-center gap-2 relative ${
+                        isUnderMaintenance 
+                          ? 'bg-orange-500 hover:bg-orange-600 animate-pulse' 
+                          : 'bg-purple-500 hover:bg-purple-600'
+                      }`}
+                      title={isUnderMaintenance && maintenanceInfo ? `${maintenanceInfo.text} - ${maintenanceStatus?.work_description || 'No description'}` : 'Track Product'}
+                    >
+                      {isUnderMaintenance && maintenanceInfo ? (
+                        <>
+                          <span>{maintenanceInfo.icon}</span>
+                          <span>{maintenanceInfo.text}</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>📦</span>
+                          <span>Track</span>
+                        </>
+                      )}
+                    </button>
+                    {isUnderMaintenance && maintenanceStatus && (
+                      <div className="absolute top-full left-0 mt-1 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-20 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
+                        <div className="font-semibold">{maintenanceInfo?.text}</div>
+                        <div className="text-gray-300">
+                          {maintenanceStatus.work_description || 'No description'}
+                        </div>
+                        <div className="text-gray-400 text-xs mt-1">
+                          Out: {new Date(maintenanceStatus.out_date).toLocaleDateString('en-GB')}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   ₹{product.rent_per_day}
@@ -431,7 +628,8 @@ export default function InventoryPage() {
                   </div>
                 </td>
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>
@@ -645,8 +843,34 @@ export default function InventoryPage() {
                 <p className="text-xs text-gray-500 mt-1">
                   Auto-calculated (rounded to nearest ₹100). Use arrow keys to adjust by ₹100.
                 </p>
-                
-                {/* Rental Policy Information */}
+              </div>
+
+              {/* Security Deposit */}
+              <div>
+                <Input
+                  label="Security Deposit (₹)*"
+                  type="number"
+                  step="100"
+                  value={formData.security_deposit}
+                  onChange={(e) => setFormData({ ...formData, security_deposit: e.target.value })}
+                  onBlur={(e) => {
+                    const value = e.target.value;
+                    // Round to nearest 100 when user leaves the field
+                    if (value && !isNaN(parseFloat(value))) {
+                      const rounded = Math.round(parseFloat(value) / 100) * 100;
+                      setFormData({ ...formData, security_deposit: rounded.toString() });
+                    }
+                  }}
+                  required
+                  placeholder="Enter security deposit amount"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Rounded to nearest ₹100. Use arrow keys to adjust by ₹100.
+                </p>
+              </div>
+
+              {/* Rental Policy Information */}
+              <div>
                 <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
                   <div className="flex items-start gap-2">
                     <span className="text-blue-600 text-lg">ℹ️</span>
@@ -835,7 +1059,11 @@ export default function InventoryPage() {
         <ProductTrackingModal
           productId={trackingProduct.id}
           productCode={trackingProduct.code}
-          onClose={() => setTrackingProduct(null)}
+          onClose={() => {
+            setTrackingProduct(null);
+            // Refresh maintenance status after closing modal
+            fetchMaintenanceStatus();
+          }}
         />
       )}
     </div>

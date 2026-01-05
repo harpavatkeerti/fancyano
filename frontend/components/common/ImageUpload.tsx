@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { getImageUrl } from '@/lib/imageHelper';
 
 interface ImageUploadProps {
   value?: string;
@@ -10,10 +11,25 @@ interface ImageUploadProps {
 }
 
 export default function ImageUpload({ value, onChange, label = 'Product Image', required = false }: ImageUploadProps) {
-  const [preview, setPreview] = useState<string>(value || '');
+  // Convert value to display URL if it's a file path
+  const getDisplayUrl = (val: string | undefined): string => {
+    if (!val) return '';
+    // If it's already a base64 data URL, return as-is
+    if (val.startsWith('data:image')) return val;
+    // If it's a file path, convert to full URL
+    return getImageUrl(val) || '';
+  };
+
+  const [preview, setPreview] = useState<string>(getDisplayUrl(value));
   const [isProcessing, setIsProcessing] = useState(false);
   const [fileSize, setFileSize] = useState<number>(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Update preview when value prop changes (e.g., when editing a product)
+  useEffect(() => {
+    const displayUrl = getDisplayUrl(value);
+    setPreview(displayUrl);
+  }, [value]);
 
   const processImage = async (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {

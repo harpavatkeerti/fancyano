@@ -16,6 +16,8 @@ router.get('/', async (req, res) => {
               'name', p.name,
               'code', p.code,
               'rent_per_day', p.rent_per_day,
+              'security_deposit', p.security_deposit,
+              'image', p.image,
               'booked_from', bp.booked_from,
               'booked_to', bp.booked_to
             )
@@ -66,6 +68,8 @@ router.get('/:id', async (req, res) => {
               'name', p.name,
               'code', p.code,
               'rent_per_day', p.rent_per_day,
+              'security_deposit', p.security_deposit,
+              'image', p.image,
               'booked_from', bp.booked_from,
               'booked_to', bp.booked_to
             )
@@ -84,7 +88,23 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    res.json(result.rows[0]);
+    const booking = result.rows[0];
+    
+    // Debug: Log product images
+    if (booking.products && Array.isArray(booking.products)) {
+      console.log('📦 Booking products with images:');
+      booking.products.forEach((product, index) => {
+        console.log(`  Product ${index + 1}:`, {
+          id: product.id,
+          name: product.name,
+          code: product.code,
+          image: product.image,
+          imageType: typeof product.image
+        });
+      });
+    }
+
+    res.json(booking);
   } catch (error) {
     console.error('Error fetching booking:', error);
     res.status(500).json({ error: 'Failed to fetch booking' });
@@ -97,7 +117,7 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const { customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount } = req.body;
+    const { customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount, security_deposit, created_by, transportation_opted, other_charges } = req.body;
 
     if (!customer_name || !booking_date || !products || products.length === 0) {
       return res.status(400).json({ error: 'Required fields missing' });
@@ -134,9 +154,12 @@ router.post('/', async (req, res) => {
     const finalBookedTo = booked_to || latestReturn;
 
     // Create booking (use calculated dates)
+    // Use status from request if provided, otherwise default to 'pending'
+    const bookingStatus = req.body.status || 'pending';
+    
     const bookingResult = await client.query(
-      'INSERT INTO bookings (customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, total_amount, status) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *',
-      [customer_name, customer_phone || null, alternate_phone || null, customer_address || null, booking_date, finalBookedFrom, finalBookedTo, total_amount || null, 'pending']
+      'INSERT INTO bookings (customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, total_amount, security_deposit, status, created_by, transportation_opted, other_charges) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *',
+      [customer_name, customer_phone || null, alternate_phone || null, customer_address || null, booking_date, finalBookedFrom, finalBookedTo, total_amount || null, security_deposit || 0, bookingStatus, created_by || null, transportation_opted || false, other_charges || 0]
     );
 
     const booking = bookingResult.rows[0];
@@ -162,6 +185,8 @@ router.post('/', async (req, res) => {
               'name', p.name,
               'code', p.code,
               'rent_per_day', p.rent_per_day,
+              'security_deposit', p.security_deposit,
+              'image', p.image,
               'booked_from', bp.booked_from,
               'booked_to', bp.booked_to
             )
@@ -179,8 +204,24 @@ router.post('/', async (req, res) => {
     res.status(201).json(completeBooking.rows[0]);
   } catch (error) {
     await client.query('ROLLBACK');
-    console.error('Error creating booking:', error);
-    res.status(500).json({ error: 'Failed to create booking' });
+    console.error('❌ Error creating booking:', error);
+    console.error('   Error message:', error.message);
+    console.error('   Error code:', error.code);
+    console.error('   Error detail:', error.detail);
+    console.error('   Error hint:', error.hint);
+    
+    // Send detailed error to frontend
+    const errorMessage = error.message || 'Unknown error occurred';
+    const errorDetail = error.detail || '';
+    const errorHint = error.hint || '';
+    
+    res.status(500).json({ 
+      error: 'Failed to create booking',
+      details: errorMessage,
+      detail: errorDetail,
+      hint: errorHint,
+      code: error.code
+    });
   } finally {
     client.release();
   }
@@ -190,18 +231,174 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { customer_name, customer_phone, alternate_phone, customer_address, booked_from, booked_to, status, total_amount } = req.body;
+    
+    console.log('=== UPDATE BOOKING ===');
+    console.log('ID:', id);
+    console.log('paid_amount in body:', req.body.paid_amount);
+    console.log('due_amount in body:', req.body.due_amount);
+    console.log('payment_status in body:', req.body.payment_status);
+    
+    const { 
+      customer_name, 
+      customer_phone, 
+      alternate_phone, 
+      customer_address, 
+      booked_from, 
+      booked_to, 
+      status, 
+      total_amount,
+      paid_amount,
+      due_amount,
+      payment_status,
+      measurements,
+      products
+    } = req.body;
 
-    const result = await pool.query(
-      'UPDATE bookings SET customer_name = $1, customer_phone = $2, alternate_phone = $3, customer_address = $4, booked_from = $5, booked_to = $6, status = $7, total_amount = $8, updated_at = CURRENT_TIMESTAMP WHERE id = $9 RETURNING *',
-      [customer_name, customer_phone, alternate_phone, customer_address, booked_from, booked_to, status, total_amount, id]
-    );
+    // Build dynamic query based on provided fields
+    const updates = [];
+    const values = [];
+    let paramCount = 1;
+
+    if (customer_name !== undefined) {
+      updates.push(`customer_name = $${paramCount++}`);
+      values.push(customer_name);
+    }
+    if (customer_phone !== undefined) {
+      updates.push(`customer_phone = $${paramCount++}`);
+      values.push(customer_phone);
+    }
+    if (alternate_phone !== undefined) {
+      updates.push(`alternate_phone = $${paramCount++}`);
+      values.push(alternate_phone);
+    }
+    if (customer_address !== undefined) {
+      updates.push(`customer_address = $${paramCount++}`);
+      values.push(customer_address);
+    }
+    if (booked_from !== undefined) {
+      updates.push(`booked_from = $${paramCount++}`);
+      values.push(booked_from);
+    }
+    if (booked_to !== undefined) {
+      updates.push(`booked_to = $${paramCount++}`);
+      values.push(booked_to);
+    }
+    if (status !== undefined) {
+      updates.push(`status = $${paramCount++}`);
+      values.push(status);
+    }
+    if (total_amount !== undefined) {
+      updates.push(`total_amount = $${paramCount++}`);
+      values.push(total_amount);
+    }
+    if (paid_amount !== undefined) {
+      console.log('Adding paid_amount to update:', paid_amount);
+      updates.push(`paid_amount = $${paramCount++}`);
+      values.push(paid_amount);
+    }
+    if (due_amount !== undefined) {
+      console.log('Adding due_amount to update:', due_amount);
+      updates.push(`due_amount = $${paramCount++}`);
+      values.push(due_amount);
+    }
+    if (payment_status !== undefined) {
+      console.log('Adding payment_status to update:', payment_status);
+      updates.push(`payment_status = $${paramCount++}`);
+      values.push(payment_status);
+    }
+    if (measurements !== undefined) {
+      console.log('Adding measurements to update:', measurements);
+      updates.push(`measurements = $${paramCount++}::jsonb`);
+      values.push(JSON.stringify(measurements));
+    }
+    if (req.body.special_requirements !== undefined) {
+      console.log('Adding special_requirements to update:', req.body.special_requirements);
+      // If it's already a string (JSON stringified), use it directly, otherwise stringify
+      const specialReqsValue = typeof req.body.special_requirements === 'string' 
+        ? req.body.special_requirements 
+        : JSON.stringify(req.body.special_requirements);
+      updates.push(`special_requirements = $${paramCount++}::jsonb`);
+      values.push(specialReqsValue);
+    }
+
+    updates.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+
+    const query = `UPDATE bookings SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`;
+    console.log('Query:', query);
+    console.log('Values:', values);
+    
+    const result = await pool.query(query, values);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    res.json(result.rows[0]);
+    // Update product dates if provided
+    if (products && Array.isArray(products) && products.length > 0) {
+      console.log('Updating product dates:', products);
+      
+      // Update each product's dates in booking_products table
+      for (const product of products) {
+        if (product.id && product.booked_from && product.booked_to) {
+          await pool.query(
+            'UPDATE booking_products SET booked_from = $1, booked_to = $2 WHERE booking_id = $3 AND product_id = $4',
+            [product.booked_from, product.booked_to, id, product.id]
+          );
+          console.log(`Updated product ${product.id} dates: ${product.booked_from} to ${product.booked_to}`);
+        }
+      }
+      
+      // Recalculate booking-level dates from products
+      const productDatesResult = await pool.query(
+        `SELECT MIN(booked_from) as earliest_from, MAX(booked_to) as latest_to 
+         FROM booking_products 
+         WHERE booking_id = $1 
+         AND booked_from IS NOT NULL 
+         AND booked_to IS NOT NULL`,
+        [id]
+      );
+      
+      if (productDatesResult.rows[0] && productDatesResult.rows[0].earliest_from) {
+        await pool.query(
+          'UPDATE bookings SET booked_from = $1, booked_to = $2 WHERE id = $3',
+          [productDatesResult.rows[0].earliest_from, productDatesResult.rows[0].latest_to, id]
+        );
+        console.log(`Updated booking-level dates: ${productDatesResult.rows[0].earliest_from} to ${productDatesResult.rows[0].latest_to}`);
+      }
+    }
+
+    console.log('Updated booking paid_amount:', result.rows[0].paid_amount);
+    console.log('===================');
+    
+    // Fetch complete booking with updated products
+    const completeBooking = await pool.query(
+      `SELECT 
+        b.*,
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id', p.id,
+              'name', p.name,
+              'code', p.code,
+              'rent_per_day', p.rent_per_day,
+              'security_deposit', p.security_deposit,
+              'image', p.image,
+              'booked_from', bp.booked_from,
+              'booked_to', bp.booked_to
+            )
+          ) FILTER (WHERE p.id IS NOT NULL),
+          '[]'
+        ) as products
+      FROM bookings b
+      LEFT JOIN booking_products bp ON b.id = bp.booking_id
+      LEFT JOIN products p ON bp.product_id = p.id
+      WHERE b.id = $1
+      GROUP BY b.id`,
+      [id]
+    );
+    
+    res.json(completeBooking.rows[0]);
   } catch (error) {
     console.error('Error updating booking:', error);
     res.status(500).json({ error: 'Failed to update booking' });
@@ -210,18 +407,36 @@ router.put('/:id', async (req, res) => {
 
 // DELETE booking
 router.delete('/:id', async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM bookings WHERE id = $1 RETURNING *', [id]);
+    
+    // Get booking details before deletion to check products
+    const bookingResult = await client.query(
+      'SELECT * FROM bookings WHERE id = $1',
+      [id]
+    );
 
-    if (result.rows.length === 0) {
+    if (bookingResult.rows.length === 0) {
+      await client.query('ROLLBACK');
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    res.json({ message: 'Booking deleted successfully' });
+    // Delete booking (cascade will delete booking_products)
+    const deleteResult = await client.query(
+      'DELETE FROM bookings WHERE id = $1 RETURNING *',
+      [id]
+    );
+
+    await client.query('COMMIT');
+    res.json({ message: 'Booking deleted successfully', booking: deleteResult.rows[0] });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error('Error deleting booking:', error);
     res.status(500).json({ error: 'Failed to delete booking' });
+  } finally {
+    client.release();
   }
 });
 

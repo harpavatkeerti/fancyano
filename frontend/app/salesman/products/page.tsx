@@ -6,18 +6,21 @@ import { productsApi, bookingsApi } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
+import { DateRangePicker } from '@/components/common';
 
 export default function ProductsPage() {
   const searchParams = useSearchParams();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
   
-  // Filter states matching admin inventory page
-  const [filterProductType, setFilterProductType] = useState('');
-  const [filterCategory, setFilterCategory] = useState(''); // Gender
-  const [filterSize, setFilterSize] = useState('');
+  // Filter states
+  const [availabilityFrom, setAvailabilityFrom] = useState('');
+  const [availabilityTo, setAvailabilityTo] = useState('');
   const [sortBy, setSortBy] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [filtersApplied, setFiltersApplied] = useState(false);
 
   useEffect(() => {
     fetchProducts();
@@ -27,6 +30,13 @@ export default function ProductsPage() {
       setSearchTerm(urlSearch);
     }
   }, [searchParams]);
+
+  useEffect(() => {
+    // Fetch bookings when availability dates change
+    if (availabilityFrom && availabilityTo) {
+      fetchAllProductBookings();
+    }
+  }, [availabilityFrom, availabilityTo, products]);
 
   async function fetchProducts() {
     try {
@@ -39,33 +49,81 @@ export default function ProductsPage() {
     }
   }
 
-  function handleResetFilters() {
-    setSearchTerm('');
-    setFilterProductType('');
-    setFilterCategory('');
-    setFilterSize('');
-    setSortBy('');
+  async function fetchAllProductBookings() {
+    try {
+      const bookingsMap: Record<number, any[]> = {};
+      for (const product of products) {
+        try {
+          const response = await bookingsApi.getByProductId(product.id);
+          bookingsMap[product.id] = response.data || [];
+        } catch (error) {
+          bookingsMap[product.id] = [];
+        }
+      }
+      setProductBookings(bookingsMap);
+    } catch (error) {
+      console.error('Error fetching product bookings:', error);
+    }
   }
 
-  // Get filtered products (same logic as admin inventory)
+  function handleApplyFilters() {
+    setFiltersApplied(true);
+  }
+
+  function handleResetFilters() {
+    setSearchTerm('');
+    setAvailabilityFrom('');
+    setAvailabilityTo('');
+    setSortBy('');
+    setSelectedCategory('');
+    setFiltersApplied(false);
+  }
+
+  // Check if product is available for selected date range
+  function isProductAvailable(productId: number): boolean {
+    if (!availabilityFrom || !availabilityTo || !filtersApplied) return true;
+    
+    const bookings = productBookings[productId] || [];
+    if (bookings.length === 0) return true;
+    
+    const fromDate = new Date(availabilityFrom);
+    const toDate = new Date(availabilityTo);
+    
+    for (const booking of bookings) {
+      if (!booking.booked_from || !booking.booked_to) continue;
+      
+      const bookingFrom = new Date(booking.booked_from);
+      const bookingTo = new Date(booking.booked_to);
+      
+      fromDate.setHours(0, 0, 0, 0);
+      toDate.setHours(0, 0, 0, 0);
+      bookingFrom.setHours(0, 0, 0, 0);
+      bookingTo.setHours(0, 0, 0, 0);
+      
+      if (fromDate <= bookingTo && toDate >= bookingFrom) {
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  // Get filtered products
   const filteredProducts = products.filter((product) => {
     // Search term filter
     const matchesSearch =
+      !searchTerm ||
       product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       product.code.toLowerCase().includes(searchTerm.toLowerCase());
 
-    // Product type filter
-    const matchesProductType =
-      !filterProductType || product.name === filterProductType;
-
-    // Category filter (gender)
+    // Category filter
     const matchesCategory =
-      !filterCategory || (product as any).gender === filterCategory;
+      !selectedCategory || product.name === selectedCategory || (product as any).gender === selectedCategory;
 
-    // Size filter
-    const matchesSize = !filterSize || (product as any).size === filterSize;
+    // Availability filter (only if filters are applied)
+    const matchesAvailability = !filtersApplied || isProductAvailable(product.id);
 
-    return matchesSearch && matchesProductType && matchesCategory && matchesSize;
+    return matchesSearch && matchesCategory && matchesAvailability;
   });
 
   // Sort products (same logic as admin inventory)
@@ -90,205 +148,172 @@ export default function ProductsPage() {
     );
   }
 
+  // Count active filters
+  const activeFiltersCount = [
+    availabilityFrom && availabilityTo,
+    sortBy,
+    selectedCategory,
+  ].filter(Boolean).length;
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
-      {/* Search Bar */}
-      <div className="mb-6">
-        <div className="flex items-center gap-4">
-          <div className="flex-1 relative">
-            <input
-              type="text"
-              placeholder="Search products by name or code..."
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full px-4 py-3 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+      <div className="flex gap-8">
+        {/* Left Sidebar - Filters */}
+        <div className="w-64 flex-shrink-0">
+          <h2 className="text-lg font-bold text-gray-900 mb-4">Filter by:</h2>
+          
+          {/* Availability Filter */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold text-gray-700">Availability</span>
+              <button
+                onClick={() => {
+                  setAvailabilityFrom('');
+                  setAvailabilityTo('');
+                }}
+                className="text-xs text-red-600 hover:text-red-700"
+              >
+                Reset
+              </button>
+            </div>
+            <DateRangePicker
+              label=""
+              startDate={availabilityFrom}
+              endDate={availabilityTo}
+              onStartDateChange={(date) => setAvailabilityFrom(date)}
+              onEndDateChange={(date) => setAvailabilityTo(date)}
+              minDate={new Date().toISOString().split('T')[0]}
+              compact={true}
             />
-            <svg
-              className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
+          </div>
+
+          {/* Sort By */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold text-gray-700">Sort by</span>
+              <button
+                onClick={() => setSortBy('')}
+                className="text-xs text-red-600 hover:text-red-700"
+              >
+                Reset
+              </button>
+            </div>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-          <span className="text-sm text-gray-600 whitespace-nowrap">
-            Showing: {filteredProducts.length} / {products.length}
-          </span>
-        </div>
-      </div>
-
-      {/* Filters Section */}
-      <div className="bg-white p-6 rounded-lg shadow mb-6">
-        <h2 className="text-lg font-bold text-gray-900 mb-4">Filters</h2>
-        
-        <div className="space-y-4">
-          {/* Product Type Filter */}
-          <div className="grid grid-cols-4 gap-4">
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Product Type</label>
-              <select
-                value={filterProductType}
-                onChange={(e) => setFilterProductType(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-              >
-                <option value="">All Types</option>
-                <option value="Sherwani">Sherwani</option>
-                <option value="Indo Western">Indo Western</option>
-                <option value="Suit">Suit</option>
-                <option value="Kurta Pajama">Kurta Pajama</option>
-                <option value="Lehenga">Lehenga</option>
-                <option value="Girlish Crop Top">Girlish Crop Top</option>
-                <option value="Gowns">Gowns</option>
-                <option value="Artificial Jewelleries">Artificial Jewelleries</option>
-                <option value="Fancy Costumes">Fancy Costumes</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-
-            {/* Category (Gender) Filter */}
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Category</label>
-              <select
-                value={filterCategory}
-                onChange={(e) => setFilterCategory(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-              >
-                <option value="">All Categories</option>
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
-              </select>
-            </div>
-
-            {/* Size Filter */}
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Size</label>
-              <select
-                value={filterSize}
-                onChange={(e) => setFilterSize(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-              >
-                <option value="">All Sizes</option>
-                <optgroup label="Standard Sizes">
-                  <option value="S">S</option>
-                  <option value="M">M</option>
-                  <option value="L">L</option>
-                  <option value="XL">XL</option>
-                  <option value="XXL">XXL</option>
-                </optgroup>
-                <optgroup label="Numeric Sizes">
-                  <option value="34">34</option>
-                  <option value="36">36</option>
-                  <option value="38">38</option>
-                  <option value="40">40</option>
-                  <option value="42">42</option>
-                  <option value="44">44</option>
-                  <option value="46">46</option>
-                </optgroup>
-                <optgroup label="Age-Based (Fancy Costumes)">
-                  <option value="2-3 years">2-3 years</option>
-                  <option value="3-4 years">3-4 years</option>
-                  <option value="3-5 years">3-5 years</option>
-                  <option value="4-6 years">4-6 years</option>
-                  <option value="5-6 years">5-6 years</option>
-                  <option value="5-7 years">5-7 years</option>
-                  <option value="8-10 years">8-10 years</option>
-                  <option value="12-14 years">12-14 years</option>
-                  <option value="14-16 years">14-16 years</option>
-                  <option value="Adult Size">Adult Size</option>
-                </optgroup>
-              </select>
-            </div>
-
-            {/* Sort By */}
-            <div>
-              <label className="block text-xs text-gray-600 mb-1">Sort By</label>
-              <select
-                value={sortBy}
-                onChange={(e) => setSortBy(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-              >
-                <option value="">Default</option>
-                <option value="price-low-high">Price: Low to High</option>
-                <option value="price-high-low">Price: High to Low</option>
-                <option value="name-asc">Name: A-Z</option>
-                <option value="name-desc">Name: Z-A</option>
-              </select>
-            </div>
+              <option value="">Select</option>
+              <option value="price-low-high">Price: Low to High</option>
+              <option value="price-high-low">Price: High to Low</option>
+            </select>
           </div>
 
-          {/* Clear Filters Button */}
-          <div className="flex justify-end">
+          {/* Categories */}
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold text-gray-700">Categories</span>
+              <button
+                onClick={() => setSelectedCategory('')}
+                className="text-xs text-red-600 hover:text-red-700"
+              >
+                Reset
+              </button>
+            </div>
+            <select
+              value={selectedCategory}
+              onChange={(e) => setSelectedCategory(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+            >
+              <option value="">Select</option>
+              {Array.from(new Set(products.map(p => p.name)))
+                .filter(name => name) // Filter out empty names
+                .sort()
+                .map((productType) => (
+                  <option key={productType} value={productType}>
+                    {productType}
+                  </option>
+                ))}
+            </select>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="space-y-2">
             <button
               onClick={handleResetFilters}
-              className="px-6 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
+              className="w-full px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
             >
-              Clear Filters
+              Reset All
+            </button>
+            <button
+              onClick={handleApplyFilters}
+              className={`w-full px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors ${
+                filtersApplied
+                  ? 'bg-red-400 hover:bg-red-500'
+                  : 'bg-red-600 hover:bg-red-700'
+              }`}
+            >
+              {filtersApplied ? 'Applied' : `Apply Filters(${activeFiltersCount})`}
             </button>
           </div>
         </div>
-      </div>
 
-      {/* Products Grid */}
-      <div>
-        <h2 className="text-lg font-bold text-gray-900 mb-6">
-          Products ({sortedProducts.length})
-        </h2>
-        <div className="grid grid-cols-4 gap-6">
-          {sortedProducts.map((product) => (
-            <Link
-              key={product.id}
-              href={`/salesman/products/${product.id}`}
-              className="group bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow relative"
-            >
-              <div className="relative aspect-[3/4] bg-gray-100">
-                {getImageUrl((product as any).image) ? (
-                  <img
-                    src={getImageUrl((product as any).image)!}
-                    alt={product.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                    <span className="text-4xl">👔</span>
-                  </div>
-                )}
-                {/* Availability indicator */}
-                {!product.availability && (
-                  <div className="absolute top-2 right-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full">
-                    ⚠️ Unavailable
-                  </div>
-                )}
-              </div>
-              <div className="p-4">
-                <p className="text-xs text-gray-500 mb-1">{product.code}</p>
-                <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">
-                  {product.name}
-                </h3>
-                {(product as any).size && (
-                  <p className="text-xs text-gray-600 mb-1">Size: {(product as any).size}</p>
-                )}
-                {(product as any).gender && (
-                  <p className="text-xs text-gray-600 mb-2">{(product as any).gender}</p>
-                )}
-                <p className="text-red-600 font-bold">₹{Math.floor(product.rent_per_day)} / Day</p>
-              </div>
-            </Link>
-          ))}
-        </div>
-
-        {sortedProducts.length === 0 && (
-          <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
-            <div className="text-6xl mb-4">🔍</div>
-            <p className="text-gray-600 font-medium mb-2">No products found</p>
-            <p className="text-sm text-gray-500">Try adjusting your search or filters</p>
+        {/* Right Side - Products Grid */}
+        <div className="flex-1">
+          <h2 className="text-lg font-bold text-gray-900 mb-6">
+            Results showing for...
+          </h2>
+          <div className="grid grid-cols-4 gap-6">
+            {sortedProducts.map((product) => (
+              <Link
+                key={product.id}
+                href={`/salesman/products/${product.id}`}
+                className="group bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow relative"
+              >
+                <div className="relative aspect-[3/4] bg-gray-100">
+                  {getImageUrl((product as any).image) ? (
+                    <img
+                      src={getImageUrl((product as any).image)!}
+                      alt={product.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                      <span className="text-4xl">👔</span>
+                    </div>
+                  )}
+                  {/* Availability indicator */}
+                  {filtersApplied && availabilityFrom && availabilityTo && !isProductAvailable(product.id) && (
+                    <div className="absolute inset-0 bg-red-500 bg-opacity-75 flex items-center justify-center">
+                      <div className="bg-white rounded-lg p-3 text-center">
+                        <div className="text-2xl mb-1">⚠️</div>
+                        <p className="text-xs font-semibold text-red-600">Not Available for Selected Dates</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="p-4">
+                  <p className="text-xs text-gray-500 mb-1">{product.code}</p>
+                  <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">
+                    {product.name}
+                  </h3>
+                  <p className="text-xs text-gray-600 mb-1">
+                    {(product as any).gender ? `For ${(product as any).gender}` : ''}
+                  </p>
+                  <p className="text-red-600 font-bold">₹{Math.floor(product.rent_per_day)} / Day</p>
+                </div>
+              </Link>
+            ))}
           </div>
-        )}
+
+          {sortedProducts.length === 0 && (
+            <div className="text-center py-12 bg-white rounded-lg border border-gray-200">
+              <div className="text-6xl mb-4">🔍</div>
+              <p className="text-gray-600 font-medium mb-2">No products found</p>
+              <p className="text-sm text-gray-500">Try adjusting your search or filters</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

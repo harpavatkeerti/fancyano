@@ -36,6 +36,21 @@ export default function DateRangePicker({
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selecting, setSelecting] = useState<'start' | 'end'>('start');
 
+  // Reset selecting mode when dates change externally or when opening calendar
+  useEffect(() => {
+    if (!isOpen) {
+      // When calendar is closed, reset selection mode based on current dates
+      if (!startDate || startDate === '') {
+        setSelecting('start');
+      } else if (!endDate || endDate === '') {
+        setSelecting('end');
+      } else {
+        // Both dates are set, next time calendar opens, start fresh
+        setSelecting('start');
+      }
+    }
+  }, [startDate, endDate, isOpen]);
+
 
 
   const formatDisplayDate = (dateStr: string) => {
@@ -76,15 +91,22 @@ export default function DateRangePicker({
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
     if (selecting === 'start') {
-      // First click - set start date
+      // Setting start date - clear end date and switch to end selection
       onStartDateChange(dateStr);
-      onEndDateChange(''); // Clear end date
+      onEndDateChange(''); // Clear end date when changing start
       setSelecting('end');
     } else {
-      // Second click - set end date
-      onEndDateChange(dateStr);
-      setIsOpen(false);
-      setSelecting('start');
+      // Setting end date
+      // Check if clicked date is before start date - if so, treat it as new start date
+      if (startDate && dateStr < startDate) {
+        onStartDateChange(dateStr);
+        onEndDateChange('');
+        setSelecting('end');
+      } else {
+        onEndDateChange(dateStr);
+        setIsOpen(false);
+        setSelecting('start'); // Reset for next time
+      }
     }
   };
 
@@ -237,11 +259,14 @@ export default function DateRangePicker({
       <button
         type="button"
         onClick={() => {
-          if (!isOpen) {
-            // Opening calendar - reset to start selection
-            setSelecting('start');
-          }
           setIsOpen(!isOpen);
+          if (!isOpen) {
+            // When opening, always start with selecting start date if both are already set
+            // This allows changing the pickup date
+            if (startDate && endDate) {
+              setSelecting('start');
+            }
+          }
         }}
         className={`w-full border border-gray-300 rounded-lg bg-white text-left flex items-center justify-between hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
           compact ? 'px-2 py-1.5 text-sm' : 'px-4 py-3'
@@ -320,6 +345,21 @@ export default function DateRangePicker({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
+          </div>
+
+          {/* Selection Mode Indicator */}
+          <div className="mb-3 text-center">
+            <p className="text-xs text-gray-600">
+              {selecting === 'start' ? (
+                <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded">
+                  <span>📅</span> Select <strong>Pickup Date</strong>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 bg-green-50 text-green-700 px-2 py-1 rounded">
+                  <span>📅</span> Select <strong>Return Date</strong>
+                </span>
+              )}
+            </p>
           </div>
 
           {/* Day Headers */}
