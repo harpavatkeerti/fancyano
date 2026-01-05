@@ -12,9 +12,20 @@ app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' })); // Increased limit for image uploads
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve uploaded files
+// Serve uploaded files (including PDFs)
 const uploadDir = path.join(__dirname, '../../storage/uploads');
-app.use('/uploads', express.static(uploadDir));
+app.use('/uploads', express.static(uploadDir, {
+  setHeaders: (res, filePath) => {
+    // Set proper headers for PDF files to enable mobile download
+    if (filePath.endsWith('.pdf')) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    }
+  }
+}));
 
 // Routes
 app.use('/api/health', require('./routes/health'));

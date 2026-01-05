@@ -20,6 +20,13 @@ export default function OrderDetailsPage() {
   const [booking, setBooking] = useState<Booking | null>(null);
   const [loading, setLoading] = useState(true);
   const [showEstimate, setShowEstimate] = useState(false);
+  const [showInvoice, setShowInvoice] = useState(false);
+  const [showTaxInvoice, setShowTaxInvoice] = useState(false);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfType, setPdfType] = useState<'estimate' | 'invoice' | 'tax-invoice' | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [pdfPublicUrl, setPdfPublicUrl] = useState<string | null>(null);
+  const [showWhatsAppShareModal, setShowWhatsAppShareModal] = useState(false);
   const [showChangeDateModal, setShowChangeDateModal] = useState(false);
   const [showRecordPayment, setShowRecordPayment] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
@@ -222,34 +229,267 @@ export default function OrderDetailsPage() {
 
   async function handleGenerateDocument(type: 'estimate' | 'invoice' | 'tax-invoice') {
     try {
+      // Use POST endpoint to generate PDF and get blob directly for preview
       const response = await axios.post(
         `${API_URL}/invoices/${type}/${booking?.id}`,
         {},
         { responseType: 'blob' }
       );
 
-      // Download PDF
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', `${type}_${booking?.id}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-
-      // Show preview modal for estimate
-      if (type === 'estimate') {
-        setShowEstimate(true);
-      }
-    } catch (error) {
-      console.error(`Error generating ${type}:`, error);
-      toast.info(`Document generated! (In production, this would download the ${type})`);
+      // Store PDF blob and show preview instead of auto-downloading
+      const blob = new Blob([response.data], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
       
-      // Show preview for demonstration
+      setPdfBlob(blob);
+      setPdfType(type);
+      setPdfUrl(url);
+
+      // Generate public URL for WhatsApp sharing
+      // Use GET endpoint to get the public URL
+      try {
+        const generateResponse = await axios.get(
+          `${API_URL}/invoices/${type}/${booking?.id}`
+        );
+        const publicUrl = generateResponse.data.url;
+        const fullUrl = generateResponse.data.fullUrl || `${API_URL.replace('/api', '')}${publicUrl}`;
+        
+        // Replace localhost with actual server IP if needed
+        let shareableUrl = fullUrl;
+        if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
+          // Try to get server IP from environment or use current hostname
+          const serverIP = process.env.NEXT_PUBLIC_SERVER_IP || window.location.hostname;
+          if (serverIP !== 'localhost' && serverIP !== '127.0.0.1') {
+            shareableUrl = shareableUrl.replace(/localhost|127\.0\.0\.1/, serverIP);
+          }
+        }
+        setPdfPublicUrl(shareableUrl);
+      } catch (urlError) {
+        // If GET fails, construct URL manually
+        console.warn('Could not get public URL, constructing manually:', urlError);
+        const baseUrl = API_URL.replace('/api', '');
+        let shareableUrl = `${baseUrl}/uploads/${type}_${booking?.id}.pdf`;
+        if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
+          const serverIP = process.env.NEXT_PUBLIC_SERVER_IP || window.location.hostname;
+          if (serverIP !== 'localhost' && serverIP !== '127.0.0.1') {
+            shareableUrl = shareableUrl.replace(/localhost|127\.0\.0\.1/, serverIP);
+          }
+        }
+        setPdfPublicUrl(shareableUrl);
+      }
+
+      // Show preview modal based on type
       if (type === 'estimate') {
         setShowEstimate(true);
+      } else if (type === 'invoice') {
+        setShowInvoice(true);
+      } else if (type === 'tax-invoice') {
+        setShowTaxInvoice(true);
+      }
+    } catch (error: any) {
+      console.error(`Error generating ${type}:`, error);
+      const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+      toast.error(`Error generating ${type}: ${errorMessage}`);
+    }
+  }
+
+  function handleDownloadPdf() {
+    if (!pdfBlob || !pdfType || !booking) return;
+    
+    const url = window.URL.createObjectURL(pdfBlob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${pdfType}_${booking.id}.pdf`);
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    toast.success('PDF downloaded successfully');
+  }
+
+  function formatPhoneNumber(phone: string): string | null {
+    if (!phone) return null;
+    
+    // Remove all non-digits
+    let phoneNumber = phone.replace(/\D/g, '');
+    
+    // Remove leading zeros
+    phoneNumber = phoneNumber.replace(/^0+/, '');
+    
+    if (phoneNumber.length === 0) {
+      return null;
+    }
+    
+    // If it's exactly 10 digits and doesn't start with a country code, assume it's Indian
+    if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
+      phoneNumber = '91' + phoneNumber;
+    }
+    
+    // Validate: WhatsApp requires phone numbers in E.164 format (7-15 digits, no leading zeros)
+    if (phoneNumber.length < 7 || phoneNumber.length > 15 || phoneNumber[0] === '0') {
+      return null;
+    }
+    
+    return phoneNumber;
+  }
+
+  function handleShareWhatsApp(phoneType: 'customer' | 'alternate' | 'both' = 'customer') {
+    if (!booking) {
+      toast.warning('Booking information not available');
+      return;
+    }
+
+    if (!pdfType || !booking.id) {
+      toast.warning('Please generate the document first');
+      return;
+    }
+
+    // Use the public URL that was generated when creating the PDF
+    // This URL points directly to the PDF file, not through localhost
+    let pdfDownloadLink = '';
+    
+    if (pdfPublicUrl) {
+      // Use the stored public URL
+      pdfDownloadLink = pdfPublicUrl;
+    } else {
+      // Fallback: construct URL from API_URL
+      const baseUrl = API_URL.replace('/api', '');
+      // Try to get server IP if using localhost
+      if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
+        if (typeof window !== 'undefined') {
+          const hostname = window.location.hostname;
+          const protocol = window.location.protocol;
+          if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
+            pdfDownloadLink = `${protocol}//${hostname}:3001/uploads/${pdfType}_${booking.id}_*.pdf`;
+          } else {
+            toast.warning('Please configure your server IP for mobile access');
+            pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
+          }
+        } else {
+          pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
+        }
+      } else {
+        pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
       }
     }
+    
+    const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
+    const message = `Hi ${booking.customer_name}, your ${documentName} for booking #${booking.id} is ready. Download PDF: ${pdfDownloadLink}`;
+
+    const phoneNumbers: string[] = [];
+
+    if (phoneType === 'customer' || phoneType === 'both') {
+      const customerPhone = formatPhoneNumber(booking.customer_phone || '');
+      if (customerPhone) {
+        phoneNumbers.push(customerPhone);
+      } else {
+        toast.warning('Customer phone number is invalid');
+        if (phoneType === 'customer') return;
+      }
+    }
+
+    if (phoneType === 'alternate' || phoneType === 'both') {
+      const alternatePhone = formatPhoneNumber(booking.alternate_phone || '');
+      if (alternatePhone) {
+        phoneNumbers.push(alternatePhone);
+      } else {
+        toast.warning('Alternate phone number is invalid');
+        if (phoneType === 'alternate') return;
+      }
+    }
+
+    if (phoneNumbers.length === 0) {
+      toast.error('No valid phone numbers available');
+      return;
+    }
+
+    // Open WhatsApp for each phone number
+    phoneNumbers.forEach((phoneNumber, index) => {
+      const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+      // Add small delay between opening multiple tabs
+      setTimeout(() => {
+        window.open(whatsappUrl, '_blank');
+      }, index * 500);
+    });
+
+    setShowWhatsAppShareModal(false);
+    toast.success(`Opening WhatsApp for ${phoneNumbers.length} number(s)...`);
+  }
+
+  async function handleShareEmail() {
+    if (!booking?.customer_name) {
+      toast.warning('Customer information not available');
+      return;
+    }
+
+    if (!pdfPublicUrl) {
+      toast.warning('PDF not generated yet. Please generate the document first.');
+      return;
+    }
+
+    const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
+    
+    // Prompt for customer email if not available
+    let customerEmail = booking.customer_email || null;
+    
+    if (!customerEmail) {
+      const emailInput = prompt(`Enter customer email address for ${booking.customer_name}:`);
+      if (!emailInput || !emailInput.trim()) {
+        toast.warning('Email address is required to send email');
+        return;
+      }
+      customerEmail = emailInput.trim();
+    }
+
+    // Try to send email via backend API (with attachment support)
+    try {
+      const response = await axios.post(`${API_URL}/invoices/send-email`, {
+        bookingId: booking.id,
+        documentType: pdfType,
+        customerName: booking.customer_name,
+        customerEmail: customerEmail,
+        pdfUrl: pdfPublicUrl
+      });
+
+      if (response.data.success) {
+        toast.success('Email sent successfully with PDF attachment!');
+        return;
+      } else {
+        throw new Error(response.data.error || 'Failed to send email');
+      }
+    } catch (error: any) {
+      // Fallback to mailto if backend email fails or not configured
+      const useMailto = error.response?.data?.useMailto || !error.response;
+      
+      if (useMailto) {
+        // Construct email body with PDF download link
+        const emailBody = `Hi ${booking.customer_name},\n\nPlease find your ${documentName} for booking #${booking.id} below.\n\nDownload PDF: ${pdfPublicUrl}\n\nNote: The PDF is available for download at the link above. Please download and attach it to this email if needed.\n\nThank you!`;
+        
+        const subject = encodeURIComponent(`${documentName} for Booking #${booking.id}`);
+        const body = encodeURIComponent(emailBody);
+        
+        // Note: mailto protocol doesn't support file attachments
+        // We include the download link in the body and pre-fill the recipient email
+        const mailtoLink = `mailto:${customerEmail}?subject=${subject}&body=${body}`;
+        
+        window.location.href = mailtoLink;
+        toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
+      } else {
+        toast.error(`Failed to send email: ${error.response?.data?.error || error.message}`);
+      }
+    }
+  }
+
+  function handleClosePreview() {
+    // Clean up blob URL
+    if (pdfUrl) {
+      window.URL.revokeObjectURL(pdfUrl);
+    }
+    setShowEstimate(false);
+    setShowInvoice(false);
+    setShowTaxInvoice(false);
+    setPdfBlob(null);
+    setPdfType(null);
+    setPdfUrl(null);
+    setPdfPublicUrl(null);
   }
 
   function handleEditDate(product: any) {
@@ -2155,17 +2395,25 @@ export default function OrderDetailsPage() {
         </div>
       </div>
 
-      {/* Estimate Preview Modal */}
-      {showEstimate && (
+      {/* PDF Preview Modal - Unified for Estimate, Invoice, and Tax Invoice */}
+      {(showEstimate || showInvoice || showTaxInvoice) && pdfUrl && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-2xl font-bold">Estimate</h2>
-                <div className="flex items-center gap-4">
-                  <button className="text-gray-600 hover:text-gray-900">
+          <div className="bg-white rounded-lg max-w-6xl w-full max-h-[95vh] flex flex-col">
+            {/* Header with Title and Actions */}
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold">
+                  {pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice'}
+                </h2>
+                <div className="flex items-center gap-3">
+                  {/* Download Button */}
+                  <button
+                    onClick={handleDownloadPdf}
+                    className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors"
+                    title="Download PDF"
+                  >
                     <svg
-                      className="w-6 h-6"
+                      className="w-5 h-5"
                       fill="none"
                       stroke="currentColor"
                       viewBox="0 0 24 24"
@@ -2174,13 +2422,55 @@ export default function OrderDetailsPage() {
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         strokeWidth={2}
-                        d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
                       />
                     </svg>
+                    Download
                   </button>
+                  
+                  {/* WhatsApp Share Button */}
                   <button
-                    onClick={() => setShowEstimate(false)}
-                    className="text-gray-600 hover:text-gray-900"
+                    onClick={() => setShowWhatsAppShareModal(true)}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                    title="Share via WhatsApp"
+                  >
+                    <svg
+                      className="w-5 h-5"
+                      fill="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                    </svg>
+                    WhatsApp
+                  </button>
+                  
+                  {/* Email Share Button */}
+                  <button
+                    onClick={handleShareEmail}
+                    className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                    title="Share via Email"
+                  >
+                    <svg
+                      className="w-5 h-5"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
+                      />
+                    </svg>
+                    Email
+                  </button>
+                  
+                  {/* Close Button */}
+                  <button
+                    onClick={handleClosePreview}
+                    className="text-gray-600 hover:text-gray-900 p-2"
+                    title="Close"
                   >
                     <svg
                       className="w-6 h-6"
@@ -2198,154 +2488,118 @@ export default function OrderDetailsPage() {
                   </button>
                 </div>
               </div>
+            </div>
 
-              {/* Estimate Document Preview */}
-              <div className="border border-gray-300 bg-white">
-                {/* Header */}
-                <div className="flex justify-between items-start p-6 pb-4">
-                  <div>
-                    <div className="bg-red-600 text-white inline-block px-3 py-1 font-bold text-sm mb-1">
-                      FAN-C-YA-NO
-                    </div>
-                    <p className="text-xs font-semibold mb-3">Wedding Dress Rental</p>
-                    <div className="text-xs space-y-0.5">
-                      <p className="font-semibold">Fancyano</p>
-                      <p className="font-semibold">Wedding Dress, Fancy Dress & Artificial Jewellery</p>
-                      <p className="leading-tight text-gray-700">
-                        23, 1st Floor, Shobhagpura, Main 100 Feet Road, Near SBI Bank,<br />
-                        Udaipur (Raj.), 313001
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right text-xs">
-                    <p className="font-bold text-sm mb-2">Order ID: {booking.id}</p>
-                    <div className="space-y-0.5 text-gray-700">
-                      <p className="font-semibold text-gray-900">Shop Timings:</p>
-                      <p>Mon to Sat: 11 am to 6 pm</p>
-                      <p>Sunday Closed</p>
-                      <p className="font-semibold text-gray-900 mt-2">Phone: {booking.customer_phone || '9876543210'}</p>
-                      <p>{booking.customer_phone || '9876543210'}</p>
-                      <p className="font-semibold text-gray-900">Paytm: 9876543210</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Booking and Customer Details */}
-                <div className="bg-gray-50 px-6 py-4 border-t border-b border-gray-200">
-                  <div className="grid grid-cols-2 gap-12 text-xs">
-                    <div className="space-y-3">
-                      <div>
-                        <p className="text-gray-500 text-[11px] mb-1">Booking Date:</p>
-                        <p className="font-semibold text-gray-900">{new Date(booking.booking_date).toLocaleDateString('en-GB')}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500 text-[11px] mb-1">Rental Dates:</p>
-                        <p className="font-semibold text-gray-900">
-                          {new Date(booking.booked_from).toLocaleDateString('en-GB')} - {new Date(booking.booked_to).toLocaleDateString('en-GB')}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <p className="text-gray-500 text-[11px] mb-1">Customer Details:</p>
-                        <p className="font-semibold text-gray-900">{booking.customer_name} {booking.customer_phone}</p>
-                      </div>
-                      <div>
-                        <p className="text-gray-500 text-[11px] mb-1">Address:</p>
-                        <p className="text-gray-900">{booking.customer_address || 'Lorem ipsum dolor sit amet, consectetur adipiscing elit'}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Items Table */}
-                <div className="px-6 py-4">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-gray-100 border-b border-gray-300">
-                        <th className="text-left py-2.5 px-3 font-semibold text-gray-600 text-[11px]">S.NO.</th>
-                        <th className="text-left py-2.5 px-3 font-semibold text-gray-600 text-[11px]">ITEMS</th>
-                        <th className="text-center py-2.5 px-3 font-semibold text-gray-600 text-[11px]">QUANTITY</th>
-                        <th className="text-right py-2.5 px-3 font-semibold text-gray-600 text-[11px]">RENT</th>
-                        <th className="text-right py-2.5 px-3 font-semibold text-gray-600 text-[11px]">TOTAK</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {products.map((product: any, index: number) => (
-                        <tr key={index} className="border-b border-gray-200">
-                          <td className="py-3 px-3 text-gray-900">{index + 1}</td>
-                          <td className="py-3 px-3 text-gray-900">{product.name}</td>
-                          <td className="text-center py-3 px-3 text-gray-900">₹{Math.floor(product.rent_per_day)}</td>
-                          <td className="text-right py-3 px-3 text-gray-900">₹{booking.transportation_opted ? '20' : '20'}</td>
-                          <td className="text-right py-3 px-3 text-gray-900">₹{Math.floor(product.rent_per_day) + 20}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  
-                  {/* Totals */}
-                  <div className="mt-4 space-y-2">
-                    <div className="flex justify-end items-center">
-                      <div className="w-64 flex justify-between">
-                        <span className="text-xs text-gray-600">Total</span>
-                        <span className="text-xs font-semibold text-gray-900">₹{Math.floor(booking.total_amount || 0)}</span>
-                      </div>
-                    </div>
-                    {booking.transportation_opted && booking.other_charges && parseFloat(booking.other_charges) > 0 && (
-                      <div className="flex justify-end items-center">
-                        <div className="w-64 flex justify-between">
-                          <span className="text-xs text-gray-600">Transportation Charges</span>
-                          <span className="text-xs font-semibold text-gray-900">₹{parseFloat(booking.other_charges || 0).toFixed(2)}</span>
-                        </div>
-                      </div>
-                    )}
-                    <div className="flex justify-end items-center pt-2 border-t border-gray-300">
-                      <div className="w-64 flex justify-between">
-                        <span className="text-xs font-bold text-gray-900">Grand Total</span>
-                        <span className="text-xs font-bold text-gray-900">₹{Math.floor((booking.total_amount || 0) + (booking.transportation_opted && booking.other_charges ? parseFloat(booking.other_charges) : 0))}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Pay Details Section */}
-                <div className="bg-gray-50 px-6 py-6 border-t border-gray-200">
-                  <div className="grid grid-cols-2 gap-12 text-xs">
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-semibold mb-3">PAY DETAILS:</p>
-                      <div className="space-y-3">
-                        <p className="font-semibold text-gray-900">Total Rent + Security Deposit</p>
-                        <div className="space-y-2 text-gray-900">
-                          <p className="font-semibold">Advance Paid:</p>
-                          <p className="font-semibold pl-8">Due:</p>
-                        </div>
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-gray-500 text-[11px] font-semibold mb-3">AUTHORISED BALANCE AMT:</p>
-                      <div className="space-y-2 text-gray-900 font-semibold">
-                        <p>Total Deposit:</p>
-                        <p>Damage:</p>
-                        <p>Lost:</p>
-                        <p>Late Charges:</p>
-                        <p className="pt-1">Total Refund:</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Footer */}
-                <div className="px-6 py-4 border-t border-gray-300 text-center">
-                  <div className="inline-block border-2 border-gray-900 rounded-full px-6 py-1.5 mb-3">
-                    <p className="text-[11px] font-bold text-gray-900">
-                      NO CANCELLATION &nbsp;|&nbsp; NO EXCHANGE, NO REFUND
-                    </p>
-                  </div>
-                  <p className="text-[11px] text-gray-700 leading-relaxed max-w-3xl mx-auto">
-                    सही पहचान पत्र की फोटोकॉपी लाना अनिवार्य है अन्यथा आपकी बुक कराई गई ड्रेस या ज्वेलरी नहीं दी जायेगी एवं सिक्योरिटी रिफंड में 4-5 Working Days का समय लग सकता है
-                  </p>
-                </div>
+            {/* PDF Preview */}
+            <div className="flex-1 overflow-hidden p-6">
+              <div className="w-full h-full border border-gray-300 rounded-lg overflow-hidden bg-gray-100">
+                <iframe
+                  src={pdfUrl}
+                  className="w-full h-full min-h-[600px]"
+                  title={`${pdfType} preview`}
+                />
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp Share Options Modal */}
+      {showWhatsAppShareModal && booking && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold">Share via WhatsApp</h2>
+              <button
+                onClick={() => setShowWhatsAppShareModal(false)}
+                className="text-gray-600 hover:text-gray-900"
+              >
+                <svg
+                  className="w-6 h-6"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M6 18L18 6M6 6l12 12"
+                  />
+                </svg>
+              </button>
+            </div>
+
+            <p className="text-gray-600 mb-6">
+              Choose which phone number(s) to share the {pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice'} to:
+            </p>
+
+            <div className="space-y-3">
+              {/* Customer Phone Option */}
+              {booking.customer_phone && (
+                <button
+                  onClick={() => handleShareWhatsApp('customer')}
+                  className="w-full px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-left flex items-center justify-between"
+                >
+                  <div>
+                    <div className="font-semibold">Customer Phone</div>
+                    <div className="text-sm text-green-100">{booking.customer_phone}</div>
+                  </div>
+                  <svg
+                    className="w-5 h-5"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  </svg>
+                </button>
+              )}
+
+              {/* Alternate Phone Option */}
+              {booking.alternate_phone && (
+                <button
+                  onClick={() => handleShareWhatsApp('alternate')}
+                  className="w-full px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-left flex items-center justify-between"
+                >
+                  <div>
+                    <div className="font-semibold">Alternate Phone</div>
+                    <div className="text-sm text-green-100">{booking.alternate_phone}</div>
+                  </div>
+                  <svg
+                    className="w-5 h-5"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  </svg>
+                </button>
+              )}
+
+              {/* Both Numbers Option */}
+              {booking.customer_phone && booking.alternate_phone && (
+                <button
+                  onClick={() => handleShareWhatsApp('both')}
+                  className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-left flex items-center justify-between border-2 border-green-500"
+                >
+                  <div>
+                    <div className="font-semibold">Both Numbers</div>
+                    <div className="text-sm text-green-100">Customer & Alternate</div>
+                  </div>
+                  <svg
+                    className="w-5 h-5"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  </svg>
+                </button>
+              )}
+
+              {!booking.customer_phone && !booking.alternate_phone && (
+                <div className="text-center py-4 text-gray-500">
+                  No phone numbers available for this booking
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -23,8 +23,29 @@ export default function MyBookingsPage() {
   async function fetchBookings() {
     try {
       const response = await bookingsApi.getAll();
-      // Filter for salesman's own bookings (in real app, filter by salesman ID)
-      setBookings(response.data);
+      
+      // Get logged-in salesman name from localStorage
+      const userData = localStorage.getItem('user');
+      let salesmanName = '';
+      
+      if (userData) {
+        try {
+          const user = JSON.parse(userData);
+          salesmanName = user.name || user.userName || '';
+        } catch (e) {
+          // If parsing fails, try direct keys
+          salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
+        }
+      } else {
+        salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
+      }
+      
+      // Filter for salesman's own bookings (where created_by matches logged-in salesman)
+      const filteredBookings = response.data.filter((booking: Booking) => {
+        return booking.created_by && booking.created_by === salesmanName;
+      });
+      
+      setBookings(filteredBookings);
     } catch (error) {
       console.error('Error fetching bookings:', error);
     } finally {
