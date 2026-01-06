@@ -55,6 +55,10 @@ export interface User {
   name: string;
   phone: string;
   role: 'admin' | 'salesman' | 'customer';
+  username?: string;
+  password?: string;
+  email?: string;
+  address?: string;
   created_at: string;
   updated_at: string;
 }

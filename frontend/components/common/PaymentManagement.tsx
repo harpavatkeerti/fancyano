@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { paymentTransactionsApi, bookingsApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
+import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Button } from '@/components/common';
 import { toast } from '@/lib/toast';
 
@@ -160,6 +161,31 @@ export function PaymentManagement({
 
       // Only update if status changed
       if (currentBooking.status !== newStatus) {
+        // Check if trying to confirm a booking that has a credit note
+        if (currentBooking.status !== 'confirmed' && newStatus === 'confirmed') {
+          try {
+            const creditNotesResponse = await creditNotesApi.getByBookingId(bookingId);
+            const creditNotes = creditNotesResponse.data || [];
+            
+            if (creditNotes.length > 0) {
+              const activeCreditNote = creditNotes.find((note: any) => {
+                const validUntil = new Date(note.valid_until);
+                const now = new Date();
+                const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
+                return validUntil >= now && availableAmount > 0;
+              });
+              
+              if (activeCreditNote) {
+                toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
+                return;
+              }
+            }
+          } catch (error) {
+            console.error('Error checking credit notes:', error);
+            // Continue with update if check fails
+          }
+        }
+        
         await bookingsApi.update(bookingId, {
           customer_name: currentBooking.customer_name,
           customer_phone: currentBooking.customer_phone || '',
@@ -265,7 +291,18 @@ export function PaymentManagement({
         {/* Calculate totals */}
         {(() => {
           const totalAmountNum = typeof totalAmount === 'number' ? totalAmount : parseFloat(String(totalAmount)) || 0;
-          const securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
+          let securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
+          
+          // If security deposit is 0, calculate from products
+          if (securityDepositNum === 0 && products.length > 0) {
+            securityDepositNum = products.reduce((sum: number, product: any) => {
+              const productSecurity = typeof product.security_deposit === 'number'
+                ? product.security_deposit
+                : parseFloat(String(product.security_deposit || '0')) || 0;
+              return sum + productSecurity;
+            }, 0);
+          }
+          
           const totalRequired = totalAmountNum + securityDepositNum;
           
           // Calculate netAmount excluding date_change_charge transactions
@@ -409,10 +446,9 @@ export function PaymentManagement({
                 </div>
               </div>
 
-              {/* Detailed Payment Breakdown - Show before refunds start */}
-              {!hasAnyRefund && (
-                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
+              {/* Detailed Payment Breakdown - Always show */}
+              <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     {/* Rent Section */}
                     <div className="bg-white rounded-lg p-3 border border-blue-200">
@@ -480,7 +516,6 @@ export function PaymentManagement({
                     </div>
                   </div>
                 </div>
-              )}
 
               {/* Payment Status */}
               <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">

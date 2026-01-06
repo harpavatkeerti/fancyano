@@ -15,6 +15,12 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
   const [products, setProducts] = useState<any[]>([]);
   const [cartCount, setCartCount] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
+  
+  // Login modal state
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [customerName, setCustomerName] = useState('');
+  const [tempName, setTempName] = useState('');
+  const [tempEmail, setTempEmail] = useState(''); // Placeholder for future use
 
   // Function to update cart count from localStorage
   function updateCartCount() {
@@ -30,7 +36,75 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
   useEffect(() => {
     fetchProducts();
     updateCartCount();
+    checkCustomerLogin();
   }, []);
+  
+  // Check if customer is logged in
+  function checkCustomerLogin() {
+    const userData = localStorage.getItem('customer_user');
+    let storedName = '';
+    
+    if (userData) {
+      try {
+        const user = JSON.parse(userData);
+        storedName = user.name || user.userName || '';
+      } catch (e) {
+        storedName = localStorage.getItem('customer_name') || '';
+      }
+    } else {
+      storedName = localStorage.getItem('customer_name') || '';
+    }
+    
+    if (!storedName || storedName.trim() === '') {
+      setShowLoginModal(true);
+    } else {
+      setCustomerName(storedName);
+    }
+  }
+  
+  function handleLogin() {
+    if (!tempName || tempName.trim() === '') {
+      alert('Please enter your name');
+      return;
+    }
+    
+    const name = tempName.trim();
+    const email = tempEmail.trim(); // Store for future use
+    
+    // Store customer data
+    localStorage.setItem('customer_name', name);
+    if (email) {
+      localStorage.setItem('customer_email', email);
+    }
+    localStorage.setItem('customer_user', JSON.stringify({ 
+      name, 
+      userName: name,
+      email: email || '',
+      // password field will be added later
+    }));
+    
+    setCustomerName(name);
+    setShowLoginModal(false);
+    
+    console.log('✅ Customer logged in:', name);
+    
+    // Reload page to ensure all components get the updated localStorage
+    window.location.reload();
+  }
+  
+  function handleLogout() {
+    if (confirm('Are you sure you want to logout? Your cart will be cleared.')) {
+      // Clear customer localStorage
+      localStorage.removeItem('customer_name');
+      localStorage.removeItem('customer_email');
+      localStorage.removeItem('customer_user');
+      localStorage.removeItem('customer_cart');
+      localStorage.removeItem('customer_cart_created_at');
+      
+      // Reload page to show login modal
+      window.location.reload();
+    }
+  }
 
   // Update cart count when pathname changes (user navigates)
   useEffect(() => {
@@ -263,6 +337,26 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
               >
                 My Bookings
               </Link>
+              
+              {/* User Display */}
+              {customerName && (
+                <div className="flex items-center space-x-2 ml-4 pl-4 border-l border-gray-300">
+                  <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center text-white font-semibold text-sm">
+                    {customerName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="text-left">
+                    <p className="text-sm font-medium text-gray-900">{customerName}</p>
+                    <p className="text-xs text-gray-500">Customer</p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="text-xs text-red-600 hover:text-red-800 font-medium px-2 py-1 rounded border border-red-600 hover:bg-red-50 transition-colors"
+                    title="Logout"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
             </nav>
           </div>
         </div>
@@ -270,6 +364,73 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
 
       {/* Main Content */}
       <main>{children}</main>
+
+      {/* Login Modal */}
+      {showLoginModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to FAN-C-YA-NO</h2>
+            <p className="text-gray-600 mb-6">Please enter your details to continue</p>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Name <span className="text-red-600">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={tempName}
+                  onChange={(e) => setTempName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleLogin()}
+                  placeholder="Enter your name"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                  autoFocus
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email (Optional)
+                </label>
+                <input
+                  type="email"
+                  value={tempEmail}
+                  onChange={(e) => setTempEmail(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+                  placeholder="Enter your email"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                />
+                <p className="text-xs text-gray-500 mt-1">We'll use this for booking updates</p>
+              </div>
+              
+              {/* Placeholder for password field - will be added later */}
+              {/* 
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Password <span className="text-red-600">*</span>
+                </label>
+                <input
+                  type="password"
+                  placeholder="Enter your password"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                />
+              </div>
+              */}
+            </div>
+            
+            <button
+              onClick={handleLogin}
+              className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 transition-colors font-medium mt-6"
+            >
+              Continue
+            </button>
+            
+            <p className="text-sm text-gray-500 mt-4 text-center">
+              By continuing, you agree to our Terms & Conditions
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Toast Container */}
       <ToastContainer>

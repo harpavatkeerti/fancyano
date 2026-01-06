@@ -11,6 +11,7 @@ const adminMenuItems = [
   { name: 'Dashboard', href: '/admin', icon: '📊' },
   { name: 'Inventory', href: '/admin/inventory', icon: '📦' },
   { name: 'Bookings', href: '/admin/bookings', icon: '📅' },
+  { name: 'Credit Notes', href: '/admin/credit-notes', icon: '💳' },
   { name: 'User Management', href: '/admin/users', icon: '👥' },
   { name: 'Complaints & Feedback', href: '/admin/complaints', icon: '💬' },
   { name: 'Reports', href: '/admin/reports', icon: '📈' },

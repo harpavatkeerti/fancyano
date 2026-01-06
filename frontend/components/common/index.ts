@@ -3,6 +3,7 @@ export { Input } from './Input';
 export { default as DateRangePicker } from './DateRangePicker';
 export { default as PhoneInput } from './PhoneInput';
 export { default as ImageUpload } from './ImageUpload';
+export { default as MultipleImageUpload } from './MultipleImageUpload';
 export { default as AvailabilityCalendar } from './AvailabilityCalendar';
 export { default as QRScanner } from './QRScanner';
 export { ProductTrackingModal } from './ProductTrackingModal';

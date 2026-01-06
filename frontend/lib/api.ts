@@ -11,6 +11,8 @@ export const productsApi = api.products;
 export const bookingsApi = api.bookings;
 export const usersApi = api.users;
 export const paymentTransactionsApi = api.paymentTransactions;
+export const availabilityApi = api.availability;
 
 // Re-export types
 export type { Product, Booking, User, PaymentTransaction, PaymentSummary } from '@rental/shared';
+export type { AvailabilityCheckRequest, AvailabilityResponse, AvailabilityConflict } from '@rental/shared';

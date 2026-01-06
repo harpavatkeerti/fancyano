@@ -18,9 +18,15 @@ export default function ProductDetailPage() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [showWarning, setShowWarning] = useState(false);
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isAvailable, setIsAvailable] = useState(true);
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [availabilityError, setAvailabilityError] = useState<string>('');
+  
+  // Warning modal state
+  const [showWarningModal, setShowWarningModal] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
+  const [pendingAddToCart, setPendingAddToCart] = useState(false);
 
   useEffect(() => {
     if (params.id) {
@@ -28,6 +34,11 @@ export default function ProductDetailPage() {
       fetchProductBookings();
     }
   }, [params.id]);
+
+  // Reset image index when product changes
+  useEffect(() => {
+    setCurrentImageIndex(0);
+  }, [product]);
 
   // Listen for cart updates to re-validate availability
   useEffect(() => {
@@ -184,7 +195,65 @@ export default function ProductDetailPage() {
     }
   }, [dateFrom, dateTo, product]);
 
-  function handleAddToCart() {
+  async function checkTightSchedule() {
+    if (!product || !dateFrom || !dateTo) {
+      return { hasTightSchedule: false, message: '' };
+    }
+
+    try {
+      const response = await bookingsApi.getAll();
+      const allBookings = response.data;
+      const warnings: string[] = [];
+
+      const thisPickupDate = new Date(dateFrom);
+      const thisDropDate = new Date(dateTo);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      for (const otherBooking of allBookings) {
+        if (otherBooking.status === 'cancelled') continue;
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndPickup} day before your selected date.`);
+            break;
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndNextPickup} day after your selected date.`);
+            break;
+          }
+        }
+      }
+
+      if (warnings.length > 0) {
+        return {
+          hasTightSchedule: true,
+          message: warnings.join(' ')
+        };
+      }
+
+      return { hasTightSchedule: false, message: '' };
+    } catch (error) {
+      console.error('Error checking tight schedule:', error);
+      return { hasTightSchedule: false, message: '' };
+    }
+  }
+
+  async function handleAddToCart() {
     if (!dateFrom || !dateTo) {
       toast.warning('Please select rental dates');
       return;
@@ -208,6 +277,20 @@ export default function ProductDetailPage() {
       }
       return;
     }
+
+    // Check for tight schedule (bookings within 2 days)
+    const tightScheduleCheck = await checkTightSchedule();
+    if (tightScheduleCheck.hasTightSchedule) {
+      setWarningMessage(tightScheduleCheck.message);
+      setShowWarningModal(true);
+      setPendingAddToCart(true);
+      return;
+    }
+
+    addToCartConfirmed();
+  }
+
+  function addToCartConfirmed() {
 
     // Add to cart logic
     const cartItem = {
@@ -273,40 +356,107 @@ export default function ProductDetailPage() {
       <div className="grid grid-cols-2 gap-12 mb-12">
         {/* Product Images */}
         <div>
-          <div className="aspect-[3/4] bg-gray-100 rounded-lg mb-4 overflow-hidden">
-            {getImageUrl((product as any).image) ? (
-              <img
-                src={getImageUrl((product as any).image)!}
-                alt={product.name}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <span className="text-6xl">👔</span>
-              </div>
-            )}
-          </div>
-          {/* Thumbnails */}
-          <div className="grid grid-cols-4 gap-2">
-            {[1, 2, 3, 4].map((idx) => (
-              <div
-                key={idx}
-                className="aspect-[3/4] bg-gray-100 rounded-lg overflow-hidden border-2 border-orange-500 cursor-pointer"
-              >
-                {getImageUrl((product as any).image) ? (
+          {(() => {
+            // Helper to get images array
+            const getImages = (img: any): string[] => {
+              if (!img) return [];
+              if (Array.isArray(img)) return img;
+              // Try to parse as JSON array
+              if (typeof img === 'string' && img.trim().startsWith('[')) {
+                try {
+                  const parsed = JSON.parse(img);
+                  if (Array.isArray(parsed)) return parsed;
+                } catch (e) {
+                  // Not JSON, treat as single image
+                }
+              }
+              // Single image
+              return img ? [img] : [];
+            };
+            
+            const images = getImages((product as any).image);
+            const imageUrls = images.map(img => getImageUrl(img)).filter(Boolean) as string[];
+            
+            if (imageUrls.length === 0) {
+              return (
+                <div className="aspect-[3/4] bg-gray-100 rounded-lg mb-4 overflow-hidden flex items-center justify-center">
+                  <span className="text-6xl">👔</span>
+                </div>
+              );
+            }
+            
+            if (imageUrls.length === 1) {
+              return (
+                <>
+                  <div className="aspect-[3/4] bg-gray-100 rounded-lg mb-4 overflow-hidden">
+                    <img
+                      src={imageUrls[0]}
+                      alt={product.name}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                </>
+              );
+            }
+            
+            // Multiple images - show carousel
+            return (
+              <div className="space-y-4">
+                {/* Main Image with Navigation */}
+                <div className="relative aspect-[3/4] bg-gray-100 rounded-lg overflow-hidden">
                   <img
-                    src={getImageUrl((product as any).image)!}
-                    alt={`${product.name} ${idx}`}
+                    src={imageUrls[currentImageIndex >= imageUrls.length ? 0 : currentImageIndex]}
+                    alt={`${product.name} - Image ${(currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) + 1}`}
                     className="w-full h-full object-cover"
                   />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <span className="text-2xl">👔</span>
-                  </div>
-                )}
+                  {imageUrls.length > 1 && (
+                    <>
+                      <button
+                        onClick={() => setCurrentImageIndex((prev) => (prev === 0 ? imageUrls.length - 1 : prev - 1))}
+                        className="absolute left-4 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white rounded-full p-2 hover:bg-opacity-75 transition-opacity"
+                        title="Previous image"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => setCurrentImageIndex((prev) => (prev === imageUrls.length - 1 ? 0 : prev + 1))}
+                        className="absolute right-4 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white rounded-full p-2 hover:bg-opacity-75 transition-opacity"
+                        title="Next image"
+                      >
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </button>
+                      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm">
+                        {currentImageIndex + 1} / {imageUrls.length}
+                      </div>
+                    </>
+                  )}
+                </div>
+                
+                {/* Thumbnails */}
+                <div className="grid grid-cols-4 gap-2">
+                  {imageUrls.map((url, idx) => (
+                    <button
+                      key={idx}
+                      onClick={() => setCurrentImageIndex(idx)}
+                      className={`aspect-[3/4] bg-gray-100 rounded-lg overflow-hidden border-2 transition-all ${
+                        idx === currentImageIndex ? 'border-orange-500 ring-2 ring-orange-200' : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                    >
+                      <img
+                        src={url}
+                        alt={`${product.name} ${idx + 1}`}
+                        className="w-full h-full object-cover"
+                      />
+                    </button>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
+            );
+          })()}
         </div>
 
         {/* Product Info */}
@@ -436,6 +586,48 @@ export default function ProductDetailPage() {
                   setIsAvailable(true);
                 }}
                 className="flex-1 px-4 py-2 text-white bg-red-600 rounded-lg font-medium hover:bg-red-700"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Tight Schedule Warning Modal */}
+      {showWarningModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
+                <p className="text-sm text-gray-600">
+                  {warningMessage} Do you still want to proceed?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowWarningModal(false);
+                  setPendingAddToCart(false);
+                }}
+                className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowWarningModal(false);
+                  setPendingAddToCart(false);
+                  addToCartConfirmed();
+                }}
+                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
               >
                 Continue
               </button>

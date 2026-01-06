@@ -39,6 +39,10 @@ export default function CartPage() {
   
   // Cart timeout timer
   const [timeRemaining, setTimeRemaining] = useState<{ minutes: number; seconds: number } | null>(null);
+  
+  // Warning modal state
+  const [showWarningModal, setShowWarningModal] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
 
   // Calculate time remaining before cart expires
   function calculateTimeRemaining(): { minutes: number; seconds: number } | null {
@@ -257,12 +261,120 @@ export default function CartPage() {
       toast.error(`Cannot proceed with checkout:\n\n${validation.errors.join('\n')}\n\nPlease remove conflicting items or update dates.`);
       return;
     }
+    
+    // Check real-time availability from database
+    const dbCheck = await checkDatabaseAvailability();
+    if (!dbCheck.success) {
+      toast.error(dbCheck.message);
+      return;
+    }
+
+    // Check for tight schedule (bookings within 2 days)
+    const tightScheduleCheck = await checkTightSchedule();
+    if (tightScheduleCheck.hasTightSchedule) {
+      setWarningMessage(tightScheduleCheck.message);
+      setShowWarningModal(true);
+      return;
+    }
 
     if (paymentMethod === 'upi') {
       setPaymentScanned(false); // Reset payment scanned state
       setShowUPIModal(true);
     } else {
       await createBooking();
+    }
+  }
+  
+  async function checkDatabaseAvailability() {
+    try {
+      const { availabilityApi } = await import('@/lib/api');
+      
+      const products = cartItems.map(item => ({
+        product_id: item.product.id,
+        date_from: item.dateFrom,
+        date_to: item.dateTo
+      }));
+      
+      const response = await availabilityApi.checkBulk({ products });
+      
+      if (!response.data.all_available) {
+        const unavailableDetails = response.data.results
+          .filter((r: any) => !r.available)
+          .map((r: any) => {
+            const cartItem = cartItems.find(ci => ci.product.id === r.product_id);
+            const fromDate = new Date(cartItem?.dateFrom || '').toLocaleDateString('en-GB');
+            const toDate = new Date(cartItem?.dateTo || '').toLocaleDateString('en-GB');
+            return `• ${cartItem?.product.name} (${cartItem?.product.code})\n  Selected: ${fromDate} to ${toDate}`;
+          })
+          .join('\n\n');
+        
+        return {
+          success: false,
+          message: `⚠️ Product Already Booked!\n\nThe following products are already booked for your selected dates:\n\n${unavailableDetails}\n\nPlease select other dates or remove these items from your cart.`
+        };
+      }
+      
+      return { success: true, message: '' };
+    } catch (error) {
+      console.error('Error checking database availability:', error);
+      // Continue with booking even if check fails (fallback)
+      return { success: true, message: '' };
+    }
+  }
+
+  async function checkTightSchedule() {
+    try {
+      const response = await bookingsApi.getAll();
+      const allBookings = response.data;
+      const warnings: string[] = [];
+
+      for (const item of cartItems) {
+        const thisPickupDate = new Date(item.dateFrom);
+        const thisDropDate = new Date(item.dateTo);
+        thisPickupDate.setHours(0, 0, 0, 0);
+        thisDropDate.setHours(0, 0, 0, 0);
+
+        for (const otherBooking of allBookings) {
+          if (otherBooking.status === 'cancelled') continue;
+
+          const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+          
+          for (const otherProduct of otherProducts) {
+            if (otherProduct.id !== item.product.id && otherProduct.code !== item.product.code) {
+              continue;
+            }
+
+            const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+            const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+            otherPickupDate.setHours(0, 0, 0, 0);
+            otherDropDate.setHours(0, 0, 0, 0);
+
+            const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+              warnings.push(`${item.product.name} (${item.product.code}) is booked ${daysBetweenDropAndPickup} day before your selected date.`);
+              break;
+            }
+
+            const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+              warnings.push(`${item.product.name} (${item.product.code}) is booked ${daysBetweenDropAndNextPickup} day after your selected date.`);
+              break;
+            }
+          }
+        }
+      }
+
+      if (warnings.length > 0) {
+        return {
+          hasTightSchedule: true,
+          message: warnings.join(' ')
+        };
+      }
+
+      return { hasTightSchedule: false, message: '' };
+    } catch (error) {
+      console.error('Error checking tight schedule:', error);
+      return { hasTightSchedule: false, message: '' };
     }
   }
 
@@ -290,6 +402,11 @@ export default function CartPage() {
       } else {
         salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
       }
+      
+      // Trim whitespace to ensure consistent matching
+      salesmanName = salesmanName.trim();
+      
+      console.log('📝 Creating booking with created_by:', salesmanName);
 
       // Create one booking with all products
       const bookingResponse = await bookingsApi.create({
@@ -737,6 +854,49 @@ export default function CartPage() {
           }}
           onClose={() => setShowQRScanner(false)}
         />
+      )}
+
+      {/* Warning Modal */}
+      {showWarningModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
+                <p className="text-sm text-gray-600">
+                  {warningMessage} Do you still want to proceed?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowWarningModal(false)}
+                className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowWarningModal(false);
+                  if (paymentMethod === 'upi') {
+                    setPaymentScanned(false);
+                    setShowUPIModal(true);
+                  } else {
+                    createBooking();
+                  }
+                }}
+                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Confirmation & Measurements Modal */}

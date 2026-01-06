@@ -11,18 +11,110 @@ import { useConfirm } from '@/hooks/useConfirm';
 export default function CustomerBookingsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Function to check if a booking is urgent (based on tight scheduling with other bookings)
+  function isBookingUrgent(booking: Booking): boolean {
+    if (booking.status === 'cancelled') {
+      return false;
+    }
+
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      for (const otherBooking of allBookings) {
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            return true;
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Function to get urgent reason
+  function getUrgentReason(booking: Booking): string {
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const reasons: string[] = [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      for (const otherBooking of allBookings) {
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndPickup} day gap before pickup`);
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndNextPickup} day gap after return`);
+          }
+        }
+      }
+    }
+
+    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
+  }
 
   useEffect(() => {
     fetchBookings();
-    // Refresh bookings every 10 seconds to check for auto-cancelled bookings
-    const interval = setInterval(fetchBookings, 10000);
-    return () => clearInterval(interval);
   }, []);
 
   async function fetchBookings() {
     try {
       const response = await bookingsApi.getAll();
+      
+      // Store ALL bookings for urgent checking
+      setAllBookings(response.data);
       
       // Filter for customer bookings (where created_by is null, empty, or undefined)
       // These are bookings created directly by customers, not by salesmen
@@ -74,6 +166,22 @@ export default function CustomerBookingsPage() {
   }
 
   function getStatusIcon(status: string, booking: Booking) {
+    // If booking is cancelled, show cancelled status
+    if (status === 'cancelled' || booking.status === 'cancelled') {
+      return (
+        <div className="flex items-center text-red-600">
+          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
+            <path
+              fillRule="evenodd"
+              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+              clipRule="evenodd"
+            />
+          </svg>
+          Cancelled
+        </div>
+      );
+    }
+
     // If status is already completed (refund processed), show completed
     if (status === 'completed') {
       return (
@@ -117,7 +225,7 @@ export default function CustomerBookingsPage() {
           from: p.booked_from || booking.booked_from,
           to: p.booked_to || booking.booked_to
         }));
-        const uniqueDates = new Set(dates.map(d => `${d.from}-${d.to}`));
+        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
         if (uniqueDates.size > 1) {
           actualStatus = 'in_progress'; // Partially Completed
         } else {
@@ -155,7 +263,7 @@ export default function CustomerBookingsPage() {
           from: p.booked_from || booking.booked_from,
           to: p.booked_to || booking.booked_to
         }));
-        const uniqueDates = new Set(dates.map(d => `${d.from}-${d.to}`));
+        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
         if (uniqueDates.size > 1) {
           return (
             <div className="flex items-center text-orange-600">
@@ -215,14 +323,6 @@ export default function CustomerBookingsPage() {
     );
   }
 
-  function isUrgent(booking: Booking): boolean {
-    const today = new Date();
-    const returnDate = new Date(booking.booked_to);
-    const daysUntilReturn = Math.ceil(
-      (returnDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)
-    );
-    return daysUntilReturn <= 2 && booking.status !== 'completed' && booking.status !== 'cancelled';
-  }
 
   if (loading) {
     return (
@@ -244,8 +344,8 @@ export default function CustomerBookingsPage() {
         <div className="grid grid-cols-1 gap-6">
           {bookings.map((booking) => {
             const products = Array.isArray(booking.products) ? booking.products : [];
-            const urgent = isUrgent(booking);
-            
+            const isUrgent = isBookingUrgent(booking);
+            const urgentReason = isUrgent ? getUrgentReason(booking) : '';
             const canDelete = isPending(booking);
             
             return (
@@ -253,19 +353,22 @@ export default function CustomerBookingsPage() {
                 key={booking.id}
                 className="bg-white border border-gray-200 rounded-lg p-6 relative hover:shadow-lg transition-shadow"
               >
+                {/* Urgent Badge */}
+                {isUrgent && (
+                  <div className="absolute top-4 right-4 z-10">
+                    <span 
+                      className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded uppercase shadow-lg"
+                      title={urgentReason}
+                    >
+                      URGENT
+                    </span>
+                  </div>
+                )}
+                
                 <Link
                   href={`/salesman/order-details/${booking.id}`}
                   className="block"
                 >
-                  {/* Urgent Badge */}
-                  {urgent && (
-                    <div className="absolute top-4 right-20">
-                      <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
-                        URGENT
-                      </span>
-                    </div>
-                  )}
-
                   <div className="flex items-start gap-6">
                     {/* Product Images */}
                     <div className="flex gap-2">

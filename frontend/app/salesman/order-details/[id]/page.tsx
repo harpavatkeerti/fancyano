@@ -1,3 +1,4 @@
+
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -55,6 +56,10 @@ export default function OrderDetailsPage() {
     securityDepositDue: '',
     refundToCustomer: 0,
   });
+  
+  // Transportation charges
+  const [transportationCharges, setTransportationCharges] = useState('');
+  const [showTransportationInput, setShowTransportationInput] = useState(false);
 
   // Refund form - per-item structure
   const [showRecordRefund, setShowRecordRefund] = useState(false);
@@ -67,9 +72,9 @@ export default function OrderDetailsPage() {
 
   // Measurement confirmation modal
   const [showMeasurementModal, setShowMeasurementModal] = useState(false);
-  const [measurements, setMeasurements] = useState<{[key: number]: any}>({});
+  const [measurements, setMeasurements] = useState<{[key: string]: any}>({});
   const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
-  const [specialRequirements, setSpecialRequirements] = useState<{[key: number]: string}>({});
+  const [specialRequirements, setSpecialRequirements] = useState<{[key: string]: string}>({});
   
   // View/Edit measurements modal
   const [showViewMeasurements, setShowViewMeasurements] = useState(false);
@@ -162,6 +167,8 @@ export default function OrderDetailsPage() {
       console.log('Fetched booking data:', bookingResponse.data);
       console.log('Paid amount:', bookingResponse.data.paid_amount);
       console.log('Total amount:', bookingResponse.data.total_amount);
+      console.log('OTHER CHARGES FROM DB:', bookingResponse.data.other_charges);
+      console.log('Transportation opted:', bookingResponse.data.transportation_opted);
       
       // Debug: Log product images
       if (bookingResponse.data.products) {
@@ -191,7 +198,30 @@ export default function OrderDetailsPage() {
           const measurementsData = typeof bookingResponse.data.measurements === 'string' 
             ? JSON.parse(bookingResponse.data.measurements)
             : bookingResponse.data.measurements;
-          setMeasurements(measurementsData || {});
+          
+          // Convert old format (keyed by product.id) to new format (keyed by product.id + dates)
+          const convertedMeasurements: {[key: string]: any} = {};
+          const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+          
+          if (typeof measurementsData === 'object' && measurementsData !== null) {
+            products.forEach((product: any) => {
+              const productId = product.id;
+              const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
+              const bookedTo = product.booked_to || bookingResponse.data.booked_to;
+              const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
+              
+              // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
+              // This ensures each product instance with different dates gets independent measurements
+              const productMeas = measurementsData[uniqueKey] || measurementsData[productId] || {};
+              if (Object.keys(productMeas).length > 0) {
+                // Only store with unique key - don't create backward compatibility entries
+                // to prevent overwriting when same product has multiple instances
+                convertedMeasurements[uniqueKey] = productMeas;
+              }
+            });
+          }
+          
+          setMeasurements(convertedMeasurements);
         } catch (error) {
           console.error('Error parsing measurements:', error);
         }
@@ -204,16 +234,27 @@ export default function OrderDetailsPage() {
             ? JSON.parse(bookingResponse.data.special_requirements)
             : bookingResponse.data.special_requirements;
           if (typeof specialReqsData === 'object' && specialReqsData !== null) {
-            // Convert all keys to numbers to match product IDs
-            const normalizedSpecReqs: {[key: number]: string} = {};
-            Object.keys(specialReqsData).forEach((key: string) => {
-              const productId = parseInt(key, 10);
-              const value = specialReqsData[key as keyof typeof specialReqsData];
-              if (!isNaN(productId) && value && typeof value === 'string') {
-                normalizedSpecReqs[productId] = value;
+            // Convert old format to new format (keyed by product.id + dates)
+            const convertedSpecialReqs: {[key: string]: string} = {};
+            const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+            
+            products.forEach((product: any) => {
+              const productId = product.id;
+              const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
+              const bookedTo = product.booked_to || bookingResponse.data.booked_to;
+              const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
+              
+              // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
+              // This ensures each product instance with different dates gets independent special requirements
+              const productReq = specialReqsData[uniqueKey] || specialReqsData[productId] || '';
+              if (productReq && typeof productReq === 'string') {
+                // Only store with unique key - don't create backward compatibility entries
+                // to prevent overwriting when same product has multiple instances
+                convertedSpecialReqs[uniqueKey] = productReq;
               }
             });
-            setSpecialRequirements(normalizedSpecReqs);
+            
+            setSpecialRequirements(convertedSpecialReqs);
           }
         } catch (error) {
           // If it's not JSON, it might be plain text (old format)
@@ -553,7 +594,13 @@ export default function OrderDetailsPage() {
       // The backend will automatically:
       // 1. Update booking_products table (releasing old dates, blocking new dates)
       // 2. Recalculate booking-level dates
-      await bookingsApi.update(booking!.id, {
+      const bookingId = booking?.id || Number(params.id);
+      if (!bookingId || isNaN(bookingId)) {
+        toast.error('Invalid booking ID');
+        return;
+      }
+      
+      await bookingsApi.update(bookingId, {
         products: [{
           id: selectedProduct.id,
           booked_from: changeDateFrom,
@@ -564,7 +611,7 @@ export default function OrderDetailsPage() {
       // Record the charge if any (as date_change_charge - does not affect payment calculations)
       if (finalCharge > 0) {
         await paymentTransactionsApi.create({
-          booking_id: booking!.id,
+          booking_id: bookingId,
           amount: finalCharge,
           type: 'date_change_charge',
           method: 'Manual',
@@ -657,6 +704,55 @@ export default function OrderDetailsPage() {
     });
   }
 
+  async function saveTransportationCharges() {
+    if (!booking || !transportationCharges) {
+      return;
+    }
+
+    const chargesAmount = parseFloat(transportationCharges);
+    if (isNaN(chargesAmount) || chargesAmount <= 0) {
+      toast.error('Please enter a valid transportation charge amount');
+      return;
+    }
+
+    try {
+      console.log('💰 Saving transportation charges:', {
+        booking_id: booking.id,
+        current_total: booking.total_amount,
+        charges_amount: chargesAmount,
+        new_total: (typeof booking.total_amount === 'number' ? booking.total_amount : parseFloat(String(booking.total_amount || '0')) || 0) + chargesAmount
+      });
+
+      // Calculate new total: rental subtotal + transportation charges
+      const currentTotal = typeof booking.total_amount === 'number' 
+        ? booking.total_amount 
+        : parseFloat(String(booking.total_amount || '0')) || 0;
+      
+      // Current total is rental only, add transportation charges
+      const newTotalAmount = currentTotal + chargesAmount;
+
+      // Update the booking
+      const updateResponse = await bookingsApi.update(booking.id, {
+        other_charges: chargesAmount,
+        total_amount: newTotalAmount,
+      });
+
+      console.log('✅ Update response:', updateResponse);
+
+      toast.success('Transportation charges added successfully!');
+      setShowTransportationInput(false);
+      setTransportationCharges('');
+      
+      // Refresh the booking
+      console.log('🔄 Refreshing booking data...');
+      await fetchBooking();
+      console.log('✅ Booking refreshed. New other_charges:', booking?.other_charges);
+    } catch (error) {
+      console.error('❌ Error saving transportation charges:', error);
+      toast.error('Failed to save transportation charges');
+    }
+  }
+
   async function handleRecordPayment() {
     const amount = parseFloat(paymentAmount);
     if (isNaN(amount) || amount <= 0) {
@@ -673,8 +769,14 @@ export default function OrderDetailsPage() {
 
     try {
       // Create payment transaction record
+      const bookingId = booking?.id || Number(params.id);
+      if (!bookingId || isNaN(bookingId)) {
+        toast.error('Invalid booking ID');
+        return;
+      }
+      
       await paymentTransactionsApi.create({
-        booking_id: booking!.id,
+        booking_id: bookingId,
         amount: amount,
         type: 'payment',
         method: 'Cash/UPI', // You can make this selectable later
@@ -701,6 +803,11 @@ export default function OrderDetailsPage() {
   // Calculate booking status based on payments and refunds
   function calculateBookingStatus(): string {
     if (!booking) return 'pending';
+
+    // If booking is cancelled, return cancelled status immediately
+    if (booking.status === 'cancelled') {
+      return 'cancelled';
+    }
 
     const totalAmount = typeof booking.total_amount === 'number'
       ? booking.total_amount
@@ -856,6 +963,11 @@ export default function OrderDetailsPage() {
 
       let newStatus = currentBooking.status;
 
+      // Don't update status if booking is cancelled
+      if (currentBooking.status === 'cancelled') {
+        return;
+      }
+
       // Once refunds start, the order is in "refund phase" - status should only be determined by refund completion
       if (allProductsHaveRefunds) {
         console.log('Setting status to completed because all products have refunds');
@@ -901,13 +1013,13 @@ export default function OrderDetailsPage() {
   }
 
   // Measurement helper functions
-  function handleMeasurementChange(productId: number, field: string, value: string) {
+  function handleMeasurementChange(uniqueKey: string, field: string, value: string) {
     // Remove any non-digit characters
     const numericValue = value.replace(/\D/g, '');
     
     // Check if more than 2 digits
     if (numericValue.length > 2) {
-      const errorKey = `${productId}-${field}`;
+      const errorKey = `${uniqueKey}-${field}`;
       setMeasurementErrors({
         ...measurementErrors,
         [errorKey]: 'Please enter correct measurement (maximum 2 digits)',
@@ -916,7 +1028,7 @@ export default function OrderDetailsPage() {
     }
     
     // Clear error if valid
-    const errorKey = `${productId}-${field}`;
+    const errorKey = `${uniqueKey}-${field}`;
     setMeasurementErrors({
       ...measurementErrors,
       [errorKey]: '',
@@ -924,8 +1036,8 @@ export default function OrderDetailsPage() {
     
     setMeasurements({
       ...measurements,
-      [productId]: {
-        ...measurements[productId],
+      [uniqueKey]: {
+        ...measurements[uniqueKey] || {},
         [field]: numericValue,
       },
     });
@@ -1167,10 +1279,31 @@ export default function OrderDetailsPage() {
             />
           </svg>
         </button>
-        <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
+          {booking && (
+            <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg text-sm font-semibold">
+              Order ID: #{booking.id}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Order Status Banner */}
+      {booking?.status === 'cancelled' && (
+        <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4 mb-6">
+          <div className="flex items-center">
+            <svg className="w-6 h-6 text-red-600 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div>
+              <h3 className="text-lg font-bold text-red-800">Order Cancelled</h3>
+              <p className="text-sm text-red-700">This booking has been cancelled.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isOrderCompleted && (
         <div className="bg-green-50 border-l-4 border-green-500 rounded-lg p-4 mb-6">
           <div className="flex items-center">
@@ -1314,32 +1447,50 @@ export default function OrderDetailsPage() {
                     <button
                       onClick={() => {
                         setSelectedProductForMeasurements(product);
+                        // Create unique key for this product instance
+                        const bookedFrom = product.booked_from || booking?.booked_from;
+                        const bookedTo = product.booked_to || booking?.booked_to;
+                        const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+                        
                         // Always load from the main measurements state (which includes unsaved edits)
-                        const productMeasurements = measurements[product.id] || {};
+                        // Use only unique key to ensure each product instance has independent measurements
+                        const productMeasurements = measurements[uniqueKey] || {};
                         const hasMeasurements = Object.keys(productMeasurements).length > 0;
                         
                         // If measurements exist, load them for editing
                         if (hasMeasurements) {
                           setEditingMeasurements(productMeasurements);
-                          setEditingSpecialRequirements(specialRequirements[product.id] || '');
+                          setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
                           setIsEditingMeasurements(false); // Start in view mode
                         } else {
                           // No measurements - start in edit mode, but preserve any existing unsaved data
                           setEditingMeasurements(productMeasurements);
-                          setEditingSpecialRequirements(specialRequirements[product.id] || '');
+                          setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
                           setIsEditingMeasurements(true);
                         }
                         setShowViewMeasurements(true);
                       }}
                       className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        measurements[product.id] && Object.keys(measurements[product.id]).length > 0
-                          ? 'bg-blue-600 text-white hover:bg-blue-700'
-                          : 'bg-green-600 text-white hover:bg-green-700'
+                        (() => {
+                          const bookedFrom = product.booked_from || booking?.booked_from;
+                          const bookedTo = product.booked_to || booking?.booked_to;
+                          const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+                          const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
+                          return productMeas && Object.keys(productMeas).length > 0
+                            ? 'bg-blue-600 text-white hover:bg-blue-700'
+                            : 'bg-green-600 text-white hover:bg-green-700';
+                        })()
                       }`}
                     >
-                      {measurements[product.id] && Object.keys(measurements[product.id]).length > 0
-                        ? '📏 Measurements'
-                        : '➕ Add Measurements'}
+                      {(() => {
+                        const bookedFrom = product.booked_from || booking?.booked_from;
+                        const bookedTo = product.booked_to || booking?.booked_to;
+                        const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+                        const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
+                        return productMeas && Object.keys(productMeas).length > 0
+                          ? '📏 Measurements'
+                          : '➕ Add Measurements';
+                      })()}
                     </button>
                   )}
                 </div>
@@ -1420,37 +1571,120 @@ export default function OrderDetailsPage() {
               </h3>
             </div>
             <div className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Subtotal</span>
-                <span className="font-medium">
-                  ₹{Math.floor(
-                    typeof booking.total_amount === 'number' 
-                      ? booking.total_amount 
-                      : parseFloat(booking.total_amount) || 0
-                  ).toLocaleString('en-IN')}
-                </span>
-              </div>
               {(() => {
-                const isTransportationOpted = booking.transportation_opted === true || 
-                                              booking.transportation_opted === 'true' || 
-                                              booking.transportation_opted === 1;
-                const transportationCharge = parseFloat(booking.other_charges || '0') || 0;
+                // Calculate rental subtotal (total_amount - other_charges)
+                const totalAmount = typeof booking.total_amount === 'number' 
+                  ? booking.total_amount 
+                  : parseFloat(String(booking.total_amount || '0')) || 0;
                 
-                if (isTransportationOpted) {
-                  return (
-                    <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-teal-700">Local Transportation</span>
-                        <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
-                      </div>
-                      <span className="text-sm text-teal-700 font-semibold">
-                        ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
-                      </span>
-                    </div>
-                  );
+                let otherCharges = 0;
+                if (booking.other_charges !== null && booking.other_charges !== undefined) {
+                  if (typeof booking.other_charges === 'number') {
+                    otherCharges = booking.other_charges;
+                  } else if (typeof booking.other_charges === 'string') {
+                    otherCharges = parseFloat(booking.other_charges) || 0;
+                  }
                 }
-                return null;
+                
+                const rentalSubtotal = totalAmount - otherCharges;
+                
+                return (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Subtotal</span>
+                    <span className="font-medium">
+                      ₹{Math.floor(rentalSubtotal).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                );
               })()}
+               {(() => {
+                 const isTransportationOpted = booking.transportation_opted === true || 
+                                               booking.transportation_opted === 'true' || 
+                                               booking.transportation_opted === 1;
+                 
+                 // Parse other_charges properly
+                 let transportationCharge = 0;
+                 if (booking.other_charges !== null && booking.other_charges !== undefined) {
+                   if (typeof booking.other_charges === 'number') {
+                     transportationCharge = booking.other_charges;
+                   } else if (typeof booking.other_charges === 'string') {
+                     transportationCharge = parseFloat(booking.other_charges) || 0;
+                   }
+                 }
+                 
+                 console.log('🚚 Transportation Display:', {
+                   transportation_opted: booking.transportation_opted,
+                   isTransportationOpted,
+                   other_charges_raw: booking.other_charges,
+                   other_charges_type: typeof booking.other_charges,
+                   transportationCharge
+                 });
+                 
+                 if (isTransportationOpted) {
+                   if (transportationCharge === 0) {
+                     // Show input to add charges
+                     return (
+                       <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3">
+                         <div className="flex items-center justify-between mb-2">
+                           <div className="flex items-center gap-2">
+                             <span className="text-sm font-medium text-yellow-800">Local Transportation</span>
+                             <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded font-semibold">Opted</span>
+                           </div>
+                           <span className="text-sm text-yellow-700 font-semibold">₹0</span>
+                         </div>
+                         {!showTransportationInput ? (
+                           <button
+                             onClick={() => setShowTransportationInput(true)}
+                             className="w-full mt-2 text-xs px-3 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                           >
+                             Add Transportation Charges
+                           </button>
+                         ) : (
+                           <div className="mt-2 space-y-2">
+                             <div className="flex items-center gap-2">
+                               <span className="text-gray-700 font-medium text-sm">₹</span>
+                               <input
+                                 type="number"
+                                 value={transportationCharges}
+                                 onChange={(e) => {
+                                   const value = e.target.value;
+                                   if (value === '' || parseFloat(value) >= 0) {
+                                     setTransportationCharges(value);
+                                   }
+                                 }}
+                                 placeholder="Enter amount"
+                                 min="0"
+                                 step="1"
+                                 className="flex-1 px-2 py-1.5 text-sm border border-yellow-300 rounded focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
+                               />
+                             </div>
+                             <button
+                               onClick={saveTransportationCharges}
+                               className="w-full px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition-colors"
+                             >
+                               Save Charges
+                             </button>
+                           </div>
+                         )}
+                       </div>
+                     );
+                   } else {
+                     // Show the charges
+                     return (
+                       <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
+                         <div className="flex items-center gap-2">
+                           <span className="text-sm text-teal-700">Local Transportation</span>
+                           <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
+                         </div>
+                         <span className="text-sm text-teal-700 font-semibold">
+                           ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
+                         </span>
+                       </div>
+                     );
+                   }
+                 }
+                 return null;
+               })()}
               <div className="flex justify-between">
                 <span className="text-gray-600">Security Deposit</span>
                 <span className="font-medium">
@@ -1492,9 +1726,22 @@ export default function OrderDetailsPage() {
               const totalAmountNum = typeof booking.total_amount === 'number'
                 ? booking.total_amount
                 : parseFloat(booking.total_amount) || 0;
-              const securityDepositNum = typeof booking.security_deposit === 'number'
+              
+              // Calculate security deposit - use booking value or calculate from products
+              let securityDepositNum = typeof booking.security_deposit === 'number'
                 ? booking.security_deposit
                 : parseFloat(booking.security_deposit) || 0;
+              
+              // If security deposit is 0, calculate from products
+              if (securityDepositNum === 0 && products.length > 0) {
+                securityDepositNum = products.reduce((sum: number, product: any) => {
+                  const productSecurity = typeof product.security_deposit === 'number'
+                    ? product.security_deposit
+                    : parseFloat(String(product.security_deposit || '0')) || 0;
+                  return sum + productSecurity;
+                }, 0);
+              }
+              
               const paidAmountNum = typeof booking.paid_amount === 'number'
                 ? booking.paid_amount
                 : parseFloat(booking.paid_amount) || 0;
@@ -1537,13 +1784,25 @@ export default function OrderDetailsPage() {
                         <div className="flex flex-col pt-1 border-t border-gray-200">
                           <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
                           <span className="font-bold text-green-600 text-sm break-words">
-                            ₹{Math.floor(Math.max(0, Math.min(securityDepositNum, paidAmountNum - totalAmountNum))).toLocaleString('en-IN')}
+                            ₹{Math.floor(Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)))).toLocaleString('en-IN')}
                           </span>
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
                           <span className="text-xs text-gray-500 mb-0.5 font-semibold">Security Due</span>
-                          <span className={`font-bold text-sm break-words ${paidAmountNum >= totalRequired ? 'text-green-600' : 'text-red-600'}`}>
-                            {paidAmountNum >= totalRequired ? 'Fully Paid' : `₹${Math.floor(Math.max(0, securityDepositNum - Math.max(0, paidAmountNum - totalAmountNum))).toLocaleString('en-IN')}`}
+                          <span className={`font-bold text-sm break-words ${(() => {
+                            // Calculate security deposit paid
+                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                            // Calculate security due
+                            const securityDue = securityDepositNum - securityPaid;
+                            return securityDue <= 0 ? 'text-green-600' : 'text-red-600';
+                          })()}`}>
+                            {(() => {
+                              // Calculate security deposit paid
+                              const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                              // Calculate security due
+                              const securityDue = securityDepositNum - securityPaid;
+                              return securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`;
+                            })()}
                           </span>
                         </div>
                       </div>
@@ -3125,7 +3384,13 @@ export default function OrderDetailsPage() {
               Confirm your measurements to confirm your order
             </h3>
 
-            {products.map((product: any, index: number) => (
+            {products.map((product: any, index: number) => {
+              // Create unique key for this product instance
+              const bookedFrom = product.booked_from || booking.booked_from;
+              const bookedTo = product.booked_to || booking.booked_to;
+              const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+              
+              return (
               <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
                 <div className="flex gap-4 mb-4">
                   <div className="w-16 h-20 bg-gray-200 rounded overflow-hidden flex-shrink-0">
@@ -3146,7 +3411,7 @@ export default function OrderDetailsPage() {
                     </div>
                     <p className="text-sm text-gray-600 mt-1">₹{Math.floor(product.rent_per_day || 0)} / Day</p>
                     <p className="text-sm text-red-600 mt-1">
-                      Dates: {new Date(product.booked_from || booking.booked_from).toLocaleDateString('en-GB')} To {new Date(product.booked_to || booking.booked_to).toLocaleDateString('en-GB')}
+                      Dates: {new Date(bookedFrom).toLocaleDateString('en-GB')} To {new Date(bookedTo).toLocaleDateString('en-GB')}
                     </p>
                   </div>
                 </div>
@@ -3160,60 +3425,60 @@ export default function OrderDetailsPage() {
                         <input
                           type="text"
                           placeholder="Waist (in inches)"
-                          value={measurements[product.id]?.waist || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'waist', e.target.value)}
+                          value={measurements[uniqueKey]?.waist || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'waist', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-waist`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-waist`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-waist`]}</p>
+                        {measurementErrors[`${uniqueKey}-waist`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-waist`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Bust (in inches)"
-                          value={measurements[product.id]?.bust || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'bust', e.target.value)}
+                          value={measurements[uniqueKey]?.bust || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'bust', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-bust`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-bust`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-bust`]}</p>
+                        {measurementErrors[`${uniqueKey}-bust`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-bust`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Shoulder (in inches)"
-                          value={measurements[product.id]?.shoulder || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'shoulder', e.target.value)}
+                          value={measurements[uniqueKey]?.shoulder || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'shoulder', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-shoulder`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-shoulder`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-shoulder`]}</p>
+                        {measurementErrors[`${uniqueKey}-shoulder`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-shoulder`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves Up (in inches)"
-                          value={measurements[product.id]?.sleevesUp || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesUp', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesUp || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesUp', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesUp`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesUp`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesUp`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesUp`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesUp`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesUp`]}</p>
                         )}
                       </div>
                     </div>
@@ -3222,45 +3487,45 @@ export default function OrderDetailsPage() {
                         <input
                           type="text"
                           placeholder="Sleeves E (in inches)"
-                          value={measurements[product.id]?.sleevesE || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesE', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesE || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesE', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesE`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesE`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesE`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesE`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesE`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesE`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves B (in inches)"
-                          value={measurements[product.id]?.sleevesB || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesB', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesB || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesB', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesB`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesB`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesB`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesB`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesB`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesB`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Lehenga Length (in inches)"
-                          value={measurements[product.id]?.lehengaLength || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'lehengaLength', e.target.value)}
+                          value={measurements[uniqueKey]?.lehengaLength || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'lehengaLength', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-lehengaLength`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-lehengaLength`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-lehengaLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-lehengaLength`]}</p>
+                        {measurementErrors[`${uniqueKey}-lehengaLength`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-lehengaLength`]}</p>
                         )}
                       </div>
                     </div>
@@ -3273,60 +3538,60 @@ export default function OrderDetailsPage() {
                         <input
                           type="text"
                           placeholder="Side Tight (in inches)"
-                          value={measurements[product.id]?.sideTight || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sideTight', e.target.value)}
+                          value={measurements[uniqueKey]?.sideTight || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sideTight', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sideTight`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sideTight`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sideTight`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sideTight`]}</p>
+                        {measurementErrors[`${uniqueKey}-sideTight`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideTight`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves Tight (in inches)"
-                          value={measurements[product.id]?.sleevesTight || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesTight', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesTight || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesTight', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesTight`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesTight`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesTight`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesTight`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesTight`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesTight`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves Length (in inches)"
-                          value={measurements[product.id]?.sleevesLength || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesLength', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesLength || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLength', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesLength`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesLength`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesLength`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesLength`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLength`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Pant Length (in inches)"
-                          value={measurements[product.id]?.pantLength || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'pantLength', e.target.value)}
+                          value={measurements[uniqueKey]?.pantLength || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLength', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-pantLength`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-pantLength`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-pantLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-pantLength`]}</p>
+                        {measurementErrors[`${uniqueKey}-pantLength`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLength`]}</p>
                         )}
                       </div>
                     </div>
@@ -3335,60 +3600,60 @@ export default function OrderDetailsPage() {
                         <input
                           type="text"
                           placeholder="Side Loose (in inches)"
-                          value={measurements[product.id]?.sideLoose || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sideLoose', e.target.value)}
+                          value={measurements[uniqueKey]?.sideLoose || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sideLoose', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sideLoose`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sideLoose`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sideLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sideLoose`]}</p>
+                        {measurementErrors[`${uniqueKey}-sideLoose`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideLoose`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves Loose (in inches)"
-                          value={measurements[product.id]?.sleevesLoose || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesLoose', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesLoose || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLoose', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesLoose`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesLoose`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesLoose`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesLoose`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLoose`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Sleeves Length (in inches)"
-                          value={measurements[product.id]?.sleevesLengthLoose || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'sleevesLengthLoose', e.target.value)}
+                          value={measurements[uniqueKey]?.sleevesLengthLoose || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLengthLoose', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-sleevesLengthLoose`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-sleevesLengthLoose`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-sleevesLengthLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-sleevesLengthLoose`]}</p>
+                        {measurementErrors[`${uniqueKey}-sleevesLengthLoose`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLengthLoose`]}</p>
                         )}
                       </div>
                       <div>
                         <input
                           type="text"
                           placeholder="Pant Length (in inches)"
-                          value={measurements[product.id]?.pantLengthLoose || ''}
-                          onChange={(e) => handleMeasurementChange(product.id, 'pantLengthLoose', e.target.value)}
+                          value={measurements[uniqueKey]?.pantLengthLoose || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLengthLoose', e.target.value)}
                           maxLength={2}
                           className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${product.id}-pantLengthLoose`] ? 'border-red-500' : 'border-gray-300'
+                            measurementErrors[`${uniqueKey}-pantLengthLoose`] ? 'border-red-500' : 'border-gray-300'
                           }`}
                         />
-                        {measurementErrors[`${product.id}-pantLengthLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-pantLengthLoose`]}</p>
+                        {measurementErrors[`${uniqueKey}-pantLengthLoose`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLengthLoose`]}</p>
                         )}
                       </div>
                     </div>
@@ -3400,60 +3665,60 @@ export default function OrderDetailsPage() {
                       <input
                         type="text"
                         placeholder="Waist (in inches)"
-                        value={measurements[product.id]?.waist || ''}
-                        onChange={(e) => handleMeasurementChange(product.id, 'waist', e.target.value)}
+                        value={measurements[uniqueKey]?.waist || ''}
+                        onChange={(e) => handleMeasurementChange(uniqueKey, 'waist', e.target.value)}
                         maxLength={2}
                         className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${product.id}-waist`] ? 'border-red-500' : 'border-gray-300'
+                          measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
                         }`}
                       />
-                      {measurementErrors[`${product.id}-waist`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-waist`]}</p>
+                      {measurementErrors[`${uniqueKey}-waist`] && (
+                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-waist`]}</p>
                       )}
                     </div>
                     <div>
                       <input
                         type="text"
                         placeholder="Bust (in inches)"
-                        value={measurements[product.id]?.bust || ''}
-                        onChange={(e) => handleMeasurementChange(product.id, 'bust', e.target.value)}
+                        value={measurements[uniqueKey]?.bust || ''}
+                        onChange={(e) => handleMeasurementChange(uniqueKey, 'bust', e.target.value)}
                         maxLength={2}
                         className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${product.id}-bust`] ? 'border-red-500' : 'border-gray-300'
+                          measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
                         }`}
                       />
-                      {measurementErrors[`${product.id}-bust`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-bust`]}</p>
+                      {measurementErrors[`${uniqueKey}-bust`] && (
+                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-bust`]}</p>
                       )}
                     </div>
                     <div>
                       <input
                         type="text"
                         placeholder="Chest (in inches)"
-                        value={measurements[product.id]?.chest || ''}
-                        onChange={(e) => handleMeasurementChange(product.id, 'chest', e.target.value)}
+                        value={measurements[uniqueKey]?.chest || ''}
+                        onChange={(e) => handleMeasurementChange(uniqueKey, 'chest', e.target.value)}
                         maxLength={2}
                         className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${product.id}-chest`] ? 'border-red-500' : 'border-gray-300'
+                          measurementErrors[`${uniqueKey}-chest`] ? 'border-red-500' : 'border-gray-300'
                         }`}
                       />
-                      {measurementErrors[`${product.id}-chest`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-chest`]}</p>
+                      {measurementErrors[`${uniqueKey}-chest`] && (
+                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-chest`]}</p>
                       )}
                     </div>
                     <div>
                       <input
                         type="text"
                         placeholder="Shoulder (in inches)"
-                        value={measurements[product.id]?.shoulder || ''}
-                        onChange={(e) => handleMeasurementChange(product.id, 'shoulder', e.target.value)}
+                        value={measurements[uniqueKey]?.shoulder || ''}
+                        onChange={(e) => handleMeasurementChange(uniqueKey, 'shoulder', e.target.value)}
                         maxLength={2}
                         className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${product.id}-shoulder`] ? 'border-red-500' : 'border-gray-300'
+                          measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
                         }`}
                       />
-                      {measurementErrors[`${product.id}-shoulder`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${product.id}-shoulder`]}</p>
+                      {measurementErrors[`${uniqueKey}-shoulder`] && (
+                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-shoulder`]}</p>
                       )}
                     </div>
                   </div>
@@ -3466,17 +3731,22 @@ export default function OrderDetailsPage() {
                   </label>
                   <textarea
                     placeholder="Enter any additional fitting requirements"
-                    value={specialRequirements[product.id] || ''}
-                    onChange={(e) => setSpecialRequirements({
-                      ...specialRequirements,
-                      [product.id]: e.target.value,
-                    })}
+                    value={specialRequirements[uniqueKey] || ''}
+                    onChange={(e) => {
+                      const newValue = e.target.value;
+                      console.log(`📝 Updating special requirements for ${uniqueKey}:`, newValue);
+                      setSpecialRequirements({
+                        ...specialRequirements,
+                        [uniqueKey]: newValue,
+                      });
+                    }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
                     rows={2}
                   />
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             <div className="flex gap-3 mt-6">
               <button
@@ -3490,20 +3760,30 @@ export default function OrderDetailsPage() {
                   // Save measurements to booking
                   try {
                     // Update booking with measurements and special requirements
-                    const measurementsData = Object.keys(measurements).reduce((acc: any, productId: string) => {
-                      acc[productId] = measurements[parseInt(productId)];
-                      return acc;
-                    }, {});
-                    
-                    const specialReqsData = Object.keys(specialRequirements).reduce((acc: any, productId: string) => {
-                      if (specialRequirements[parseInt(productId)]) {
-                        acc[productId] = specialRequirements[parseInt(productId)];
-                      }
-                      return acc;
-                    }, {});
+                    // Use unique keys directly - no conversion needed
+                    const measurementsData = { ...measurements };
+                    // Ensure all special requirements are included, even empty strings
+                    const specialReqsData: {[key: string]: string} = {};
+                    products.forEach((product: any) => {
+                      const bookedFrom = product.booked_from || booking?.booked_from;
+                      const bookedTo = product.booked_to || booking?.booked_to;
+                      const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+                      // Include the value from state, or empty string if not set
+                      specialReqsData[uniqueKey] = specialRequirements[uniqueKey] || '';
+                    });
+
+                    console.log('💾 Saving measurements:', measurementsData);
+                    console.log('💾 Saving special requirements:', specialReqsData);
+                    console.log('💾 Current specialRequirements state:', specialRequirements);
 
                     // Save measurements to database
-                    await bookingsApi.update(booking!.id, {
+                    const bookingId = booking?.id || Number(params.id);
+                    if (!bookingId || isNaN(bookingId)) {
+                      toast.error('Invalid booking ID');
+                      return;
+                    }
+                    
+                    await bookingsApi.update(bookingId, {
                       measurements: measurementsData,
                       special_requirements: JSON.stringify(specialReqsData)
                     } as any);
@@ -3586,14 +3866,19 @@ export default function OrderDetailsPage() {
 
             {/* Measurements Display/Edit */}
             {(() => {
-              const productMeasurements = measurements[selectedProductForMeasurements.id] || {};
+              // Create unique key for this product instance (product.id + dates)
+              const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+              const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+              const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
+              
+              const productMeasurements = measurements[uniqueKey] || measurements[selectedProductForMeasurements.id] || {};
               const hasMeasurements = Object.keys(productMeasurements).length > 0;
               const isFemale = isFemaleClothing(selectedProductForMeasurements.name);
               const isMale = isMaleClothing(selectedProductForMeasurements.name);
               
               // Use editing state if in edit mode, otherwise use saved measurements
               const currentMeasurements = isEditingMeasurements ? editingMeasurements : productMeasurements;
-              const currentSpecialReqs = isEditingMeasurements ? editingSpecialRequirements : (specialRequirements[selectedProductForMeasurements.id] || '');
+              const currentSpecialReqs = isEditingMeasurements ? editingSpecialRequirements : (specialRequirements[uniqueKey] || '');
 
               // Helper function to handle measurement field change
               function handleEditMeasurementChange(field: string, value: string) {
@@ -3608,9 +3893,10 @@ export default function OrderDetailsPage() {
                 setEditingMeasurements(updatedEditingMeasurements);
                 
                 // Immediately update the main measurements state to preserve data when switching products
+                // Use unique key to avoid conflicts with same product but different dates
                 setMeasurements({
                   ...measurements,
-                  [selectedProductForMeasurements.id]: updatedEditingMeasurements,
+                  [uniqueKey]: updatedEditingMeasurements,
                 });
               }
 
@@ -3629,8 +3915,11 @@ export default function OrderDetailsPage() {
                           onClick={() => {
                             setIsEditingMeasurements(true);
                             // Preserve any existing measurements from the main state
-                            setEditingMeasurements(measurements[selectedProductForMeasurements.id] || {});
-                            setEditingSpecialRequirements(specialRequirements[selectedProductForMeasurements.id] || '');
+                            const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+                            const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+                            const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
+                            setEditingMeasurements(measurements[uniqueKey] || measurements[selectedProductForMeasurements.id] || {});
+                            setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
                           }}
                           className="px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700"
                         >
@@ -3791,11 +4080,11 @@ export default function OrderDetailsPage() {
                     )}
 
                     {/* Special Requirements */}
-                    {specialRequirements[selectedProductForMeasurements.id] && (
+                    {currentSpecialReqs && (
                       <div className="mt-6 pt-6 border-t border-gray-200">
                         <h3 className="text-lg font-semibold text-gray-900 mb-3">Special Requirements</h3>
                         <div className="bg-gray-50 rounded-lg p-4">
-                          <p className="text-gray-700 whitespace-pre-wrap">{specialRequirements[selectedProductForMeasurements.id]}</p>
+                          <p className="text-gray-700 whitespace-pre-wrap">{currentSpecialReqs}</p>
                         </div>
                       </div>
                     )}
@@ -3965,11 +4254,11 @@ export default function OrderDetailsPage() {
                         </div>
                       </div>
                     )}
-                    {specialRequirements[selectedProductForMeasurements.id] && (
+                    {currentSpecialReqs && (
                       <div className="mt-6 pt-6 border-t border-gray-200">
                         <h3 className="text-lg font-semibold text-gray-900 mb-3">Special Requirements</h3>
                         <div className="bg-gray-50 rounded-lg p-4">
-                          <p className="text-gray-700 whitespace-pre-wrap">{specialRequirements[selectedProductForMeasurements.id]}</p>
+                          <p className="text-gray-700 whitespace-pre-wrap">{currentSpecialReqs}</p>
                         </div>
                       </div>
                     )}
@@ -4230,9 +4519,13 @@ export default function OrderDetailsPage() {
                         const newValue = e.target.value;
                         setEditingSpecialRequirements(newValue);
                         // Immediately update the main special requirements state to preserve data when switching products
+                        // Use unique key to avoid conflicts with same product but different dates
+                        const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+                        const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+                        const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
                         setSpecialRequirements({
                           ...specialRequirements,
-                          [selectedProductForMeasurements.id]: newValue,
+                          [uniqueKey]: newValue,
                         });
                       }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -4251,9 +4544,12 @@ export default function OrderDetailsPage() {
                     onClick={() => {
                       setIsEditingMeasurements(false);
                       // Reset to saved values
-                      const productMeasurements = measurements[selectedProductForMeasurements.id] || {};
+                      const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+                      const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+                      const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
+                      const productMeasurements = measurements[uniqueKey] || measurements[selectedProductForMeasurements.id] || {};
                       setEditingMeasurements(productMeasurements);
-                      setEditingSpecialRequirements(specialRequirements[selectedProductForMeasurements.id] || '');
+                      setEditingSpecialRequirements(specialRequirements[uniqueKey] || specialRequirements[selectedProductForMeasurements.id] || '');
                     }}
                     className="px-6 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
                   >
@@ -4262,21 +4558,53 @@ export default function OrderDetailsPage() {
                   <button
                     onClick={async () => {
                       try {
-                        // Update measurements for this product
+                        const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+                        const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+                        const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
+                        
+                        // Update measurements for this product using unique key
                         const updatedMeasurements = {
                           ...measurements,
-                          [selectedProductForMeasurements.id]: editingMeasurements,
+                          [uniqueKey]: editingMeasurements,
                         };
                         
                         const updatedSpecialReqs = {
                           ...specialRequirements,
-                          [selectedProductForMeasurements.id]: editingSpecialRequirements,
+                          [uniqueKey]: editingSpecialRequirements,
                         };
 
-                        // Save to database
-                        await bookingsApi.update(booking!.id, {
-                          measurements: updatedMeasurements,
-                          special_requirements: JSON.stringify(updatedSpecialReqs)
+                        // Save to database - use only unique keys to prevent overwriting
+                        // when same product is booked for different dates
+                        const measurementsForDB: any = {};
+                        const specialReqsForDB: any = {};
+                        
+                        // Save all measurements using unique keys only
+                        // This ensures each product instance (with different dates) has independent measurements
+                        Object.keys(updatedMeasurements).forEach(key => {
+                          measurementsForDB[key] = updatedMeasurements[key];
+                        });
+                        
+                        // Save all special requirements using unique keys only
+                        Object.keys(updatedSpecialReqs).forEach(key => {
+                          specialReqsForDB[key] = updatedSpecialReqs[key];
+                        });
+
+                        // Save to database - use params.id to ensure we have the correct booking ID
+                        if (!booking?.id && !params.id) {
+                          toast.error('Booking ID not found');
+                          return;
+                        }
+                        const bookingId = booking?.id || Number(params.id);
+                        
+                        if (!bookingId || isNaN(bookingId)) {
+                          toast.error('Invalid booking ID');
+                          return;
+                        }
+                        
+                        console.log('Saving measurements for booking ID:', bookingId);
+                        await bookingsApi.update(bookingId, {
+                          measurements: measurementsForDB,
+                          special_requirements: JSON.stringify(specialReqsForDB)
                         } as any);
 
                         // Update local state
@@ -4286,9 +4614,14 @@ export default function OrderDetailsPage() {
                         
                         await fetchBooking();
                         toast.success('Measurements saved successfully!');
-                      } catch (error) {
+                      } catch (error: any) {
                         console.error('Error saving measurements:', error);
-                        toast.error('Error saving measurements');
+                        const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+                        if (error.response?.status === 404) {
+                          toast.error(`Booking not found. Please refresh the page.`);
+                        } else {
+                          toast.error(`Error saving measurements: ${errorMessage}`);
+                        }
                       }
                     }}
                     className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
@@ -4307,27 +4640,32 @@ export default function OrderDetailsPage() {
                   >
                     Close
                   </button>
-                  {measurements[selectedProductForMeasurements.id] && Object.keys(measurements[selectedProductForMeasurements.id]).length > 0 && (
-                    (hasProductRefund(selectedProductForMeasurements?.id) || isProductDropDatePassed(selectedProductForMeasurements)) ? (
-                      <div className="px-6 py-2 bg-gray-300 text-gray-600 rounded-lg font-medium cursor-not-allowed">
-                        {hasProductRefund(selectedProductForMeasurements?.id)
-                          ? 'Edit (Locked - Refund Completed)'
-                          : 'Edit (Locked - Drop Date Passed)'}
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => {
-                          setIsEditingMeasurements(true);
-                          const productMeasurements = measurements[selectedProductForMeasurements.id] || {};
-                          setEditingMeasurements(productMeasurements);
-                          setEditingSpecialRequirements(specialRequirements[selectedProductForMeasurements.id] || '');
-                        }}
-                        className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700"
-                      >
-                        Edit
-                      </button>
-                    )
-                  )}
+                  {(() => {
+                    const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
+                    const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
+                    const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
+                    const productMeas = measurements[uniqueKey] || measurements[selectedProductForMeasurements.id];
+                    return productMeas && Object.keys(productMeas).length > 0 && (
+                      (hasProductRefund(selectedProductForMeasurements?.id) || isProductDropDatePassed(selectedProductForMeasurements)) ? (
+                        <div className="px-6 py-2 bg-gray-300 text-gray-600 rounded-lg font-medium cursor-not-allowed">
+                          {hasProductRefund(selectedProductForMeasurements?.id)
+                            ? 'Edit (Locked - Refund Completed)'
+                            : 'Edit (Locked - Drop Date Passed)'}
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setIsEditingMeasurements(true);
+                            setEditingMeasurements(productMeas);
+                            setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
+                          }}
+                          className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700"
+                        >
+                          Edit
+                        </button>
+                      )
+                    );
+                  })()}
                 </>
               )}
             </div>

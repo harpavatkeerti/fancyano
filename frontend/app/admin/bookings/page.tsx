@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';
+import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Booking, Product } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, BookingProductTrackingModal } from '@/components/common';
 import dynamic from 'next/dynamic';
@@ -64,6 +65,14 @@ export default function BookingsPage() {
   const [productSearchCode, setProductSearchCode] = useState('');
   const [transportationCharge, setTransportationCharge] = useState(0);
   
+  // Credit note modal state
+  const [showCreditNoteModal, setShowCreditNoteModal] = useState(false);
+  const [bookingToCancel, setBookingToCancel] = useState<Booking | null>(null);
+  const [creditNoteData, setCreditNoteData] = useState({
+    validity: '',
+    amount: '',
+  });
+  
   // Date change functionality for modify modal - simplified like salesman portal
   const [selectedProductForDateChange, setSelectedProductForDateChange] = useState<any>(null);
   const [changeDateFrom, setChangeDateFrom] = useState('');
@@ -85,6 +94,11 @@ export default function BookingsPage() {
   const [showProductTrackingList, setShowProductTrackingList] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
+  const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
+  
+  // Warning modal state
+  const [showWarningModal, setShowWarningModal] = useState(false);
+  const [warningMessage, setWarningMessage] = useState('');
 
   useEffect(() => {
     fetchBookings();
@@ -249,6 +263,37 @@ export default function BookingsPage() {
       const oldStatus: string = selectedBooking.status;
       const newStatus: string = formData.status;
 
+      // Check if trying to confirm a booking that has a credit note
+      if (oldStatus !== 'confirmed' && newStatus === 'confirmed') {
+        try {
+          console.log('🔍 Checking credit notes for booking:', selectedBooking.id);
+          const creditNotesResponse = await creditNotesApi.getByBookingId(selectedBooking.id);
+          const creditNotes = creditNotesResponse.data || [];
+          console.log('📋 Found credit notes:', creditNotes);
+          
+          if (creditNotes.length > 0) {
+            const activeCreditNote = creditNotes.find((note: any) => {
+              const validUntil = new Date(note.valid_until);
+              const now = new Date();
+              const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
+              const isActive = validUntil >= now && availableAmount > 0;
+              console.log(`  Note ${note.id}: validUntil=${validUntil.toISOString()}, now=${now.toISOString()}, available=${availableAmount}, isActive=${isActive}`);
+              return isActive;
+            });
+            
+            if (activeCreditNote) {
+              console.log('❌ Blocking confirmation due to active credit note:', activeCreditNote.id);
+              toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
+              return;
+            }
+          }
+          console.log('✅ No active credit notes found, proceeding with confirmation');
+        } catch (error) {
+          console.error('Error checking credit notes:', error);
+          // Continue with update if check fails
+        }
+      }
+
       // Update booking basic info (date changes handled in separate modal)
       await bookingsApi.update(selectedBooking.id, formData);
       
@@ -316,23 +361,66 @@ export default function BookingsPage() {
     }
   }
 
-  async function handleCancel(id: number, customerName: string) {
-    if (!confirm(`Are you sure you want to cancel the booking with "${customerName}"? This action cannot be undone.`)) {
-      return;
-    }
+  async function handleCancelClick(id: number, customerName: string) {
     try {
-      // First, fetch the full booking details
+      // Fetch the booking details
       const response = await bookingsApi.getById(id);
       const booking = response.data;
-      
-      // Update the status and send the complete booking
-      await bookingsApi.update(id, {
-        ...booking,
+      setBookingToCancel(booking);
+      setShowCreditNoteModal(true);
+      // Reset credit note form
+      setCreditNoteData({ validity: '', amount: '' });
+    } catch (error) {
+      console.error('Error fetching booking:', error);
+      toast.error('Failed to load booking details');
+    }
+  }
+
+  async function handleConfirmCancel() {
+    if (!bookingToCancel) return;
+
+    try {
+      // Cancel the booking
+      await bookingsApi.update(bookingToCancel.id, {
+        ...bookingToCancel,
         status: 'cancelled'
       });
-      
+
+      // Create credit note if validity and amount are provided
+      if (creditNoteData.validity && creditNoteData.amount) {
+        const amount = parseFloat(creditNoteData.amount);
+        if (amount > 0) {
+          try {
+            const adminName = localStorage.getItem('admin_name') || 'Admin';
+            await creditNotesApi.create({
+              booking_id: bookingToCancel.id,
+              customer_name: bookingToCancel.customer_name,
+              customer_phone: bookingToCancel.customer_phone,
+              amount: amount,
+              valid_until: creditNoteData.validity,
+              issued_by: adminName,
+              notes: `Credit note issued for cancelled booking #${bookingToCancel.id}`,
+            });
+            toast.success('Booking cancelled and credit note issued successfully');
+          } catch (error: any) {
+            console.error('Error creating credit note:', error);
+            const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to create credit note';
+            toast.error(errorMessage);
+            // Still show success for cancellation even if credit note creation fails
+            toast.success('Booking cancelled successfully');
+          }
+        } else {
+          toast.success('Booking cancelled successfully');
+        }
+      } else {
+        toast.success('Booking cancelled successfully');
+      }
+
+      // Reset and refresh
+      setShowCreditNoteModal(false);
+      setBookingToCancel(null);
+      setCreditNoteData({ validity: '', amount: '' });
       await fetchBookings();
-      toast.success('Booking cancelled successfully');
     } catch (error) {
       console.error('Error cancelling booking:', error);
       toast.error('Failed to cancel booking. Please try again.');
@@ -566,6 +654,158 @@ export default function BookingsPage() {
   }
 
 
+  // Function to check if a booking is urgent (based on tight scheduling with other bookings)
+  function isBookingUrgent(booking: Booking): boolean {
+    // Don't check urgent status for cancelled bookings
+    if (booking.status === 'cancelled') {
+      return false;
+    }
+
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      // Check all OTHER bookings for the SAME product
+      for (const otherBooking of bookings) {
+        // Skip same booking and cancelled bookings
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          // Check if it's the same product (by product ID or code)
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          // Check if other booking drops within 2 days BEFORE this booking's pickup
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            return true;
+          }
+
+          // Check if other booking picks up within 2 days AFTER this booking's drop
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Function to get urgent reason
+  function getUrgentReason(booking: Booking): string {
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const reasons: string[] = [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      // Check all OTHER bookings for the SAME product
+      for (const otherBooking of bookings) {
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndPickup} day gap before pickup`);
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndNextPickup} day gap after return`);
+          }
+        }
+      }
+    }
+
+    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
+  }
+
+  async function checkTightSchedule() {
+    try {
+      const warnings: string[] = [];
+
+      for (const product of addFormData.products) {
+        const thisPickupDate = new Date(product.booked_from);
+        const thisDropDate = new Date(product.booked_to);
+        thisPickupDate.setHours(0, 0, 0, 0);
+        thisDropDate.setHours(0, 0, 0, 0);
+
+        for (const otherBooking of bookings) {
+          if (otherBooking.status === 'cancelled') continue;
+
+          const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+          
+          for (const otherProduct of otherProducts) {
+            if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+              continue;
+            }
+
+            const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+            const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+            otherPickupDate.setHours(0, 0, 0, 0);
+            otherDropDate.setHours(0, 0, 0, 0);
+
+            const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+              warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndPickup} day before your selected date.`);
+              break;
+            }
+
+            const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+              warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndNextPickup} day after your selected date.`);
+              break;
+            }
+          }
+        }
+      }
+
+      if (warnings.length > 0) {
+        return {
+          hasTightSchedule: true,
+          message: warnings.join(' ')
+        };
+      }
+
+      return { hasTightSchedule: false, message: '' };
+    } catch (error) {
+      console.error('Error checking tight schedule:', error);
+      return { hasTightSchedule: false, message: '' };
+    }
+  }
+
   async function handleCreateBooking() {
     // Basic required field validation
     if (!addFormData.customer_name || !addFormData.customer_phone || !addFormData.alternate_phone || addFormData.products.length === 0) {
@@ -614,7 +854,23 @@ export default function BookingsPage() {
       return;
     }
 
+    // Check for tight schedule (bookings within 2 days)
+    const tightScheduleCheck = await checkTightSchedule();
+    if (tightScheduleCheck.hasTightSchedule) {
+      setWarningMessage(tightScheduleCheck.message);
+      setShowWarningModal(true);
+      return;
+    }
+
+    await createBookingConfirmed();
+  }
+
+  async function createBookingConfirmed() {
     try {
+      const country1 = getCountryByCode(addFormData.customer_phone_country);
+      const country2 = getCountryByCode(addFormData.alternate_phone_country);
+      const fullPhone1 = `${country1?.callingCode}${addFormData.customer_phone}`;
+      const fullPhone2 = `${country2?.callingCode}${addFormData.alternate_phone}`;
       const finalTotal = calculateTotal();
       
       await bookingsApi.create({
@@ -651,6 +907,12 @@ export default function BookingsPage() {
     const matchesSearch = b.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (b.customer_phone && b.customer_phone.includes(searchTerm));
     
+    // Urgent filter
+    const isUrgent = isBookingUrgent(b);
+    const matchesUrgentFilter = urgentFilter === 'all' || 
+      (urgentFilter === 'urgent' && isUrgent) ||
+      (urgentFilter === 'normal' && !isUrgent);
+    
     // Date range filter - check if booking overlaps with selected date range
     let matchesDateRange = true;
     if (filterDateFrom && filterDateTo) {
@@ -678,7 +940,7 @@ export default function BookingsPage() {
       matchesDateRange = hasOverlap;
     }
     
-    return matchesSearch && matchesDateRange;
+    return matchesSearch && matchesUrgentFilter && matchesDateRange;
   });
 
   if (loading) {
@@ -715,6 +977,18 @@ export default function BookingsPage() {
               minDate="2000-01-01"
             />
           </div>
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Status:</label>
+            <select
+              value={urgentFilter}
+              onChange={(e) => setUrgentFilter(e.target.value as 'all' | 'urgent' | 'normal')}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"
+            >
+              <option value="all">All Bookings</option>
+              <option value="urgent">🚨 Urgent Only</option>
+              <option value="normal">Normal Only</option>
+            </select>
+          </div>
           {(filterDateFrom || filterDateTo) && (
             <button
               onClick={() => {
@@ -745,6 +1019,9 @@ export default function BookingsPage() {
           <thead className="bg-gray-50">
             <tr>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Booking ID
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Customer Name
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -768,10 +1045,23 @@ export default function BookingsPage() {
             {filteredBookings.map((booking) => {
               const products = Array.isArray(booking.products) ? booking.products : [];
               const productCount = products.length;
+              const isUrgent = isBookingUrgent(booking);
+              const urgentReason = isUrgent ? getUrgentReason(booking) : '';
+              
               return (
-                <tr key={booking.id} className="hover:bg-gray-50">
+                <tr key={booking.id} className="hover:bg-gray-50 relative">
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {booking.customer_name}
+                    <span className="font-semibold text-blue-600">#{booking.id}</span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    <div className="flex items-center gap-2">
+                      {booking.customer_name}
+                    </div>
+                    {isUrgent && urgentReason && (
+                      <div className="text-xs text-red-600 font-medium mt-1">
+                        {urgentReason}
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     {productCount} {productCount === 1 ? 'item' : 'items'}
@@ -848,11 +1138,21 @@ export default function BookingsPage() {
                       {/* Cancel Button */}
                       {booking.status !== 'cancelled' && (
                         <button
-                          onClick={() => handleCancel(booking.id, booking.customer_name)}
+                          onClick={() => handleCancelClick(booking.id, booking.customer_name)}
                           className="text-red-600 hover:text-red-900 hover:underline transition-colors"
                         >
                           Cancel
                         </button>
+                      )}
+                      
+                      {/* Urgent Badge - At the end */}
+                      {isUrgent && (
+                        <span 
+                          className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded uppercase"
+                          title={urgentReason}
+                        >
+                          URGENT
+                        </span>
                       )}
                     </div>
                   </td>
@@ -906,8 +1206,13 @@ export default function BookingsPage() {
                 <div className="mt-6">
                   <h3 className="text-lg font-semibold mb-4">Products in this Booking</h3>
                   <div className="space-y-3">
-                    {selectedBooking.products.map((product: any) => (
-                      <div key={product.id} className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex items-center justify-between">
+                    {selectedBooking.products.map((product: any, index: number) => {
+                      const bookedFrom = product.booked_from || selectedBooking.booked_from;
+                      const bookedTo = product.booked_to || selectedBooking.booked_to;
+                      const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}_${index}`;
+                      
+                      return (
+                      <div key={uniqueKey} className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex items-center justify-between">
                         <div className="flex items-center gap-4">
                           {/* Product Image */}
                           <div className="w-16 h-20 bg-gray-100 rounded overflow-hidden flex-shrink-0">
@@ -968,7 +1273,8 @@ export default function BookingsPage() {
                           📅 Change Dates
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1421,8 +1727,11 @@ export default function BookingsPage() {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-200">
-                          {addFormData.products.map((product, index) => (
-                            <tr key={product.id} className="hover:bg-gray-50 transition-colors">
+                          {addFormData.products.map((product, index) => {
+                            const uniqueKey = `${product.id}_${product.booked_from || ''}_${product.booked_to || ''}_${index}`;
+                            
+                            return (
+                            <tr key={uniqueKey} className="hover:bg-gray-50 transition-colors">
                               <td className="px-4 py-4 text-center">
                                 <span className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-blue-100 text-blue-600 font-bold text-sm">
                                   {index + 1}
@@ -1488,7 +1797,8 @@ export default function BookingsPage() {
                                 </button>
                               </td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -1813,8 +2123,12 @@ export default function BookingsPage() {
                       const hasImage = product.image && product.image !== null && product.image !== '';
                       const imageUrl = hasImage ? getImageUrl(product.image) : null;
                       
+                      const bookedFrom = product.booked_from || viewingBooking.booked_from;
+                      const bookedTo = product.booked_to || viewingBooking.booked_to;
+                      const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}_${index}`;
+                      
                       return (
-                        <div key={index} className="bg-white rounded-lg p-4 shadow-sm border border-purple-200">
+                        <div key={uniqueKey} className="bg-white rounded-lg p-4 shadow-sm border border-purple-200">
                           <div className="flex justify-between items-start gap-4">
                             {/* Product Image */}
                             {imageUrl && (
@@ -1934,8 +2248,9 @@ export default function BookingsPage() {
                 const products = Array.isArray(viewingBooking.products) ? viewingBooking.products : [];
                 
                 // Parse measurements and special requirements
-                let parsedMeas: {[key: number]: any} = {};
-                let parsedSpecReqs: {[key: number]: string} = {};
+                // Use string keys to support both old format (productId) and new format (uniqueKey)
+                let parsedMeas: {[key: string]: any} = {};
+                let parsedSpecReqs: {[key: string]: string} = {};
 
                 if (viewingBooking.measurements) {
                   try {
@@ -1943,15 +2258,8 @@ export default function BookingsPage() {
                       ? JSON.parse(viewingBooking.measurements)
                       : viewingBooking.measurements;
                     if (typeof measurementsData === 'object' && measurementsData !== null) {
-                      // Convert all keys to numbers to match product IDs
-                      parsedMeas = Object.keys(measurementsData).reduce((acc: {[key: number]: any}, key: string) => {
-                        const productId = parseInt(key, 10);
-                        const value = measurementsData[key as keyof typeof measurementsData];
-                        if (!isNaN(productId) && value) {
-                          acc[productId] = value;
-                        }
-                        return acc;
-                      }, {});
+                      // Preserve all keys (both numeric productId and uniqueKey format)
+                      parsedMeas = { ...measurementsData };
                     }
                   } catch (error) {
                     console.error('Error parsing measurements:', error);
@@ -1964,15 +2272,8 @@ export default function BookingsPage() {
                       ? JSON.parse(viewingBooking.special_requirements)
                       : viewingBooking.special_requirements;
                     if (typeof specialReqsData === 'object' && specialReqsData !== null) {
-                      // Convert all keys to numbers to match product IDs
-                      parsedSpecReqs = Object.keys(specialReqsData).reduce((acc: {[key: number]: string}, key: string) => {
-                        const productId = parseInt(key, 10);
-                        const value = specialReqsData[key as keyof typeof specialReqsData];
-                        if (!isNaN(productId) && value && typeof value === 'string' && value.trim().length > 0) {
-                          acc[productId] = value;
-                        }
-                        return acc;
-                      }, {});
+                      // Preserve all keys (both numeric productId and uniqueKey format)
+                      parsedSpecReqs = { ...specialReqsData };
                     }
                   } catch (error) {
                     console.error('Error parsing special requirements:', error);
@@ -1982,13 +2283,17 @@ export default function BookingsPage() {
                 // Show products that have either measurements or special requirements
                 const productsWithData = products.filter((product: any) => {
                   const productId = product.id;
-                  const productIdStr = String(productId);
-                  // Check both numeric and string keys for measurements
-                  const measData = parsedMeas[productId] || (parsedMeas as any)[productIdStr];
+                  const bookedFrom = product.booked_from || viewingBooking.booked_from;
+                  const bookedTo = product.booked_to || viewingBooking.booked_to;
+                  const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
+                  
+                  // Prioritize unique key, then fall back to productId for backward compatibility
+                  const measData = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || parsedMeas[productId];
                   const hasMeasurements = measData && Object.keys(measData).length > 0;
-                  // Check both numeric and string keys for special requirements
-                  const specReqData = parsedSpecReqs[productId] || (parsedSpecReqs as any)[productIdStr];
-                  const hasSpecialReqs = specReqData && specReqData.trim().length > 0;
+                  
+                  // Prioritize unique key, then fall back to productId for backward compatibility
+                  const specReqData = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || parsedSpecReqs[productId];
+                  const hasSpecialReqs = specReqData && typeof specReqData === 'string' && specReqData.trim().length > 0;
                   return hasMeasurements || hasSpecialReqs;
                 });
 
@@ -2007,24 +2312,30 @@ export default function BookingsPage() {
                   return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
                 }
 
-                return productsWithData.map((product: any) => {
+                return productsWithData.map((product: any, index: number) => {
                   const productId = product.id;
                   const productIdStr = String(productId);
-                  // Try both numeric and string keys for measurements
-                  const productMeasurements = parsedMeas[productId] || (parsedMeas as any)[productIdStr] || {};
+                  
+                  // Create unique key for this product instance (product.id + dates)
+                  const bookedFrom = product.booked_from || viewingBooking.booked_from;
+                  const bookedTo = product.booked_to || viewingBooking.booked_to;
+                  const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
+                  
+                  // Prioritize unique key first, then fall back to productId for backward compatibility
+                  const productMeasurements = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || parsedMeas[productId] || {};
                   const hasMeasurements = Object.keys(productMeasurements).length > 0;
-                  const isExpanded = showMeasurements[productId] || false;
+                  const isExpanded = showMeasurements[uniqueKey] || showMeasurements[productId] || false;
                   const isFemale = isFemaleClothing(product.name);
                   const isMale = isMaleClothing(product.name);
-                  // Try both numeric and string keys for special requirements
-                  const productSpecialReqs = parsedSpecReqs[productId] || (parsedSpecReqs as any)[productIdStr] || '';
+                  // Prioritize unique key first, then fall back to productId for backward compatibility
+                  const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || parsedSpecReqs[productId] || '';
 
                   return (
-                    <div key={productId} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
+                    <div key={`${uniqueKey}_${index}`} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
                       <button
                         onClick={() => setShowMeasurements({
                           ...showMeasurements,
-                          [productId]: !isExpanded
+                          [uniqueKey]: !isExpanded
                         })}
                         className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
                       >
@@ -2226,6 +2537,124 @@ export default function BookingsPage() {
         </div>
         );
       })()}
+
+      {/* Warning Modal */}
+      {showWarningModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
+                <p className="text-sm text-gray-600">
+                  {warningMessage} Do you still want to proceed?
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowWarningModal(false)}
+                className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setShowWarningModal(false);
+                  createBookingConfirmed();
+                }}
+                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+              >
+                Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Credit Note Modal */}
+      {showCreditNoteModal && bookingToCancel && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="bg-red-100 rounded-full p-3">
+                <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h2 className="text-xl font-bold text-gray-900 mb-2">Cancel Booking</h2>
+                <p className="text-gray-600">
+                  Are you sure you want to cancel the booking with name <span className="font-semibold text-red-600">&quot;{bookingToCancel.customer_name}&quot;</span>. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <h3 className="text-sm font-semibold text-gray-900 mb-4">
+                Provide the Validity and Amount for the Credit Note:
+              </h3>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Validity*
+                  </label>
+                  <input
+                    type="date"
+                    value={creditNoteData.validity}
+                    onChange={(e) => setCreditNoteData({ ...creditNoteData, validity: e.target.value })}
+                    min={new Date().toISOString().split('T')[0]}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    placeholder="Enter"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Amount*
+                  </label>
+                  <input
+                    type="number"
+                    value={creditNoteData.amount}
+                    onChange={(e) => setCreditNoteData({ ...creditNoteData, amount: e.target.value })}
+                    min="0"
+                    step="0.01"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    placeholder="Enter"
+                  />
+                </div>
+              </div>
+              
+              <p className="text-xs text-gray-500 mt-2">
+                * Leave empty if you don&apos;t want to issue a credit note
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowCreditNoteModal(false);
+                  setBookingToCancel(null);
+                  setCreditNoteData({ validity: '', amount: '' });
+                }}
+                className="flex-1 px-4 py-2 border-2 border-red-600 text-red-600 rounded-lg hover:bg-red-50 transition-colors font-medium"
+              >
+                Don&apos;t Cancel
+              </button>
+              <button
+                onClick={handleConfirmCancel}
+                className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

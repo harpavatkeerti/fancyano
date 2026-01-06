@@ -10,26 +10,166 @@ import { useConfirm } from '@/hooks/useConfirm';
 
 export default function CustomerBookings() {
   const [bookings, setBookings] = useState<Booking[]>([]);
+  const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(Date.now());
+  
+  // Function to check if a booking is urgent (based on tight scheduling with other bookings)
+  function isBookingUrgent(booking: Booking): boolean {
+    if (booking.status === 'cancelled') {
+      return false;
+    }
+
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      for (const otherBooking of allBookings) {
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            return true;
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Function to get urgent reason
+  function getUrgentReason(booking: Booking): string {
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const reasons: string[] = [];
+    
+    for (const product of products) {
+      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
+      const thisDropDate = new Date(product.booked_to || booking.booked_to);
+      thisPickupDate.setHours(0, 0, 0, 0);
+      thisDropDate.setHours(0, 0, 0, 0);
+
+      for (const otherBooking of allBookings) {
+        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
+          continue;
+        }
+
+        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
+        
+        for (const otherProduct of otherProducts) {
+          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
+            continue;
+          }
+
+          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
+          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
+          otherPickupDate.setHours(0, 0, 0, 0);
+          otherDropDate.setHours(0, 0, 0, 0);
+
+          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndPickup} day gap before pickup`);
+          }
+
+          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
+          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
+            reasons.push(`${product.code}: Only ${daysBetweenDropAndNextPickup} day gap after return`);
+          }
+        }
+      }
+    }
+
+    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
+  }
 
   useEffect(() => {
     fetchBookings();
-    // Refresh bookings every 10 seconds to check for auto-cancelled bookings
-    const fetchInterval = setInterval(fetchBookings, 10000);
-    // Update timer every second for real-time countdown
+    // Update timer every second for real-time countdown only
     const timerInterval = setInterval(() => setCurrentTime(Date.now()), 1000);
     return () => {
-      clearInterval(fetchInterval);
       clearInterval(timerInterval);
     };
   }, []);
 
   async function fetchBookings() {
     try {
+      // Get logged-in customer name FIRST
+      const userData = localStorage.getItem('customer_user');
+      let customerName = '';
+      
+      if (userData) {
+        try {
+          const user = JSON.parse(userData);
+          customerName = user.name || user.userName || '';
+        } catch (e) {
+          customerName = localStorage.getItem('customer_name') || '';
+        }
+      } else {
+        customerName = localStorage.getItem('customer_name') || '';
+      }
+      
+      // If no customer is logged in, don't fetch bookings
+      if (!customerName || customerName.trim() === '') {
+        console.log('⚠️ No customer logged in, waiting for login...');
+        setLoading(false);
+        return;
+      }
+      
       const response = await bookingsApi.getAll();
-      // Show all bookings (in a real app, you'd filter by customer ID)
-      setBookings(response.data);
+      
+      // Store ALL bookings for urgent checking
+      setAllBookings(response.data);
+      
+      // Normalize names for comparison (case-insensitive, trimmed)
+      const normalizeName = (name: string | null | undefined): string => {
+        if (!name) return '';
+        return name.trim().toLowerCase();
+      };
+      
+      const normalizedCustomerName = normalizeName(customerName);
+      
+      console.log('🔍 Fetching bookings for customer:', customerName, '(normalized:', normalizedCustomerName + ')');
+      console.log('📦 Total bookings from API:', response.data.length);
+      
+      // Filter bookings for this customer (match by customer_name in booking)
+      const customerBookings = response.data.filter((booking: Booking) => {
+        const bookingCustomerName = normalizeName(booking.customer_name);
+        const matches = normalizedCustomerName && bookingCustomerName && bookingCustomerName === normalizedCustomerName;
+        
+        console.log(`🔎 Checking booking ${booking.id}:`);
+        console.log(`   Booking customer_name: "${booking.customer_name}" (normalized: "${bookingCustomerName}")`);
+        console.log(`   Logged-in customer: "${customerName}" (normalized: "${normalizedCustomerName}")`);
+        console.log(`   Matches: ${matches ? '✅ YES' : '❌ NO'}`);
+        
+        return matches;
+      });
+      
+      console.log('📋 Filtered customer bookings count:', customerBookings.length);
+      
+      setBookings(customerBookings);
     } catch (error) {
       console.error('Error fetching bookings:', error);
     } finally {
@@ -170,22 +310,36 @@ export default function CustomerBookings() {
             const canDelete = isPending(booking);
             const timeRemaining = calculateTimeRemaining(booking);
             const isExpired = timeRemaining && timeRemaining.minutes === 0 && timeRemaining.seconds === 0;
+            const isUrgent = isBookingUrgent(booking);
+            const urgentReason = isUrgent ? getUrgentReason(booking) : '';
             
             return (
               <div
                 key={booking.id}
                 className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-shadow relative"
               >
-                <Link
-                  href={`/customer/bookings/${booking.id}`}
+                {/* Urgent Badge */}
+                {isUrgent && (
+                  <div className="absolute top-4 right-4 z-10">
+                    <span 
+                      className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded uppercase shadow-lg"
+                      title={urgentReason}
+                    >
+                      URGENT
+                    </span>
+                  </div>
+                )}
+                
+            <Link
+              href={`/customer/bookings/${booking.id}`}
                   className="block"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-4 mb-4">
-                        <h3 className="text-xl font-bold text-gray-900">Order #{booking.id}</h3>
-                        {getStatusIcon(booking.status)}
-                      </div>
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex-1">
+                  <div className="flex items-center gap-4 mb-4">
+                    <h3 className="text-xl font-bold text-gray-900">Order #{booking.id}</h3>
+                    {getStatusIcon(booking.status)}
+                  </div>
                       
                       {/* Payment Timer for Pending Bookings */}
                       {canDelete && timeRemaining && !isExpired && (
@@ -290,23 +444,23 @@ export default function CustomerBookings() {
                     </div>
                   )}
                 </div>
-                    <div className="ml-4">
-                      <svg
-                        className="w-6 h-6 text-gray-400"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M9 5l7 7-7 7"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-                </Link>
+                <div className="ml-4">
+                  <svg
+                    className="w-6 h-6 text-gray-400"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M9 5l7 7-7 7"
+                    />
+                  </svg>
+                </div>
+              </div>
+            </Link>
                 
                 {/* Delete/Cancel Button for Pending Bookings */}
                 {canDelete && (

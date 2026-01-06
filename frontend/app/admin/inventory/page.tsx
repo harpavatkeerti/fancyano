@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { productsApi, bookingsApi } from '@/lib/api';
 import { Product } from '@/types';
-import { Button, Input, ImageUpload, AvailabilityCalendar, ProductTrackingModal } from '@/components/common';
+import { Button, Input, ImageUpload, MultipleImageUpload, AvailabilityCalendar, ProductTrackingModal } from '@/components/common';
 import { getImageUrl } from '@/lib/imageHelper';
 import { productTrackingApi, ProductTracking } from '@/lib/productTrackingApi';
 
@@ -18,6 +18,7 @@ export default function InventoryPage() {
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
   const [productMaintenanceStatus, setProductMaintenanceStatus] = useState<Record<number, ProductTracking | null>>({});
+  const [currentImageIndex, setCurrentImageIndex] = useState(0);
   
   // Filter states
   const [filterProductType, setFilterProductType] = useState('');
@@ -38,7 +39,8 @@ export default function InventoryPage() {
     size: '',
     description: '',
     availability: true,
-    image: '',
+    image: '', // Keep for backward compatibility
+    images: [] as string[], // New: array of images
   });
 
   useEffect(() => {
@@ -50,6 +52,11 @@ export default function InventoryPage() {
       fetchMaintenanceStatus();
     }
   }, [products]);
+
+  // Reset image index when viewing product changes
+  useEffect(() => {
+    setCurrentImageIndex(0);
+  }, [viewingProduct]);
 
 
   async function fetchProducts() {
@@ -105,6 +112,26 @@ export default function InventoryPage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     try {
+      // Prepare images array - use images if available, otherwise fall back to single image
+      const imagesToSubmit = formData.images.length > 0 
+        ? formData.images 
+        : (formData.image ? [formData.image] : []);
+
+      // Debug: Check if images are different
+      console.log('📤 Preparing to submit images:', imagesToSubmit.length);
+      const imageLengths = new Set(imagesToSubmit.map(img => img.length));
+      console.log(`   Unique image lengths: ${imageLengths.size} out of ${imagesToSubmit.length}`);
+      
+      imagesToSubmit.forEach((img, idx) => {
+        const preview = img.substring(0, 50);
+        const middle = img.substring(Math.floor(img.length / 2), Math.floor(img.length / 2) + 50);
+        console.log(`   Image ${idx + 1}: ${preview}...${middle}... (length: ${img.length})`);
+      });
+      
+      if (imageLengths.size < imagesToSubmit.length) {
+        console.warn(`⚠️ WARNING: Some images have the same length - they might be duplicates!`);
+      }
+
       const dataToSubmit = {
         ...formData,
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
@@ -114,9 +141,13 @@ export default function InventoryPage() {
         // Set size to null for Artificial Jewelleries or if empty for Other
         gender: (formData.name === 'Fancy Costumes' || !formData.gender) ? null : formData.gender,
         size: (formData.name === 'Artificial Jewelleries' || !formData.size) ? null : formData.size,
+        // Send images array to backend
+        images: imagesToSubmit,
+        // Keep image for backward compatibility (first image from array)
+        image: imagesToSubmit.length > 0 ? imagesToSubmit[0] : '',
       };
 
-      console.log('📤 Submitting product data:', JSON.stringify(dataToSubmit, null, 2));
+      console.log('📤 Submitting product data:', JSON.stringify({ ...dataToSubmit, images: `[${imagesToSubmit.length} images]` }, null, 2));
 
       if (editingProduct) {
         const response = await productsApi.update(editingProduct.id, dataToSubmit);
@@ -124,7 +155,7 @@ export default function InventoryPage() {
       } else {
         const response = await productsApi.create(dataToSubmit);
         console.log('Product created:', response.data);
-        console.log('Image path from backend:', response.data.image);
+        console.log('Images from backend:', response.data.image);
       }
       await fetchProducts();
       setShowAddModal(false);
@@ -141,6 +172,33 @@ export default function InventoryPage() {
 
   function handleEdit(product: Product) {
     setEditingProduct(product);
+    
+    // Handle images - can be array or single string
+    const productImage = (product as any).image;
+    let images: string[] = [];
+    let singleImage = '';
+    
+    if (Array.isArray(productImage)) {
+      images = productImage;
+      singleImage = productImage.length > 0 ? productImage[0] : '';
+    } else if (typeof productImage === 'string' && productImage) {
+      // Try to parse as JSON array
+      try {
+        const parsed = JSON.parse(productImage);
+        if (Array.isArray(parsed)) {
+          images = parsed;
+          singleImage = parsed.length > 0 ? parsed[0] : '';
+        } else {
+          singleImage = productImage;
+          images = [productImage];
+        }
+      } catch (e) {
+        // Not JSON, treat as single image
+        singleImage = productImage;
+        images = [productImage];
+      }
+    }
+    
     setFormData({
       name: product.name,
       code: product.code,
@@ -152,7 +210,8 @@ export default function InventoryPage() {
       size: (product as any).size || '',
       description: product.description || '',
       availability: product.availability,
-      image: (product as any).image || '',
+      image: singleImage,
+      images: images,
     });
     setShowAddModal(true);
   }
@@ -181,6 +240,7 @@ export default function InventoryPage() {
       description: '',
       availability: true,
       image: '',
+      images: [],
     });
   }
 
@@ -519,19 +579,51 @@ export default function InventoryPage() {
                 className={`hover:bg-gray-50 ${isUnderMaintenance ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
               >
                 <td className="px-6 py-4 whitespace-nowrap">
-                  {getImageUrl((product as any).image) ? (
-                    <img 
-                      src={getImageUrl((product as any).image)!} 
+                  {(() => {
+                    // Helper to get first image from array or single image
+                    const getFirstImage = (img: any): string | null => {
+                      if (!img) return null;
+                      if (Array.isArray(img)) {
+                        return img.length > 0 ? img[0] : null;
+                      }
+                      // Try to parse as JSON array
+                      if (typeof img === 'string' && img.startsWith('[')) {
+                        try {
+                          const parsed = JSON.parse(img);
+                          if (Array.isArray(parsed) && parsed.length > 0) {
+                            return parsed[0];
+                          }
+                        } catch (e) {
+                          // Not JSON, treat as single image
+                        }
+                      }
+                      return img;
+                    };
+                    
+                    const firstImage = getFirstImage((product as any).image);
+                    const imageUrl = firstImage ? getImageUrl(firstImage) : null;
+                    
+                    return imageUrl ? (
+                      <div className="relative">
+                        <img 
+                          src={imageUrl} 
                       alt={product.name}
                       className="w-12 h-12 object-cover rounded-md border border-gray-200"
                     />
+                        {Array.isArray((product as any).image) && (product as any).image.length > 1 && (
+                          <div className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                            {(product as any).image.length}
+                          </div>
+                        )}
+                      </div>
                   ) : (
                     <div className="w-12 h-12 bg-gray-100 rounded-md flex items-center justify-center border border-gray-200">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                       </svg>
                     </div>
-                  )}
+                    );
+                  })()}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                   {product.name}
@@ -807,11 +899,18 @@ export default function InventoryPage() {
                 required
               />
 
-              {/* Product Image Upload */}
-              <ImageUpload
-                value={formData.image}
-                onChange={(dataUrl) => setFormData({ ...formData, image: dataUrl })}
-                label="Product Image (Optional)"
+              {/* Product Images Upload - Multiple Images */}
+              <MultipleImageUpload
+                value={formData.images.length > 0 ? formData.images : (formData.image ? formData.image : [])}
+                onChange={(images) => {
+                  setFormData({ 
+                    ...formData, 
+                    images: images,
+                    image: images.length > 0 ? images[0] : '' // Keep first image for backward compat
+                  });
+                }}
+                label="Product Images (Optional)"
+                maxImages={10}
               />
 
               {/* Purchase Price */}
@@ -947,16 +1046,93 @@ export default function InventoryPage() {
             </div>
             
             <div className="space-y-4">
-              {/* Product Image */}
-              {getImageUrl((viewingProduct as any).image) && (
+              {/* Product Images - Carousel for Multiple Images */}
+              {(() => {
+                // Helper to get images array
+                const getImages = (img: any): string[] => {
+                  if (!img) return [];
+                  if (Array.isArray(img)) return img;
+                  // Try to parse as JSON array
+                  if (typeof img === 'string' && img.startsWith('[')) {
+                    try {
+                      const parsed = JSON.parse(img);
+                      if (Array.isArray(parsed)) return parsed;
+                    } catch (e) {
+                      // Not JSON, treat as single image
+                    }
+                  }
+                  // Single image
+                  return img ? [img] : [];
+                };
+                
+                const images = getImages((viewingProduct as any).image);
+                const imageUrls = images.map(img => getImageUrl(img)).filter(Boolean) as string[];
+                
+                if (imageUrls.length === 0) return null;
+                
+                if (imageUrls.length === 1) {
+                  return (
                 <div className="flex justify-center">
                   <img 
-                    src={getImageUrl((viewingProduct as any).image)!} 
+                        src={imageUrls[0]} 
                     alt={viewingProduct.name}
                     className="w-64 h-64 object-contain rounded-lg border-2 border-gray-200 bg-white"
                   />
                 </div>
-              )}
+                  );
+                }
+                
+                // Multiple images - show carousel
+                return (
+                  <div className="space-y-2">
+                    <div className="flex justify-center relative">
+                      <img 
+                        src={imageUrls[currentImageIndex >= imageUrls.length ? 0 : currentImageIndex]} 
+                        alt={`${viewingProduct.name} - Image ${(currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) + 1}`}
+                        className="w-64 h-64 object-contain rounded-lg border-2 border-gray-200 bg-white"
+                      />
+                      {imageUrls.length > 1 && (
+                        <>
+                          <button
+                            onClick={() => setCurrentImageIndex((prev) => (prev === 0 ? imageUrls.length - 1 : prev - 1))}
+                            className="absolute left-2 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white rounded-full p-2 hover:bg-opacity-75 transition-opacity"
+                            title="Previous image"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                            </svg>
+                          </button>
+                          <button
+                            onClick={() => setCurrentImageIndex((prev) => (prev === imageUrls.length - 1 ? 0 : prev + 1))}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 bg-black bg-opacity-50 text-white rounded-full p-2 hover:bg-opacity-75 transition-opacity"
+                            title="Next image"
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                    {/* Image indicators */}
+                    <div className="flex justify-center gap-2">
+                      {imageUrls.map((_, index) => (
+                        <button
+                          key={index}
+                          onClick={() => setCurrentImageIndex(index)}
+                          className={`w-2 h-2 rounded-full transition-colors ${
+                            index === (currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) ? 'bg-blue-600' : 'bg-gray-300'
+                          }`}
+                          title={`Image ${index + 1}`}
+                        />
+                      ))}
+                    </div>
+                    <p className="text-center text-sm text-gray-500">
+                      Image {(currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) + 1} of {imageUrls.length}
+                    </p>
+                  </div>
+                );
+              })()}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-gray-50 p-3 rounded-lg">

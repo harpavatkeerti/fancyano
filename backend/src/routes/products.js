@@ -1,3 +1,4 @@
+
 const express = require('express');
 const router = express.Router();
 const pool = require('../database/connection');
@@ -32,7 +33,28 @@ router.get('/', async (req, res) => {
     query += ' ORDER BY created_at DESC';
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    
+    // Parse image data if it's JSON array
+    const products = result.rows.map(product => {
+      if (product.image) {
+        // Check if it's a JSON string array
+        if (typeof product.image === 'string' && product.image.trim().startsWith('[')) {
+          try {
+            const parsed = JSON.parse(product.image);
+            if (Array.isArray(parsed)) {
+              product.image = parsed;
+              console.log(`📦 Product ${product.code} has ${parsed.length} images:`, parsed);
+            }
+          } catch (e) {
+            console.warn(`⚠️ Failed to parse image JSON for product ${product.code}:`, e.message);
+            // If parsing fails, keep as is
+          }
+        }
+      }
+      return product;
+    });
+    
+    res.json(products);
   } catch (error) {
     console.error('Error fetching products:', error);
     res.status(500).json({ error: 'Failed to fetch products' });
@@ -49,7 +71,25 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
     
-    res.json(result.rows[0]);
+    // Parse image data if it's JSON array
+    const product = result.rows[0];
+    if (product.image) {
+      // Check if it's a JSON string array
+      if (typeof product.image === 'string' && product.image.trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(product.image);
+          if (Array.isArray(parsed)) {
+            product.image = parsed;
+            console.log(`📦 Product ${product.code} (ID: ${product.id}) has ${parsed.length} images:`, parsed);
+          }
+        } catch (e) {
+          console.warn(`⚠️ Failed to parse image JSON for product ${product.code}:`, e.message);
+          // If parsing fails, keep as is
+        }
+      }
+    }
+    
+    res.json(product);
   } catch (error) {
     console.error('Error fetching product:', error);
     res.status(500).json({ error: 'Failed to fetch product' });
@@ -59,7 +99,7 @@ router.get('/:id', async (req, res) => {
 // POST create product
 router.post('/', async (req, res) => {
   try {
-    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image } = req.body;
+    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image, images } = req.body;
     
     console.log('📥 Received product creation request:');
     console.log('   Name:', name);
@@ -71,6 +111,7 @@ router.post('/', async (req, res) => {
     console.log('   Gender:', gender);
     console.log('   Size:', size);
     console.log('   Has Image:', image ? 'Yes' : 'No');
+    console.log('   Has Images (array):', images ? `Yes (${Array.isArray(images) ? images.length : 'not array'})` : 'No');
     
     if (!name || !code || !rent_per_day || security_deposit === undefined || security_deposit === null) {
       return res.status(400).json({ error: 'Name, code, rent_per_day, and security_deposit are required' });
@@ -81,18 +122,64 @@ router.post('/', async (req, res) => {
     // All other categories: 3 days rental (default)
     const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
 
-    // Process image if provided
-    let imageUrl = null;
-    if (image && image.startsWith('data:image')) {
-      imageUrl = await imageStorage.saveImage(image, code);
+    // Process images - support both single image (backward compat) and multiple images
+    let imageData = null;
+    
+    // If images array is provided, process multiple images
+    if (images && Array.isArray(images) && images.length > 0) {
+      console.log(`📸 Processing ${images.length} images for product ${code}`);
+      const imageUrls = [];
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        if (img && img.startsWith('data:image')) {
+          // Add small delay to ensure unique timestamps (1ms per image)
+          if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 10)); // Increased to 10ms for better uniqueness
+          }
+          // Log first 50 chars of base64 to check if images are different
+          const imgPreview = img.substring(0, 50);
+          console.log(`   Image ${i + 1}: ${imgPreview}...`);
+          const imageUrl = await imageStorage.saveImage(img, code);
+          console.log(`   ✅ Saved as: ${imageUrl}`);
+          imageUrls.push(imageUrl);
+        } else if (img && typeof img === 'string') {
+          // Already a URL/path, keep it
+          console.log(`   Image ${i + 1}: Already a URL: ${img}`);
+          imageUrls.push(img);
+        }
+      }
+      console.log(`📦 Final image URLs array:`, imageUrls);
+      // Store as JSON array
+      imageData = imageUrls.length > 0 ? JSON.stringify(imageUrls) : null;
+      console.log(`💾 Storing as JSON: ${imageData ? imageData.substring(0, 100) + '...' : 'null'}`);
+    } 
+    // If single image is provided (backward compatibility)
+    else if (image) {
+      if (image.startsWith('data:image')) {
+        const imageUrl = await imageStorage.saveImage(image, code);
+        imageData = imageUrl;
+      } else if (typeof image === 'string') {
+        // Already a URL/path
+        imageData = image;
+      }
     }
 
     const result = await pool.query(
       'INSERT INTO products (name, code, purchase_price, rent_per_day, security_deposit, rental_policy, category, gender, size, description, availability, image) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *',
-      [name, code, purchase_price || null, rent_per_day, security_deposit || 0, rental_policy, category || null, gender || null, size || null, description || null, availability !== undefined ? availability : true, imageUrl]
+      [name, code, purchase_price || null, rent_per_day, security_deposit || 0, rental_policy, category || null, gender || null, size || null, description || null, availability !== undefined ? availability : true, imageData]
     );
 
-    res.status(201).json(result.rows[0]);
+    // Parse image data if it's JSON array for response
+    const product = result.rows[0];
+    if (product.image && product.image.startsWith('[')) {
+      try {
+        product.image = JSON.parse(product.image);
+      } catch (e) {
+        // If parsing fails, keep as is
+      }
+    }
+
+    res.status(201).json(product);
   } catch (error) {
     if (error.code === '23505') { // Unique violation
       return res.status(409).json({ error: 'Product code already exists' });
@@ -109,7 +196,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image } = req.body;
+    const { name, code, purchase_price, rent_per_day, security_deposit, category, gender, size, description, availability, image, images } = req.body;
 
     if (security_deposit === undefined || security_deposit === null) {
       return res.status(400).json({ error: 'security_deposit is required' });
@@ -118,33 +205,108 @@ router.put('/:id', async (req, res) => {
     // Determine rental policy based on product type
     const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
 
-    // Get existing product to check for old image
+    // Get existing product to check for old images
     const existingProduct = await pool.query('SELECT image FROM products WHERE id = $1', [id]);
     
     if (existingProduct.rows.length === 0) {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    let imageUrl = image;
+    let imageData = image || null;
 
-    // If new image is provided (base64), process it
-    if (image && image.startsWith('data:image')) {
-      // Delete old image if exists
+    // If images array is provided, process multiple images
+    if (images && Array.isArray(images) && images.length > 0) {
+      // Delete old images if they exist
       const oldImage = existingProduct.rows[0].image;
+      if (oldImage) {
+        try {
+          // Try to parse as JSON array
+          const oldImages = JSON.parse(oldImage);
+          if (Array.isArray(oldImages)) {
+            for (const oldImg of oldImages) {
+              if (oldImg && oldImg.startsWith('/uploads/')) {
+                await imageStorage.deleteImage(oldImg);
+              }
+            }
+          } else if (typeof oldImage === 'string' && oldImage.startsWith('/uploads/')) {
+            await imageStorage.deleteImage(oldImage);
+          }
+        } catch (e) {
+          // If not JSON, treat as single image
+          if (oldImage && oldImage.startsWith('/uploads/')) {
+            await imageStorage.deleteImage(oldImage);
+          }
+        }
+      }
+
+      // Process new images
+      const imageUrls = [];
+      for (let i = 0; i < images.length; i++) {
+        const img = images[i];
+        if (img && img.startsWith('data:image')) {
+          // Add small delay to ensure unique timestamps (1ms per image)
+          if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 1));
+          }
+          const imageUrl = await imageStorage.saveImage(img, code);
+          imageUrls.push(imageUrl);
+        } else if (img && typeof img === 'string') {
+          // Already a URL/path, keep it
+          imageUrls.push(img);
+        }
+      }
+      // Store as JSON array
+      imageData = imageUrls.length > 0 ? JSON.stringify(imageUrls) : null;
+    } 
+    // If single image is provided (backward compatibility)
+    else if (image) {
+      // Delete old images if they exist
+      const oldImage = existingProduct.rows[0].image;
+      if (oldImage) {
+        try {
+          // Try to parse as JSON array
+          const oldImages = JSON.parse(oldImage);
+          if (Array.isArray(oldImages)) {
+            for (const oldImg of oldImages) {
+              if (oldImg && oldImg.startsWith('/uploads/')) {
+                await imageStorage.deleteImage(oldImg);
+              }
+            }
+          } else if (typeof oldImage === 'string' && oldImage.startsWith('/uploads/')) {
+            await imageStorage.deleteImage(oldImage);
+          }
+        } catch (e) {
+          // If not JSON, treat as single image
       if (oldImage && oldImage.startsWith('/uploads/')) {
         await imageStorage.deleteImage(oldImage);
       }
-      
-      // Save new image
-      imageUrl = await imageStorage.saveImage(image, code);
+        }
+      }
+
+      if (image.startsWith('data:image')) {
+        imageData = await imageStorage.saveImage(image, code);
+      } else if (typeof image === 'string') {
+        // Already a URL/path
+        imageData = image;
+      }
     }
 
     const result = await pool.query(
       'UPDATE products SET name = $1, code = $2, purchase_price = $3, rent_per_day = $4, security_deposit = $5, rental_policy = $6, category = $7, gender = $8, size = $9, description = $10, availability = $11, image = $12, updated_at = CURRENT_TIMESTAMP WHERE id = $13 RETURNING *',
-      [name, code, purchase_price, rent_per_day, security_deposit || 0, rental_policy, category, gender, size, description, availability, imageUrl, id]
+      [name, code, purchase_price, rent_per_day, security_deposit || 0, rental_policy, category, gender, size, description, availability, imageData, id]
     );
 
-    res.json(result.rows[0]);
+    // Parse image data if it's JSON array for response
+    const product = result.rows[0];
+    if (product.image && product.image.startsWith('[')) {
+      try {
+        product.image = JSON.parse(product.image);
+      } catch (e) {
+        // If parsing fails, keep as is
+      }
+    }
+
+    res.json(product);
   } catch (error) {
     if (error.code === '23505') {
       return res.status(409).json({ error: 'Product code already exists' });
@@ -164,10 +326,27 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    // Delete associated image if exists
+    // Delete associated images if exist
     const deletedProduct = result.rows[0];
+    if (deletedProduct.image) {
+      try {
+        // Try to parse as JSON array
+        const images = JSON.parse(deletedProduct.image);
+        if (Array.isArray(images)) {
+          for (const img of images) {
+            if (img && img.startsWith('/uploads/')) {
+              await imageStorage.deleteImage(img);
+            }
+          }
+        } else if (typeof deletedProduct.image === 'string' && deletedProduct.image.startsWith('/uploads/')) {
+          await imageStorage.deleteImage(deletedProduct.image);
+        }
+      } catch (e) {
+        // If not JSON, treat as single image
     if (deletedProduct.image && deletedProduct.image.startsWith('/uploads/')) {
       await imageStorage.deleteImage(deletedProduct.image);
+        }
+      }
     }
 
     res.json({ message: 'Product deleted successfully' });

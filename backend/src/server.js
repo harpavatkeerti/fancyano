@@ -37,6 +37,9 @@ app.use('/api/product-tracking', require('./routes/productTracking'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/payment-transactions', require('./routes/paymentTransactions'));
 app.use('/api/auto-cancel', require('./routes/autoCancelBookings'));
+app.use('/api/availability', require('./routes/availability'));
+app.use('/api/credit-notes', require('./routes/creditNotes'));
+app.use('/api/setup', require('./routes/setup'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

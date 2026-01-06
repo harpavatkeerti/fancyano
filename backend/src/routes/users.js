@@ -52,21 +52,29 @@ router.get('/:id', async (req, res) => {
 // POST create user
 router.post('/', async (req, res) => {
   try {
-    const { name, phone, role } = req.body;
+    const { name, phone, role, username, password, email, address } = req.body;
     
     if (!name || !phone) {
       return res.status(400).json({ error: 'Name and phone are required' });
     }
+    
+    // Auto-generate username if not provided
+    const finalUsername = username || name.toLowerCase().replace(/\s+/g, '');
 
     const result = await pool.query(
-      'INSERT INTO users (name, phone, role) VALUES ($1, $2, $3) RETURNING *',
-      [name, phone, role || 'customer']
+      'INSERT INTO users (name, phone, role, username, password, email, address) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [name, phone, role || 'customer', finalUsername, password || null, email || null, address || null]
     );
 
     res.status(201).json(result.rows[0]);
   } catch (error) {
     if (error.code === '23505') { // Unique violation
-      return res.status(409).json({ error: 'Phone number already exists' });
+      if (error.constraint === 'users_phone_key') {
+        return res.status(409).json({ error: 'Phone number already exists' });
+      } else if (error.constraint === 'users_username_key') {
+        return res.status(409).json({ error: 'Username already exists' });
+      }
+      return res.status(409).json({ error: 'Duplicate entry' });
     }
     console.error('Error creating user:', error);
     res.status(500).json({ error: 'Failed to create user' });
@@ -77,12 +85,59 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, phone, role } = req.body;
+    const { name, phone, role, username, password, email, address } = req.body;
 
-    const result = await pool.query(
-      'UPDATE users SET name = $1, phone = $2, role = $3, updated_at = CURRENT_TIMESTAMP WHERE id = $4 RETURNING *',
-      [name, phone, role, id]
-    );
+    // Build dynamic query based on provided fields
+    let query = 'UPDATE users SET ';
+    const values = [];
+    const updates = [];
+    let paramCount = 0;
+
+    if (name !== undefined) {
+      paramCount++;
+      updates.push(`name = $${paramCount}`);
+      values.push(name);
+    }
+    if (phone !== undefined) {
+      paramCount++;
+      updates.push(`phone = $${paramCount}`);
+      values.push(phone);
+    }
+    if (role !== undefined) {
+      paramCount++;
+      updates.push(`role = $${paramCount}`);
+      values.push(role);
+    }
+    if (username !== undefined) {
+      paramCount++;
+      updates.push(`username = $${paramCount}`);
+      values.push(username);
+    }
+    if (password !== undefined && password !== null && password.trim() !== '') {
+      paramCount++;
+      updates.push(`password = $${paramCount}`);
+      values.push(password);
+    }
+    if (email !== undefined) {
+      paramCount++;
+      updates.push(`email = $${paramCount}`);
+      values.push(email);
+    }
+    if (address !== undefined) {
+      paramCount++;
+      updates.push(`address = $${paramCount}`);
+      values.push(address);
+    }
+    
+    // Always update the timestamp
+    updates.push('updated_at = CURRENT_TIMESTAMP');
+    
+    query += updates.join(', ');
+    paramCount++;
+    query += ` WHERE id = $${paramCount} RETURNING *`;
+    values.push(id);
+
+    const result = await pool.query(query, values);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -91,7 +146,12 @@ router.put('/:id', async (req, res) => {
     res.json(result.rows[0]);
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: 'Phone number already exists' });
+      if (error.constraint === 'users_phone_key') {
+        return res.status(409).json({ error: 'Phone number already exists' });
+      } else if (error.constraint === 'users_username_key') {
+        return res.status(409).json({ error: 'Username already exists' });
+      }
+      return res.status(409).json({ error: 'Duplicate entry' });
     }
     console.error('Error updating user:', error);
     res.status(500).json({ error: 'Failed to update user' });

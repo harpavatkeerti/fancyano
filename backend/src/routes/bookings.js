@@ -247,6 +247,7 @@ router.put('/:id', async (req, res) => {
       booked_to, 
       status, 
       total_amount,
+      other_charges,
       paid_amount,
       due_amount,
       payment_status,
@@ -290,6 +291,11 @@ router.put('/:id', async (req, res) => {
     if (total_amount !== undefined) {
       updates.push(`total_amount = $${paramCount++}`);
       values.push(total_amount);
+    }
+    if (other_charges !== undefined) {
+      console.log('Adding other_charges to update:', other_charges);
+      updates.push(`other_charges = $${paramCount++}`);
+      values.push(other_charges);
     }
     if (paid_amount !== undefined) {
       console.log('Adding paid_amount to update:', paid_amount);

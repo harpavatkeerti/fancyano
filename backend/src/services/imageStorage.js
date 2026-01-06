@@ -64,10 +64,19 @@ function saveImageLocally(base64Data, productCode) {
     const base64Image = matches[2];
     const buffer = Buffer.from(base64Image, 'base64');
 
-    // Generate unique filename
+    // Generate unique filename with timestamp, random number, and hash of image data to prevent collisions
     const timestamp = Date.now();
-    const filename = `${productCode}_${timestamp}.${imageType}`;
+    const randomSuffix = Math.floor(Math.random() * 1000000); // Random 6-digit number
+    // Create a hash from the ENTIRE base64 image data to ensure uniqueness
+    const crypto = require('crypto');
+    // Hash the entire image data, not just first 100 chars, to ensure each unique image gets a unique filename
+    const imageHash = crypto.createHash('md5').update(base64Image).digest('hex').substring(0, 12);
+    const filename = `${productCode}_${timestamp}_${randomSuffix}_${imageHash}.${imageType}`;
     const filepath = path.join(UPLOAD_DIR, filename);
+    
+    console.log(`💾 Saving image with hash: ${imageHash.substring(0, 8)}... (full: ${imageHash})`);
+    console.log(`   Filename: ${filename}`);
+    console.log(`   Image data length: ${base64Image.length} chars`);
 
     // Save file
     fs.writeFileSync(filepath, buffer);

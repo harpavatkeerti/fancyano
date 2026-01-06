@@ -15,6 +15,11 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   const [products, setProducts] = useState<any[]>([]);
   const [cartCount, setCartCount] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
+  
+  // Name prompt modal
+  const [showNamePrompt, setShowNamePrompt] = useState(false);
+  const [salesmanName, setSalesmanName] = useState('');
+  const [tempName, setTempName] = useState('');
 
   // Function to update cart count from localStorage
   function updateCartCount() {
@@ -30,7 +35,64 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   useEffect(() => {
     fetchProducts();
     updateCartCount();
+    checkSalesmanName();
   }, []);
+  
+  // Check if salesman name is stored, if not show prompt
+  function checkSalesmanName() {
+    const userData = localStorage.getItem('user');
+    let storedName = '';
+    
+    if (userData) {
+      try {
+        const user = JSON.parse(userData);
+        storedName = user.name || user.userName || '';
+      } catch (e) {
+        storedName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
+      }
+    } else {
+      storedName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
+    }
+    
+    if (!storedName || storedName.trim() === '' || storedName === 'Salesman') {
+      setShowNamePrompt(true);
+    } else {
+      setSalesmanName(storedName);
+    }
+  }
+  
+  function handleSaveName() {
+    if (!tempName || tempName.trim() === '') {
+      alert('Please enter your name');
+      return;
+    }
+    
+    const name = tempName.trim();
+    
+    // Store in multiple places for compatibility
+    localStorage.setItem('salesman_name', name);
+    localStorage.setItem('name', name);
+    localStorage.setItem('user', JSON.stringify({ name, userName: name }));
+    
+    setSalesmanName(name);
+    setShowNamePrompt(false);
+    
+    console.log('✅ Salesman name saved:', name);
+  }
+  
+  function handleLogout() {
+    if (confirm('Are you sure you want to logout? Your cart will be cleared.')) {
+      // Clear salesman localStorage
+      localStorage.removeItem('salesman_name');
+      localStorage.removeItem('name');
+      localStorage.removeItem('user');
+      localStorage.removeItem('salesman_cart');
+      localStorage.removeItem('salesman_cart_created_at');
+      
+      // Reload page to show login modal
+      window.location.reload();
+    }
+  }
 
   // Update cart count when pathname changes (user navigates)
   useEffect(() => {
@@ -273,6 +335,26 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
               >
                 Customer Bookings
               </Link>
+              
+              {/* User Display */}
+              {salesmanName && (
+                <div className="flex items-center space-x-2 ml-4 pl-4 border-l border-gray-300">
+                  <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center text-white font-semibold text-sm">
+                    {salesmanName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="text-left">
+                    <p className="text-sm font-medium text-gray-900">{salesmanName}</p>
+                    <p className="text-xs text-gray-500">Salesman</p>
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="text-xs text-red-600 hover:text-red-800 font-medium px-2 py-1 rounded border border-red-600 hover:bg-red-50 transition-colors"
+                    title="Logout"
+                  >
+                    Logout
+                  </button>
+                </div>
+              )}
             </nav>
           </div>
         </div>
@@ -280,6 +362,34 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
 
       {/* Main Content */}
       <main>{children}</main>
+
+      {/* Name Prompt Modal */}
+      {showNamePrompt && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to Salesman Portal</h2>
+            <p className="text-gray-600 mb-6">Please enter your name to continue</p>
+            <input
+              type="text"
+              value={tempName}
+              onChange={(e) => setTempName(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSaveName()}
+              placeholder="Enter your name"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4"
+              autoFocus
+            />
+            <button
+              onClick={handleSaveName}
+              className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 transition-colors font-medium"
+            >
+              Continue
+            </button>
+            <p className="text-sm text-gray-500 mt-4 text-center">
+              This name will be used to track your bookings
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Toast Container */}
       <ToastContainer>
