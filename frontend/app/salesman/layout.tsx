@@ -5,6 +5,8 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useState, useEffect, useRef } from 'react';
 import { productsApi } from '@/lib/api';
 import { ToastContainer } from '@/components/common';
+import { authApi } from '@/lib/authApi';
+import { toast } from '@/lib/toast';
 
 export default function SalesmanLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -16,10 +18,13 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   const [cartCount, setCartCount] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
   
-  // Name prompt modal
+  // Login modal
   const [showNamePrompt, setShowNamePrompt] = useState(false);
   const [salesmanName, setSalesmanName] = useState('');
   const [tempName, setTempName] = useState('');
+  const [tempPassword, setTempPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   // Function to update cart count from localStorage
   function updateCartCount() {
@@ -38,15 +43,27 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
     checkSalesmanName();
   }, []);
   
-  // Check if salesman name is stored, if not show prompt
+  // Check if salesman is logged in
   function checkSalesmanName() {
-    const userData = localStorage.getItem('user');
+    const userData = localStorage.getItem('salesman_user') || localStorage.getItem('user');
     let storedName = '';
+    let userRole = '';
     
     if (userData) {
       try {
         const user = JSON.parse(userData);
         storedName = user.name || user.userName || '';
+        userRole = user.role || '';
+        // Check if user is actually a salesman
+        if (userRole && userRole !== 'salesman') {
+          // Not a salesman, clear and show login
+          localStorage.removeItem('salesman_user');
+          localStorage.removeItem('salesman_name');
+          localStorage.removeItem('name');
+          localStorage.removeItem('user');
+          setShowNamePrompt(true);
+          return;
+        }
       } catch (e) {
         storedName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
       }
@@ -61,23 +78,61 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
     }
   }
   
-  function handleSaveName() {
+  async function handleSaveName() {
     if (!tempName || tempName.trim() === '') {
-      alert('Please enter your name');
+      toast.error('Please enter your name');
       return;
     }
     
-    const name = tempName.trim();
-    
-    // Store in multiple places for compatibility
-    localStorage.setItem('salesman_name', name);
-    localStorage.setItem('name', name);
-    localStorage.setItem('user', JSON.stringify({ name, userName: name }));
-    
-    setSalesmanName(name);
-    setShowNamePrompt(false);
-    
-    console.log('✅ Salesman name saved:', name);
+    try {
+      setLoading(true);
+      const name = tempName.trim();
+      
+      // Authenticate with backend (password is optional if user doesn't have one set)
+      const response = await authApi.login({
+        name: name,
+        password: tempPassword || '', // Allow empty password for users without password set
+        role: 'salesman'
+      });
+      
+      const user = response.data.user;
+      
+      // Verify role is salesman
+      if (user.role !== 'salesman') {
+        toast.error('Access denied. Salesman role required.');
+        return;
+      }
+      
+      // Store salesman data
+      localStorage.setItem('salesman_name', user.name);
+      localStorage.setItem('name', user.name);
+      localStorage.setItem('salesman_user', JSON.stringify({ 
+        id: user.id,
+        name: user.name, 
+        userName: user.name,
+        role: 'salesman'
+      }));
+      localStorage.setItem('user', JSON.stringify({ 
+        id: user.id,
+        name: user.name, 
+        userName: user.name,
+        role: 'salesman'
+      }));
+      
+      setSalesmanName(user.name);
+      setShowNamePrompt(false);
+      setTempName('');
+      setTempPassword('');
+      
+      toast.success('Login successful');
+      console.log('✅ Salesman logged in:', user.name);
+    } catch (error: any) {
+      console.error('Login error:', error);
+      const errorMessage = error.response?.data?.error || 'Invalid credentials. Please check your name and password.';
+      toast.error(errorMessage);
+    } finally {
+      setLoading(false);
+    }
   }
   
   function handleLogout() {
@@ -86,6 +141,7 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
       localStorage.removeItem('salesman_name');
       localStorage.removeItem('name');
       localStorage.removeItem('user');
+      localStorage.removeItem('salesman_user');
       localStorage.removeItem('salesman_cart');
       localStorage.removeItem('salesman_cart_created_at');
       
@@ -335,6 +391,16 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
               >
                 Customer Bookings
               </Link>
+              <Link
+                href="/salesman/complaints"
+                className={`text-sm font-medium ${
+                  pathname === '/salesman/complaints'
+                    ? 'text-gray-900'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Support
+              </Link>
               
               {/* User Display */}
               {salesmanName && (
@@ -363,29 +429,72 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
       {/* Main Content */}
       <main>{children}</main>
 
-      {/* Name Prompt Modal */}
+      {/* Login Modal */}
       {showNamePrompt && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg p-8 max-w-md w-full mx-4">
             <h2 className="text-2xl font-bold text-gray-900 mb-4">Welcome to Salesman Portal</h2>
-            <p className="text-gray-600 mb-6">Please enter your name to continue</p>
-            <input
-              type="text"
-              value={tempName}
-              onChange={(e) => setTempName(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSaveName()}
-              placeholder="Enter your name"
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent mb-4"
-              autoFocus
-            />
+            <p className="text-gray-600 mb-6">Please enter your credentials to continue</p>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Name <span className="text-red-600">*</span>
+                </label>
+                <input
+                  type="text"
+                  value={tempName}
+                  onChange={(e) => setTempName(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSaveName()}
+                  placeholder="Enter your name"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                  autoFocus
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Password {tempPassword ? <span className="text-red-600">*</span> : <span className="text-gray-500">(Optional)</span>}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={tempPassword}
+                    onChange={(e) => setTempPassword(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && !e.shiftKey && handleSaveName()}
+                    placeholder="Enter your password"
+                    className="w-full px-4 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
+                    tabIndex={-1}
+                  >
+                    {showPassword ? (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                      </svg>
+                    ) : (
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+            
             <button
               onClick={handleSaveName}
-              className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 transition-colors font-medium"
+              disabled={loading}
+              className="w-full bg-red-600 text-white py-2 px-4 rounded-lg hover:bg-red-700 transition-colors font-medium mt-6 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Continue
+              {loading ? 'Logging in...' : 'Login to Salesman Portal'}
             </button>
             <p className="text-sm text-gray-500 mt-4 text-center">
-              This name will be used to track your bookings
+              Authorized personnel only
             </p>
           </div>
         </div>

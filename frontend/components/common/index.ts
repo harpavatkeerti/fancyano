@@ -11,6 +11,9 @@ export { BookingProductTrackingModal } from './BookingProductTrackingModal';
 export { PaymentManagement } from './PaymentManagement';
 export { ToastContainer, showToast } from './ToastContainer';
 export { ConfirmDialog } from './ConfirmDialog';
+export { default as ComplaintForm } from './ComplaintForm';
+export { default as FeedbackForm } from './FeedbackForm';
+export { ProductExchange } from './ProductExchange';
 export type { Toast, ToastType } from './Toast';
 export type { ConfirmDialogOptions } from './ConfirmDialog';
 

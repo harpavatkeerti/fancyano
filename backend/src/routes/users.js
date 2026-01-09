@@ -25,7 +25,12 @@ router.get('/', async (req, res) => {
     query += ' ORDER BY created_at DESC';
 
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    // Remove passwords from response for security
+    const usersWithoutPasswords = result.rows.map(user => {
+      const { password, ...userWithoutPassword } = user;
+      return userWithoutPassword;
+    });
+    res.json(usersWithoutPasswords);
   } catch (error) {
     console.error('Error fetching users:', error);
     res.status(500).json({ error: 'Failed to fetch users' });
@@ -42,6 +47,7 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     
+    // Return user with password for admin editing (admin-only endpoint)
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching user:', error);

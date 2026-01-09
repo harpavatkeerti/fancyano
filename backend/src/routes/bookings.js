@@ -446,6 +446,79 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
+// POST add product to booking
+router.post('/:id/products', async (req, res) => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    const { id } = req.params;
+    const { product_id, booked_from, booked_to } = req.body;
+    
+    if (!product_id) {
+      return res.status(400).json({ error: 'Product ID is required' });
+    }
+    
+    // Check if booking exists
+    const bookingResult = await client.query('SELECT booked_from, booked_to FROM bookings WHERE id = $1', [id]);
+    if (bookingResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    
+    const booking = bookingResult.rows[0];
+    
+    // Check if product is already in booking
+    const existingProduct = await client.query(
+      'SELECT id FROM booking_products WHERE booking_id = $1 AND product_id = $2',
+      [id, product_id]
+    );
+    
+    if (existingProduct.rows.length > 0) {
+      return res.status(400).json({ error: 'Product is already in this booking' });
+    }
+    
+    // Add product to booking
+    await client.query(
+      'INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to) VALUES ($1, $2, $3, $4)',
+      [id, product_id, booked_from || booking.booked_from, booked_to || booking.booked_to]
+    );
+    
+    // Recalculate booking totals
+    const recalcResult = await client.query(
+      `SELECT 
+        COALESCE(SUM(p.rent_per_day), 0) as total_rent,
+        COALESCE(SUM(p.security_deposit), 0) as total_security
+       FROM booking_products bp
+       JOIN products p ON bp.product_id = p.id
+       WHERE bp.booking_id = $1`,
+      [id]
+    );
+    
+    const newTotalRent = parseFloat(recalcResult.rows[0].total_rent) || 0;
+    const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
+    
+    // Update booking with recalculated totals
+    await client.query(
+      `UPDATE bookings 
+       SET total_amount = $1,
+           security_deposit = $2,
+           updated_at = CURRENT_TIMESTAMP 
+       WHERE id = $3`,
+      [newTotalRent, newTotalSecurity, id]
+    );
+    
+    await client.query('COMMIT');
+    
+    res.json({ message: 'Product added to booking successfully' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Error adding product to booking:', error);
+    res.status(500).json({ error: 'Failed to add product to booking' });
+  } finally {
+    client.release();
+  }
+});
+
 // GET bookings for a specific product
 router.get('/product/:productId', async (req, res) => {
   try {

@@ -54,10 +54,15 @@ router.post('/', async (req, res) => {
         [booking_id, amount, type, method, recorded_by, notes]
       );
       
-      // Update booking paid_amount ONLY for payment, refund, and adjustment types
-      // date_change_charge does NOT affect payment calculations
-      if (type !== 'date_change_charge') {
-        // For payments and adjustments: add to paid_amount
+      // Update booking paid_amount ONLY for payment and refund types
+      // date_change_charge, exchange_penalty, and adjustments do NOT affect payment calculations
+      // Exchange penalties are collected separately and should not be counted in paid_amount
+      // Adjustments are changes to booking total, not payments received
+      if (type !== 'date_change_charge' && 
+          type !== 'adjustment' &&
+          method !== 'exchange_penalty' && 
+          method !== 'exchange') {
+        // For payments: add to paid_amount
         // For refunds: subtract from paid_amount
         const amountChange = type === 'refund' ? -Math.abs(amount) : Math.abs(amount);
         
@@ -99,13 +104,30 @@ router.get('/summary/:bookingId', async (req, res) => {
     const result = await pool.query(
       `SELECT 
         COUNT(*) as transaction_count,
-        SUM(CASE WHEN type = 'payment' THEN amount ELSE 0 END) as total_payments,
+        SUM(CASE 
+          WHEN type = 'payment' 
+          AND (method IS NULL OR (method != 'exchange_penalty' AND method != 'exchange'))
+          AND (notes IS NULL OR (LOWER(notes) NOT LIKE '%exchange penalty%' AND LOWER(notes) NOT LIKE '%exchange charge%'))
+          THEN amount 
+          ELSE 0 
+        END) as total_payments,
         SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
         SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
         SUM(CASE WHEN type = 'date_change_charge' THEN amount ELSE 0 END) as total_date_change_charges,
         SUM(CASE 
-          WHEN type = 'refund' THEN -amount 
+          WHEN method = 'exchange_penalty' 
+          OR method = 'exchange'
+          OR (notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%'))
+          THEN amount 
+          ELSE 0 
+        END) as total_exchange_penalties,
+        SUM(CASE 
+          -- CRITICAL: Exclude ALL refunds from net_amount calculation
+          -- Since exchanges are only allowed when new rent >= old rent, refunds should not affect the balance
+          WHEN type = 'refund' THEN 0
           WHEN type = 'date_change_charge' THEN 0
+          WHEN method = 'exchange_penalty' OR method = 'exchange' THEN 0
+          WHEN notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%') THEN 0
           ELSE amount 
         END) as net_amount
        FROM payment_transactions 

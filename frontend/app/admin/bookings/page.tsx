@@ -262,7 +262,7 @@ export default function BookingsPage() {
     try {
       const oldStatus: string = selectedBooking.status;
       const newStatus: string = formData.status;
-
+      
       // Check if trying to confirm a booking that has a credit note
       if (oldStatus !== 'confirmed' && newStatus === 'confirmed') {
         try {
@@ -385,7 +385,7 @@ export default function BookingsPage() {
         ...bookingToCancel,
         status: 'cancelled'
       });
-
+      
       // Create credit note if validity and amount are provided
       if (creditNoteData.validity && creditNoteData.amount) {
         const amount = parseFloat(creditNoteData.amount);
@@ -1055,7 +1055,7 @@ export default function BookingsPage() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                     <div className="flex items-center gap-2">
-                      {booking.customer_name}
+                    {booking.customer_name}
                     </div>
                     {isUrgent && urgentReason && (
                       <div className="text-xs text-red-600 font-medium mt-1">
@@ -2144,15 +2144,31 @@ export default function BookingsPage() {
                                 />
                               </div>
                             )}
-                            <div className="flex-1">
-                              <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
-                              <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
-                              {product.size && (
-                                <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
-                              )}
-                              {product.rent_per_day && (
-                                <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent_per_day)}/day</span></p>
-                              )}
+                          <div className="flex-1">
+                            <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
+                            <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
+                            {product.size && (
+                              <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
+                            )}
+                            {product.rent_per_day && (
+                              <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent_per_day)}/day</span></p>
+                            )}
+                              <div className="mt-2 pt-2 border-t border-gray-200">
+                                <div className="grid grid-cols-2 gap-2">
+                                  <div>
+                                    <p className="text-xs text-gray-500">Pickup Date</p>
+                                    <p className="text-sm font-semibold text-blue-600">
+                                      📅 {bookedFrom ? new Date(bookedFrom).toLocaleDateString('en-GB') : 'N/A'}
+                                    </p>
+                          </div>
+                                  <div>
+                                    <p className="text-xs text-gray-500">Drop Date</p>
+                                    <p className="text-sm font-semibold text-red-600">
+                                      📅 {bookedTo ? new Date(bookedTo).toLocaleDateString('en-GB') : 'N/A'}
+                                    </p>
+                        </div>
+                      </div>
+                              </div>
                             </div>
                           </div>
                         </div>
@@ -2215,18 +2231,18 @@ export default function BookingsPage() {
                 
                 if (isTransportationOpted) {
                   return (
-                    <div className="bg-gradient-to-r from-teal-50 to-cyan-50 rounded-lg p-5 border-l-4 border-teal-500">
-                      <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-teal-600">
+              <div className="bg-gradient-to-r from-teal-50 to-cyan-50 rounded-lg p-5 border-l-4 border-teal-500">
+                <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-teal-600">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 4.5h7.5m-7.5 0V3.375c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V4.5m-13.5 0h15m-13.5 0v9.375c0 .621.504 1.125 1.125 1.125h13.5c.621 0 1.125-.504 1.125-1.125V4.5m0 0V3.375c0-.621.504-1.125-1.125-1.125h-1.5" />
-                        </svg>
+                  </svg>
                         Local Transportation
-                      </h3>
-                      <div className="flex items-center bg-white rounded-lg p-4 shadow-sm border-2 border-teal-200">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-3 text-teal-600">
+                </h3>
+                  <div className="flex items-center bg-white rounded-lg p-4 shadow-sm border-2 border-teal-200">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-3 text-teal-600">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M8.25 18.75a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h6m-9 0H3.375a1.125 1.125 0 01-1.125-1.125V14.25m17.25 4.5a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m3 0h1.125c.621 0 1.125-.504 1.125-1.125V9.75M8.25 4.5h7.5m-7.5 0V3.375c0-.621.504-1.125 1.125-1.125h5.25c.621 0 1.125.504 1.125 1.125V4.5m-13.5 0h15m-13.5 0v9.375c0 .621.504 1.125 1.125 1.125h13.5c.621 0 1.125-.504 1.125-1.125V4.5m0 0V3.375c0-.621.504-1.125-1.125-1.125h-1.5" />
-                        </svg>
-                        <div className="flex-1">
+                    </svg>
+                    <div className="flex-1">
                           <p className="text-sm text-gray-600">Local Transportation Service</p>
                           <p className="text-base font-semibold text-green-600">✓ Yes - Local Transportation opted</p>
                         </div>
@@ -2234,9 +2250,9 @@ export default function BookingsPage() {
                           <p className="text-sm text-gray-600">Charge</p>
                           <p className="text-lg font-bold text-teal-600">
                             ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
-                          </p>
-                        </div>
-                      </div>
+                      </p>
+                    </div>
+                  </div>
                     </div>
                   );
                 }
@@ -2332,32 +2348,32 @@ export default function BookingsPage() {
 
                   return (
                     <div key={`${uniqueKey}_${index}`} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
-                      <button
+                  <button
                         onClick={() => setShowMeasurements({
                           ...showMeasurements,
                           [uniqueKey]: !isExpanded
                         })}
-                        className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
-                      >
-                        <h3 className="text-lg font-semibold text-gray-800 flex items-center">
-                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-pink-600">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
-                          </svg>
+                    className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
+                  >
+                    <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-pink-600">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
+                      </svg>
                           {hasMeasurements ? 'Customer Measurements' : 'Special Requirements'} - {product.name}
                           <span className="ml-2 text-sm text-pink-600">(Click to {isExpanded ? 'hide' : 'view'})</span>
-                        </h3>
-                        <svg
-                          xmlns="http://www.w3.org/2000/svg"
-                          fill="none"
-                          viewBox="0 0 24 24"
-                          strokeWidth={2}
-                          stroke="currentColor"
+                    </h3>
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      strokeWidth={2}
+                      stroke="currentColor"
                           className={`w-6 h-6 text-pink-600 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}
-                        >
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                        </svg>
-                      </button>
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                    </svg>
+                  </button>
 
                       {isExpanded && (
                         <div className="mt-4 space-y-4">
@@ -2369,44 +2385,44 @@ export default function BookingsPage() {
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Waist</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.waist}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.bust && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Bust</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.bust}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.shoulder && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Shoulder</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.shoulder}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.sleevesUp && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Sleeves Up</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesUp}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.sleevesE && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Sleeves E</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesE}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.sleevesB && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Sleeves B</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesB}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                                 {productMeasurements.lehengaLength && (
                                   <div className="bg-white border border-gray-200 rounded-lg p-3">
                                     <p className="text-xs text-gray-600 mb-1">Lehenga Length</p>
                                     <p className="text-base font-semibold text-gray-900">{productMeasurements.lehengaLength}"</p>
-                                  </div>
-                                )}
+                        </div>
+                      )}
                               </div>
                             </div>
                           ) : hasMeasurements && isMale ? (
@@ -2420,26 +2436,26 @@ export default function BookingsPage() {
                                       <div className="bg-white border border-gray-200 rounded-lg p-3">
                                         <p className="text-xs text-gray-600 mb-1">Side Tight</p>
                                         <p className="text-base font-semibold text-gray-900">{productMeasurements.sideTight}"</p>
-                                      </div>
-                                    )}
+                        </div>
+                      )}
                                     {productMeasurements.sleevesTight && (
                                       <div className="bg-white border border-gray-200 rounded-lg p-3">
                                         <p className="text-xs text-gray-600 mb-1">Sleeves Tight</p>
                                         <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesTight}"</p>
-                                      </div>
-                                    )}
+                        </div>
+                      )}
                                     {productMeasurements.sleevesLength && (
                                       <div className="bg-white border border-gray-200 rounded-lg p-3">
                                         <p className="text-xs text-gray-600 mb-1">Sleeves Length</p>
                                         <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLength}"</p>
-                                      </div>
-                                    )}
+                    </div>
+                  )}
                                     {productMeasurements.pantLength && (
                                       <div className="bg-white border border-gray-200 rounded-lg p-3">
                                         <p className="text-xs text-gray-600 mb-1">Pant Length</p>
                                         <p className="text-base font-semibold text-gray-900">{productMeasurements.pantLength}"</p>
-                                      </div>
-                                    )}
+                </div>
+              )}
                                   </div>
                                 </div>
                                 <div>

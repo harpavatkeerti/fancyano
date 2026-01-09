@@ -5,7 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Booking } from '@/types';
-import { Button, PaymentManagement } from '@/components/common';
+import { Button, PaymentManagement, ProductExchange } from '@/components/common';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
 import axios from 'axios';
@@ -965,6 +965,19 @@ export default function OrderDetailsPage() {
             TAX INVOICE
           </button>
         </div>
+
+        {/* Product Exchange Section */}
+        {booking && (
+          <div className="mt-6 bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+            <ProductExchange
+              bookingId={booking.id}
+              bookingDate={booking.booking_date}
+              currentProducts={Array.isArray(booking.products) ? booking.products : []}
+              onExchangeComplete={fetchBooking}
+              userRole="admin"
+            />
+          </div>
+        )}
 
         {/* Payment Management Section */}
         <div className="mt-6">

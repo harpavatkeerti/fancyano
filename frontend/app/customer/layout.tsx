@@ -337,6 +337,16 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
               >
                 My Bookings
               </Link>
+              <Link
+                href="/customer/complaints"
+                className={`text-sm font-medium ${
+                  pathname === '/customer/complaints'
+                    ? 'text-gray-900'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                Support
+              </Link>
               
               {/* User Display */}
               {customerName && (

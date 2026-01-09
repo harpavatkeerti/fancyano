@@ -30,7 +30,7 @@ export default function CartPage() {
   
   // Cart timeout timer
   const [timeRemaining, setTimeRemaining] = useState<{ minutes: number; seconds: number } | null>(null);
-  
+
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
@@ -586,10 +586,10 @@ export default function CartPage() {
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Your Name</label>
-                <input
-                  type="text"
-                  placeholder="Name*"
-                  value={customerName}
+              <input
+                type="text"
+                placeholder="Name*"
+                value={customerName}
                   readOnly
                   disabled
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 text-gray-700 cursor-not-allowed"
@@ -667,7 +667,7 @@ export default function CartPage() {
                  <div className="flex justify-between items-center bg-yellow-50 px-3 py-2 rounded">
                    <span className="text-sm text-gray-700">Local Transportation</span>
                    <span className="text-xs text-yellow-700 font-medium">Salesman will set charges</span>
-                 </div>
+               </div>
                )}
                <div className="flex justify-between text-lg font-bold border-t pt-3">
                  <span>Total Payable:</span>

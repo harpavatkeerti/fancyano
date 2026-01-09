@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange } from '@/components/common';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -56,6 +56,172 @@ export default function OrderDetailsPage() {
     securityDepositDue: '',
     refundToCustomer: 0,
   });
+
+  // Helper function to calculate paid amount excluding exchange penalties
+  function calculatePaidAmountExcludingExchangePenalties(transactions: any[]): number {
+    if (!transactions || transactions.length === 0) {
+      console.log('⚠️ calculatePaidAmountExcludingExchangePenalties: No transactions provided');
+      return 0;
+    }
+    
+    console.log('🔍 calculatePaidAmountExcludingExchangePenalties called with', transactions.length, 'transactions');
+    console.log('🔍 All transactions:', transactions.map((t: any) => ({
+      id: t.id,
+      amount: t.amount,
+      type: t.type,
+      method: t.method,
+      notes: t.notes?.substring(0, 80) || 'no notes'
+    })));
+    
+    // Show all refund transactions explicitly
+    const allRefunds = transactions.filter((t: any) => t.type === 'refund');
+    if (allRefunds.length > 0) {
+      console.log('🔴 REFUND TRANSACTIONS DETECTED:', allRefunds.length);
+      allRefunds.forEach((r: any) => {
+        console.log('  - Refund ID:', r.id, 'Amount:', r.amount, 'Method:', r.method, 'Notes:', r.notes?.substring(0, 60));
+      });
+    }
+    
+    // Check specifically for exchange_upgrade transactions
+    const exchangeUpgradeTransactions = transactions.filter((t: any) => {
+      const method = String(t.method || '').toLowerCase().trim();
+      const notes = String(t.notes || '').toLowerCase().trim();
+      return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
+    });
+    console.log('🔍 Found exchange_upgrade/rent difference transactions:', exchangeUpgradeTransactions.length, exchangeUpgradeTransactions.map((t: any) => ({
+      id: t.id,
+      amount: t.amount,
+      method: t.method,
+      notes: t.notes?.substring(0, 60)
+    })));
+    
+    const excluded: any[] = [];
+    const included: any[] = [];
+    
+    const result = transactions.reduce((sum: number, t: any) => {
+      if (!t) return sum;
+      
+      console.log('🔍 Processing transaction:', t.id, 'method:', t.method, 'type:', t.type, 'amount:', t.amount, 'notes:', t.notes?.substring(0, 50));
+      
+      // Exclude date_change_charge type
+      if (t.type === 'date_change_charge') {
+        excluded.push({ ...t, reason: 'date_change_charge' });
+        return sum;
+      }
+      
+      const method = String(t.method || '').toLowerCase().trim();
+      const notes = String(t.notes || '').toLowerCase().trim();
+      const type = String(t.type || '').toLowerCase().trim();
+      
+      // Exclude only exchange_downgrade refunds (these shouldn't exist)
+      // Include other refunds as they may be legitimate corrections
+      if (t.type === 'refund' && method === 'exchange_downgrade') {
+        excluded.push({ ...t, reason: 'exchange_downgrade_refund_should_not_exist' });
+        console.log('❌ EXCLUDING exchange_downgrade REFUND:', t.id, 'amount:', t.amount);
+        return sum; // Don't subtract this refund
+      }
+      
+      if (t.type === 'refund') {
+        console.log('✅ Including REFUND transaction:', t.id, 'method:', method, 'amount:', t.amount);
+      }
+      
+      // Exclude exchange_penalty transactions (collected separately at exchange time)
+      // These should NEVER be counted in rent or security calculations
+      if (method === 'exchange_penalty' || method === 'exchange') {
+        excluded.push({ ...t, reason: 'method_is_exchange_penalty' });
+        console.log('❌ EXCLUDING exchange_penalty:', t.id, 'amount:', t.amount);
+        return sum;
+      }
+      
+      // IMPORTANT: Include exchange_upgrade payments - these are rent difference payments that count toward rent
+      const isRentDifferencePayment = (
+        method === 'exchange_upgrade' ||
+        notes.includes('additional rent') ||
+        notes.includes('rent difference') ||
+        (notes.includes('additional rent:') && !notes.includes('penalty'))
+      );
+      
+      if (isRentDifferencePayment) {
+        // This is a rent payment, include it
+        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+        included.push({ ...t, amount, reason: 'exchange_upgrade_rent_payment' });
+        console.log('✅ INCLUDING RENT DIFFERENCE payment:', {
+          id: t.id,
+          method: method,
+          amount: amount,
+          type: t.type,
+          notes: notes.substring(0, 80)
+        });
+        return sum + amount; // Always add (it's a payment, not a refund since we excluded refunds above)
+      }
+      
+      // AGGRESSIVE EXCLUSION: Check notes for ANY mention of exchange penalty/charge
+      // Only exception: "Additional Rent" or "Rent Difference" (these are rent payments, not penalties)
+      const isExchangePenalty = (
+        notes.includes('exchange penalty') || 
+        notes.includes('exchange charge') ||
+        (notes.includes('penalty') && notes.includes('exchange')) ||
+        (notes.includes('exchange:') && notes.includes('penalty')) ||
+        notes.startsWith('exchange penalty:') ||
+        (notes.includes('penalty') && notes.includes('%') && notes.includes('charge'))
+      );
+      
+      const isAdditionalRent = notes.includes('additional rent') || 
+                                notes.includes('rent difference');
+      
+      // If it's clearly an exchange penalty (not rent difference), exclude it
+      if (isExchangePenalty && !isAdditionalRent) {
+        excluded.push({ ...t, reason: 'notes_contain_exchange_penalty' });
+        console.log('❌ EXCLUDING by notes pattern:', t.id, 'notes:', notes.substring(0, 50));
+        return sum;
+      }
+      
+      // AGGRESSIVE: Exclude if notes contain "penalty" and "%" and "charge" (exchange penalty pattern)
+      if (notes.includes('penalty') && notes.includes('%') && notes.includes('charge') && !isAdditionalRent) {
+        excluded.push({ ...t, reason: 'pattern_matches_exchange_penalty' });
+        console.log('❌ EXCLUDING by penalty pattern:', t.id);
+        return sum;
+      }
+      
+      // AGGRESSIVE: If method is null/empty but notes mention exchange penalty, exclude it
+      if ((!method || method === 'null' || method === '') && 
+          (notes.includes('exchange penalty') || notes.includes('exchange charge')) &&
+          !isAdditionalRent) {
+        excluded.push({ ...t, reason: 'null_method_but_exchange_penalty_in_notes' });
+        console.log('❌ EXCLUDING null method with penalty notes:', t.id);
+        return sum;
+      }
+      
+      // Include all other payment transactions
+      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+      included.push({ ...t, amount, reason: 'regular_payment' });
+      console.log('✅ INCLUDING regular payment:', t.id, 'method:', method, 'amount:', amount);
+      return sum + amount; // Only payments reach here (refunds already excluded above)
+    }, 0);
+    
+    // Always log for debugging
+    console.log('🚫 EXCLUDED from payment calculations:', excluded.length, 'transactions');
+    if (excluded.length > 0) {
+      console.log('🚫 Excluded details:', excluded.map((t: any) => ({
+        id: t.id,
+        amount: t.amount,
+        type: t.type,
+        method: t.method,
+        reason: t.reason,
+        notes: t.notes?.substring(0, 60)
+      })));
+      const excludedTotal = excluded.reduce((sum: number, t: any) => {
+        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+        return sum + amount;
+      }, 0);
+      console.log('💰 Total EXCLUDED amount:', excludedTotal);
+    }
+    
+    console.log('✅ INCLUDED in payment calculations:', included.length, 'transactions');
+    console.log('💰 Total INCLUDED amount (result):', result);
+    
+    return result;
+  }
   
   // Transportation charges
   const [transportationCharges, setTransportationCharges] = useState('');
@@ -72,6 +238,8 @@ export default function OrderDetailsPage() {
 
   // Measurement confirmation modal
   const [showMeasurementModal, setShowMeasurementModal] = useState(false);
+  const [showComplaintForm, setShowComplaintForm] = useState(false);
+  const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [measurements, setMeasurements] = useState<{[key: string]: any}>({});
   const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
   const [specialRequirements, setSpecialRequirements] = useState<{[key: string]: string}>({});
@@ -82,6 +250,11 @@ export default function OrderDetailsPage() {
   const [isEditingMeasurements, setIsEditingMeasurements] = useState(false);
   const [editingMeasurements, setEditingMeasurements] = useState<{[key: string]: string}>({});
   const [editingSpecialRequirements, setEditingSpecialRequirements] = useState<string>('');
+  
+  // Salesman permissions
+  const [salesmanPermissions, setSalesmanPermissions] = useState({
+    exchange_allowed: false,
+  });
 
   // Auto-recalculate when payment amount changes and breakdown is visible
   useEffect(() => {
@@ -94,8 +267,23 @@ export default function OrderDetailsPage() {
     if (params.id) {
       fetchBooking();
       fetchDateChangeChargeSettings();
+      fetchSalesmanPermissions();
     }
   }, [params.id]);
+  
+  async function fetchSalesmanPermissions() {
+    try {
+      const response = await settingsApi.getByKey('salesman_permissions');
+      if (response.data?.setting_value) {
+        const permissions = JSON.parse(response.data.setting_value);
+        setSalesmanPermissions({
+          exchange_allowed: permissions.exchange_allowed || false,
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching salesman permissions:', error);
+    }
+  }
   
   async function fetchDateChangeChargeSettings() {
     try {
@@ -160,13 +348,16 @@ export default function OrderDetailsPage() {
 
   async function fetchBooking() {
     try {
+      window.console.log('🚀🚀🚀 FETCHBOOKING CALLED 🚀🚀🚀');
       const [bookingResponse, transactionsResponse] = await Promise.all([
         bookingsApi.getById(Number(params.id)),
         paymentTransactionsApi.getByBookingId(Number(params.id)),
       ]);
-      console.log('Fetched booking data:', bookingResponse.data);
-      console.log('Paid amount:', bookingResponse.data.paid_amount);
-      console.log('Total amount:', bookingResponse.data.total_amount);
+      window.console.log('✅ API RESPONSES RECEIVED');
+      window.console.log('Fetched booking data:', bookingResponse.data);
+      window.console.log('Paid amount:', bookingResponse.data.paid_amount);
+      window.console.log('Total amount:', bookingResponse.data.total_amount);
+      
       console.log('OTHER CHARGES FROM DB:', bookingResponse.data.other_charges);
       console.log('Transportation opted:', bookingResponse.data.transportation_opted);
       
@@ -184,10 +375,150 @@ export default function OrderDetailsPage() {
       }
       
       setBooking(bookingResponse.data);
-      setTransactions(transactionsResponse.data || []);
+      const allTransactions = transactionsResponse.data || [];
+      setTransactions(allTransactions);
       
-      console.log('Transactions updated:', transactionsResponse.data?.length, 'transactions');
-      console.log('Refund transactions:', transactionsResponse.data?.filter((t: any) => t.type === 'refund').length);
+      // Check for rent difference payment and log it
+      const rentDiffPayments = allTransactions.filter((t: any) => {
+        const method = (t.method || '').toLowerCase();
+        const notes = (t.notes || '').toLowerCase();
+        return method === 'exchange_upgrade' || 
+               notes.includes('additional rent') || 
+               notes.includes('rent difference');
+      });
+      
+      if (rentDiffPayments.length > 0) {
+        console.log('✅✅✅ FOUND RENT DIFFERENCE PAYMENTS:', rentDiffPayments);
+        rentDiffPayments.forEach((t: any) => {
+          console.log(`  - Transaction ID: ${t.id}, Amount: ₹${t.amount}, Method: ${t.method}, Notes: ${t.notes?.substring(0, 80)}`);
+        });
+      } else {
+        console.log('⚠️ No rent difference payment transactions found');
+      }
+      
+      // Check for refund transactions
+      const refundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
+      if (refundTransactions.length > 0) {
+        console.log('========================================');
+        console.log('💰 REFUND TRANSACTIONS FOUND');
+        console.log('========================================');
+        console.log('Total Refunds: ₹' + refundTransactions.reduce((sum: number, t: any) => {
+          return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
+        }, 0).toLocaleString('en-IN'));
+        refundTransactions.forEach((t: any) => {
+          console.log(`  - Refund ID: ${t.id}, Amount: ₹${t.amount}, Method: ${t.method || 'N/A'}, Notes: ${t.notes?.substring(0, 80) || 'N/A'}, Date: ${t.created_at}`);
+        });
+        console.log('========================================');
+      } else {
+        console.log('ℹ️ No refund transactions found');
+      }
+      
+      console.log('📊 Transactions updated:', allTransactions.length, 'transactions');
+      console.log('📊 All transactions:', transactionsResponse.data);
+      console.log('📊 ALL TRANSACTIONS DETAILED:', JSON.stringify(transactionsResponse.data, null, 2));
+      console.log('📊 Refund transactions:', transactionsResponse.data?.filter((t: any) => t.type === 'refund').length);
+      
+      // Check for exchange-related transactions
+      const exchangeTransactions = (transactionsResponse.data || []).filter((t: any) => {
+        const method = (t.method || '').toLowerCase();
+        const notes = (t.notes || '').toLowerCase();
+        return method === 'exchange_penalty' || method === 'exchange' || method === 'exchange_upgrade' || notes.includes('exchange');
+      });
+      if (exchangeTransactions.length > 0) {
+        console.log('🚫 Found exchange transactions:', exchangeTransactions.map((t: any) => ({
+          id: t.id,
+          amount: t.amount,
+          type: t.type,
+          method: t.method,
+          notes: t.notes?.substring(0, 80)
+        })));
+      }
+      
+      // Specifically check for rent difference payments (exchange_upgrade)
+      const rentDifferencePayments = (transactionsResponse.data || []).filter((t: any) => {
+        const method = (t.method || '').toLowerCase();
+        const notes = (t.notes || '').toLowerCase();
+        return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
+      });
+      if (rentDifferencePayments.length > 0) {
+        console.log('✅ Found rent difference payments (should be included in paid amount):', rentDifferencePayments.map((t: any) => ({
+          id: t.id,
+          amount: t.amount,
+          type: t.type,
+          method: t.method,
+          notes: t.notes?.substring(0, 80)
+        })));
+      } else {
+        console.log('⚠️ WARNING: No rent difference payment transactions found! If customer paid rent difference during exchange, the transaction may not have been created.');
+      }
+      
+      // Validate and fix booking status if incorrect (one-time check on page load)
+      // This ensures status is correct even if it was set incorrectly before
+      const totalAmount = typeof bookingResponse.data.total_amount === 'number'
+        ? bookingResponse.data.total_amount
+        : parseFloat(bookingResponse.data.total_amount || '0') || 0;
+      const securityDeposit = typeof bookingResponse.data.security_deposit === 'number'
+        ? bookingResponse.data.security_deposit
+        : parseFloat(bookingResponse.data.security_deposit || '0') || 0;
+      const paidAmount = calculatePaidAmountExcludingExchangePenalties(allTransactions);
+      const totalRequired = totalAmount + securityDeposit;
+      const isFullyPaid = paidAmount >= totalRequired;
+      const hasRentalPayment = paidAmount > 0;
+      
+      // Check for refunds
+      const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+      const statusRefundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
+      const productsWithRefunds = new Set<number>();
+      statusRefundTransactions.forEach((transaction: any) => {
+        const notes = transaction.notes || '';
+        products.forEach((product: any) => {
+          if (notes.includes(`(${product.code})`)) {
+            productsWithRefunds.add(product.id);
+          }
+        });
+      });
+      const allProductsHaveRefunds = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
+      const hasAnyRefund = productsWithRefunds.size > 0;
+      
+      let calculatedStatus = bookingResponse.data.status;
+      if (bookingResponse.data.status !== 'cancelled') {
+        if (allProductsHaveRefunds) {
+          calculatedStatus = 'completed';
+        } else if (hasAnyRefund) {
+          calculatedStatus = 'in_progress';
+        } else if (isFullyPaid) {
+          calculatedStatus = 'in_progress';
+        } else if (hasRentalPayment) {
+          calculatedStatus = 'confirmed';
+        } else {
+          calculatedStatus = 'pending';
+        }
+      }
+      
+      // Only update if status is incorrect (to avoid unnecessary updates)
+      if (bookingResponse.data.status !== calculatedStatus && bookingResponse.data.status !== 'cancelled') {
+        console.log('🔧 Fixing incorrect booking status:', {
+          bookingId: bookingResponse.data.id,
+          current: bookingResponse.data.status,
+          correct: calculatedStatus,
+          totalAmount,
+          securityDeposit,
+          totalRequired,
+          paidAmount,
+          isFullyPaid,
+          calculation: `${paidAmount} >= ${totalRequired} = ${isFullyPaid}`
+        });
+        // Update status in database directly (async, don't wait)
+        bookingsApi.update(bookingResponse.data.id, {
+          status: calculatedStatus
+        } as any).then(() => {
+          console.log('✅ Booking status fixed from', bookingResponse.data.status, 'to', calculatedStatus);
+          // Update local state
+          setBooking({ ...bookingResponse.data, status: calculatedStatus });
+        }).catch((err: any) => {
+          console.error('Error fixing booking status:', err);
+        });
+      }
       
       // Note: updateBookingStatus() should only be called explicitly after payment/refund actions
       // Not automatically here to avoid infinite loops
@@ -655,9 +986,7 @@ export default function OrderDetailsPage() {
       ? booking.security_deposit
       : parseFloat(booking?.security_deposit || '0') || 0;
     
-    const paidAmount = typeof booking?.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking?.paid_amount || '0') || 0;
+    const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
 
     // Calculate remaining rental amount due
     const rentalDue = totalAmount - paidAmount;
@@ -815,9 +1144,7 @@ export default function OrderDetailsPage() {
     const securityDeposit = typeof booking.security_deposit === 'number'
       ? booking.security_deposit
       : parseFloat(booking.security_deposit || '0') || 0;
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
+    const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
 
     // Check if all products have refunds
     const products = Array.isArray(booking.products) ? booking.products : [];
@@ -857,6 +1184,17 @@ export default function OrderDetailsPage() {
     // Check if Rent + Deposit is fully received
     const totalRequired = totalAmount + securityDeposit;
     const isFullyPaid = paidAmount >= totalRequired;
+    
+    // Debug logging for status calculation
+    console.log('📊 Status Calculation Debug:', {
+      bookingId: booking.id,
+      totalAmount,
+      securityDeposit,
+      totalRequired,
+      paidAmount,
+      isFullyPaid,
+      calculation: `${paidAmount} >= ${totalRequired} = ${isFullyPaid}`
+    });
 
     if (isFullyPaid) {
       // Check if multiple products with different dates
@@ -912,9 +1250,8 @@ export default function OrderDetailsPage() {
       const securityDeposit = typeof currentBooking.security_deposit === 'number'
         ? currentBooking.security_deposit
         : parseFloat(currentBooking.security_deposit || '0') || 0;
-      const paidAmount = typeof currentBooking.paid_amount === 'number'
-        ? currentBooking.paid_amount
-        : parseFloat(currentBooking.paid_amount || '0') || 0;
+      // Use helper function to exclude exchange penalties from paid amount
+      const paidAmount = calculatePaidAmountExcludingExchangePenalties(currentTransactions || []);
 
       // Check if all products have refunds
       const currentProducts = Array.isArray(currentBooking.products) ? currentBooking.products : [];
@@ -960,6 +1297,18 @@ export default function OrderDetailsPage() {
       const totalRequired = totalAmount + securityDeposit;
       const isFullyPaid = paidAmount >= totalRequired;
       const hasRentalPayment = paidAmount > 0;
+      
+      // Debug logging for status update
+      console.log('📊 Status Update Debug:', {
+        bookingId: currentBooking.id,
+        totalAmount,
+        securityDeposit,
+        totalRequired,
+        paidAmount,
+        isFullyPaid,
+        hasRentalPayment,
+        calculation: `${paidAmount} >= ${totalRequired} = ${isFullyPaid}`
+      });
 
       let newStatus = currentBooking.status;
 
@@ -1289,6 +1638,34 @@ export default function OrderDetailsPage() {
         </div>
       </div>
 
+      {/* Quick Actions */}
+      <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
+        <div className="flex gap-3">
+          <button
+            onClick={() => setShowComplaintForm(true)}
+            className="flex-1 px-4 py-3 bg-red-50 text-red-600 border border-red-200 font-semibold rounded-lg hover:bg-red-100 transition-colors"
+          >
+            <div className="flex items-center justify-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span>Report Issue</span>
+            </div>
+          </button>
+          <button
+            onClick={() => setShowFeedbackForm(true)}
+            className="flex-1 px-4 py-3 bg-green-50 text-green-600 border border-green-200 font-semibold rounded-lg hover:bg-green-100 transition-colors"
+          >
+            <div className="flex items-center justify-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
+              </svg>
+              <span>Give Feedback</span>
+            </div>
+          </button>
+        </div>
+      </div>
+
       {/* Order Status Banner */}
       {booking?.status === 'cancelled' && (
         <div className="bg-red-50 border-l-4 border-red-500 rounded-lg p-4 mb-6">
@@ -1342,9 +1719,10 @@ export default function OrderDetailsPage() {
             >
               <div className="w-32 h-40 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
                 {(() => {
-                  // Check if product has image field
-                  const hasImage = product.image && product.image !== null && product.image !== '';
-                  const imageUrl = hasImage ? getImageUrl(product.image) : null;
+                  // Check multiple possible image fields: image, imageUrl, rawImage
+                  const imageData = product.image || product.imageUrl || product.rawImage;
+                  const hasImage = imageData && imageData !== null && imageData !== '';
+                  const imageUrl = hasImage ? getImageUrl(imageData) : null;
                   
                   if (imageUrl) {
                     return (
@@ -1353,14 +1731,30 @@ export default function OrderDetailsPage() {
                         alt={product.name}
                         className="w-full h-full object-cover"
                         onError={(e) => {
-                          console.error(`Failed to load image for ${product.name}:`, {
-                            rawImage: product.image,
-                            imageUrl: imageUrl
+                          const img = e.currentTarget;
+                          console.error(`Failed to load image for ${product.name} (${product.code}):`, {
+                            originalImage: product.image,
+                            imageUrl: product.imageUrl,
+                            rawImage: product.rawImage,
+                            processedUrl: imageUrl,
+                            error: 'Image file not found or server error'
                           });
-                          // Hide image and show placeholder
-                          const parent = e.currentTarget.parentElement;
-                          if (parent) {
-                            parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><span class="text-4xl">👔</span></div>';
+                          // Replace with placeholder instead of hiding
+                          img.style.display = 'none';
+                          const parent = img.parentElement;
+                          if (parent && !parent.querySelector('.placeholder-icon')) {
+                            const placeholder = document.createElement('div');
+                            placeholder.className = 'w-full h-full flex items-center justify-center placeholder-icon';
+                            placeholder.innerHTML = '<span class="text-4xl">👔</span>';
+                            parent.appendChild(placeholder);
+                          }
+                        }}
+                        onLoad={(e) => {
+                          // Remove any placeholder if image loads successfully
+                          const parent = (e.currentTarget as HTMLImageElement).parentElement;
+                          const placeholder = parent?.querySelector('.placeholder-icon');
+                          if (placeholder) {
+                            placeholder.remove();
                           }
                         }}
                       />
@@ -1380,8 +1774,9 @@ export default function OrderDetailsPage() {
                 {product.code && (
                   <div className="flex items-center gap-2 mb-1">
                     {(() => {
-                      const hasImage = product.image && product.image !== null && product.image !== '';
-                      const imageUrl = hasImage ? getImageUrl(product.image) : null;
+                      const imageData = product.image || product.imageUrl || product.rawImage;
+                      const hasImage = imageData && imageData !== null && imageData !== '';
+                      const imageUrl = hasImage ? getImageUrl(imageData) : null;
                       return imageUrl ? (
                         <img
                           src={imageUrl}
@@ -1522,6 +1917,19 @@ export default function OrderDetailsPage() {
               TAX INVOICE
             </button>
           </div>
+
+          {/* Product Exchange Section */}
+          {salesmanPermissions.exchange_allowed && booking && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <ProductExchange
+                bookingId={booking.id}
+                bookingDate={booking.booking_date}
+                currentProducts={Array.isArray(booking.products) ? booking.products : []}
+                onExchangeComplete={fetchBooking}
+                userRole="salesman"
+              />
+            </div>
+          )}
 
           {/* Customer Details */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -1723,6 +2131,9 @@ export default function OrderDetailsPage() {
             
             {/* Detailed Payment Breakdown - Show before refunds start */}
             {!hasAnyRefund && (() => {
+              console.log('🔍 Payment Breakdown Rendering - hasAnyRefund:', hasAnyRefund);
+              console.log('🔍 Transactions array length:', transactions.length);
+              
               const totalAmountNum = typeof booking.total_amount === 'number'
                 ? booking.total_amount
                 : parseFloat(booking.total_amount) || 0;
@@ -1742,11 +2153,125 @@ export default function OrderDetailsPage() {
                 }, 0);
               }
               
-              const paidAmountNum = typeof booking.paid_amount === 'number'
-                ? booking.paid_amount
-                : parseFloat(booking.paid_amount) || 0;
+              // CRITICAL: Filter out exchange penalties BEFORE any calculation
+              // Exchange penalties should NEVER affect rent or security calculations
+              console.log('🔍 FILTERING TRANSACTIONS - Total:', (transactions || []).length);
+              console.log('🔍 All transactions:', JSON.stringify(transactions, null, 2));
+              
+              const validTransactions = (transactions || []).filter((t: any) => {
+                if (!t) {
+                  console.log('❌ Filtered out: null transaction');
+                  return false;
+                }
+                
+                // Exclude date_change_charge
+                if (t.type === 'date_change_charge') {
+                  console.log('❌ Filtered out date_change_charge:', t.id);
+                  return false;
+                }
+                
+                const method = String(t.method || '').toLowerCase().trim();
+                const notes = String(t.notes || '').toLowerCase().trim();
+                
+                // IMPORTANT: Include exchange_upgrade payments - these are rent difference payments
+                // Include exchange_downgrade refunds - these are rent refunds
+                if (method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference')) {
+                  console.log('✅ INCLUDING rent difference payment in Payment Breakdown:', t.id, 'method:', method, 'amount:', t.amount);
+                  return true;
+                }
+                
+                if (method === 'exchange_downgrade' || notes.includes('rent refund')) {
+                  console.log('✅ INCLUDING rent refund in Payment Breakdown:', t.id, 'method:', method, 'amount:', t.amount);
+                  return true;
+                }
+                
+                // CRITICAL: Exclude exchange_penalty method - this is the primary check
+                // Transaction 177 has method="exchange_penalty" and should be excluded
+                if (method === 'exchange_penalty' || method === 'exchange') {
+                  console.log('❌ Filtered out exchange_penalty by method:', t.id, 'method:', method);
+                  return false;
+                }
+                
+                // Exclude if notes contain exchange penalty/charge (unless it's rent difference)
+                const isExchangePenalty = (
+                  notes.includes('exchange penalty') || 
+                  notes.includes('exchange charge') ||
+                  (notes.includes('penalty') && notes.includes('exchange')) ||
+                  (notes.includes('penalty') && notes.includes('%') && notes.includes('charge'))
+                );
+                const isRentDifference = notes.includes('additional rent') || 
+                                         notes.includes('rent difference');
+                
+                if (isExchangePenalty && !isRentDifference) {
+                  console.log('❌ Filtered out exchange_penalty by notes:', t.id, 'notes:', notes.substring(0, 50), 'amount:', t.amount);
+                  return false;
+                }
+                
+                console.log('✅ Included transaction:', t.id, 'type:', t.type, 'method:', method, 'amount:', t.amount);
+                return true;
+              });
+              
+              console.log('📊 Total transactions:', (transactions || []).length);
+              console.log('📊 Valid transactions (after filtering):', validTransactions.length);
+              console.log('📊 Filtered out:', (transactions || []).length - validTransactions.length, 'transactions');
+              
+              // Use the same calculation function for consistency
+              // This ensures exchange_upgrade (rent difference) is included and exchange_penalty is excluded
+              const paidAmountNum = calculatePaidAmountExcludingExchangePenalties(transactions);
+              
+              // Calculate rent due
+              const rentDue = totalAmountNum - paidAmountNum;
+              
+              // Check for rent difference payments specifically for logging
+              const rentDiffPayments = transactions.filter((t: any) => {
+                const method = (t.method || '').toLowerCase();
+                const notes = (t.notes || '').toLowerCase();
+                return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
+              });
+              
+              const rentDiffTotal = rentDiffPayments.reduce((sum: number, t: any) => {
+                return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
+              }, 0);
+              
+              // Check for exchange penalty (should be excluded)
+              const exchangePenaltyTx = transactions.filter((t: any) => {
+                const method = (t.method || '').toLowerCase();
+                return method === 'exchange_penalty' || method === 'exchange';
+              });
+              
+              const exchangePenaltyTotal = exchangePenaltyTx.reduce((sum: number, t: any) => {
+                return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
+              }, 0);
+              
+              console.log('========================================');
+              console.log('💰 PAYMENT BREAKDOWN CALCULATION');
+              console.log('========================================');
+              console.log('Total Rent (after exchange): ₹' + totalAmountNum.toLocaleString('en-IN'));
+              console.log('Total Paid Amount: ₹' + paidAmountNum.toLocaleString('en-IN'));
+              console.log('  - Including rent difference payment: ₹' + rentDiffTotal.toLocaleString('en-IN'));
+              console.log('  - Excluding exchange penalty: ₹' + exchangePenaltyTotal.toLocaleString('en-IN'));
+              console.log('Rent Due: ₹' + Math.max(0, rentDue).toLocaleString('en-IN'));
+              console.log('========================================');
+              
+              console.log('💰 Final paidAmountNum (exchange penalties excluded):', paidAmountNum);
+              console.log('💰 Total Rent:', totalAmountNum);
+              console.log('💰 Security Deposit:', securityDepositNum);
+              
+              // Security paid = min(security_deposit, max(0, paid_amount - total_rent))
+              // This ensures security is only counted AFTER rent is fully paid
+              const securityPaidCalc = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+              console.log('💰 Security Paid calculation:', securityPaidCalc);
+              console.log('💰 Formula: min(security, max(0, paid - rent)) = min(', securityDepositNum, ', max(0,', paidAmountNum, '-', totalAmountNum, ')) =', securityPaidCalc);
+              
+              // Balance Due = (Total Rent + Security Deposit) - Total Paid
+              // This shows the total amount still due (rent + security)
               const totalRequired = totalAmountNum + securityDepositNum;
               const amountDue = totalRequired - paidAmountNum;
+              
+              console.log('💰 Balance Due calculation:');
+              console.log('  Total Required (Rent + Security): ₹' + totalRequired.toLocaleString('en-IN'));
+              console.log('  Total Paid: ₹' + paidAmountNum.toLocaleString('en-IN'));
+              console.log('  Balance Due: ₹' + amountDue.toLocaleString('en-IN'));
               
               return (
                 <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
@@ -1784,22 +2309,24 @@ export default function OrderDetailsPage() {
                         <div className="flex flex-col pt-1 border-t border-gray-200">
                           <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
                           <span className="font-bold text-green-600 text-sm break-words">
-                            ₹{Math.floor(Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)))).toLocaleString('en-IN')}
+                            {(() => {
+                              // Use paidAmountNum which is already calculated above with exchange penalties excluded
+                              const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                              return `₹${Math.floor(securityPaid).toLocaleString('en-IN')}`;
+                            })()}
                           </span>
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
                           <span className="text-xs text-gray-500 mb-0.5 font-semibold">Security Due</span>
                           <span className={`font-bold text-sm break-words ${(() => {
-                            // Calculate security deposit paid
+                            // Use the already-calculated paidAmountNum which excludes exchange penalties
                             const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                            // Calculate security due
                             const securityDue = securityDepositNum - securityPaid;
                             return securityDue <= 0 ? 'text-green-600' : 'text-red-600';
                           })()}`}>
                             {(() => {
-                              // Calculate security deposit paid
+                              // Use the already-calculated paidAmountNum which excludes exchange penalties
                               const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                              // Calculate security due
                               const securityDue = securityDepositNum - securityPaid;
                               return securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`;
                             })()}
@@ -1839,11 +2366,7 @@ export default function OrderDetailsPage() {
               <div className="flex justify-between items-center pb-3 border-b border-gray-200">
                 <span className="text-gray-600">Amount Paid:</span>
                 <span className="font-bold text-green-600 text-lg">
-                  ₹{Math.floor(
-                    typeof booking.paid_amount === 'number'
-                      ? booking.paid_amount
-                      : parseFloat(booking.paid_amount) || 0
-                  ).toLocaleString('en-IN')}
+                  ₹{Math.floor(calculatePaidAmountExcludingExchangePenalties(transactions)).toLocaleString('en-IN')}
                 </span>
               </div>
 
@@ -1854,9 +2377,7 @@ export default function OrderDetailsPage() {
                   const totalAmount = typeof booking.total_amount === 'number'
                     ? booking.total_amount
                     : parseFloat(booking.total_amount) || 0;
-                  const paidAmount = typeof booking.paid_amount === 'number'
-                    ? booking.paid_amount
-                    : parseFloat(booking.paid_amount) || 0;
+                  const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
                   const rentalDue = totalAmount - paidAmount;
                   
                   if (rentalDue <= 0) {
@@ -1873,9 +2394,8 @@ export default function OrderDetailsPage() {
                 const totalAmount = typeof booking.total_amount === 'number'
                   ? booking.total_amount
                   : parseFloat(booking.total_amount) || 0;
-                const paidAmount = typeof booking.paid_amount === 'number'
-                  ? booking.paid_amount
-                  : parseFloat(booking.paid_amount) || 0;
+                // Use helper function to exclude exchange penalties
+                const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions || []);
                 const rentalDue = totalAmount - paidAmount;
                 
                 if (rentalDue <= 0) {
@@ -1916,10 +2436,13 @@ export default function OrderDetailsPage() {
                   ? booking.security_deposit
                   : parseFloat(booking.security_deposit) || 0;
                 
-                // Recalculate paid amount from transactions, excluding date change charges
+                // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
                 const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
                   // Exclude date_change_charge type
                   if (t.type === 'date_change_charge') return sum;
+                  
+                  // Exclude exchange_penalty transactions (collected separately at exchange time)
+                  if (t.method === 'exchange_penalty') return sum;
                   
                   // Also exclude transactions with date change notes (handles old transactions)
                   const notes = (t.notes || '').toLowerCase();
@@ -1927,6 +2450,11 @@ export default function OrderDetailsPage() {
                       notes.includes('date change') || 
                       notes.includes('modify booking') ||
                       notes.includes('booking date change')) {
+                    return sum;
+                  }
+                  
+                  // Exclude exchange penalty notes (handles old transactions)
+                  if (notes.includes('exchange penalty') || (notes.includes('exchange:') && notes.includes('penalty'))) {
                     return sum;
                   }
                   
@@ -1966,9 +2494,7 @@ export default function OrderDetailsPage() {
             const totalAmount = typeof booking.total_amount === 'number'
               ? booking.total_amount
               : parseFloat(booking.total_amount || '0') || 0;
-            const paidAmount = typeof booking.paid_amount === 'number'
-              ? booking.paid_amount
-              : parseFloat(booking.paid_amount || '0') || 0;
+            const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
             const securityDeposit = typeof booking.security_deposit === 'number'
               ? booking.security_deposit
               : parseFloat(booking.security_deposit || '0') || 0;
@@ -2899,8 +3425,9 @@ export default function OrderDetailsPage() {
             <div className="bg-white border border-gray-200 rounded-lg p-6 flex gap-6 mb-6">
               <div className="w-32 h-40 bg-gray-100 rounded-lg overflow-hidden">
                 {(() => {
-                  const hasImage = selectedProduct.image && selectedProduct.image !== null && selectedProduct.image !== '';
-                  const imageUrl = hasImage ? getImageUrl(selectedProduct.image) : null;
+                  const imageData = selectedProduct.image || selectedProduct.imageUrl || selectedProduct.rawImage;
+                  const hasImage = imageData && imageData !== null && imageData !== '';
+                  const imageUrl = hasImage ? getImageUrl(imageData) : null;
                   
                   if (imageUrl) {
                     return (
@@ -3394,13 +3921,17 @@ export default function OrderDetailsPage() {
               <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
                 <div className="flex gap-4 mb-4">
                   <div className="w-16 h-20 bg-gray-200 rounded overflow-hidden flex-shrink-0">
-                    {getImageUrl(product.image) ? (
-                      <img src={getImageUrl(product.image)!} alt={product.name} className="w-full h-full object-cover" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center">
-                        <span className="text-2xl">👔</span>
-                      </div>
-                    )}
+                    {(() => {
+                      const imageData = product.image || product.imageUrl || product.rawImage;
+                      const imageUrl = imageData ? getImageUrl(imageData) : null;
+                      return imageUrl ? (
+                        <img src={imageUrl} alt={product.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <span className="text-2xl">👔</span>
+                        </div>
+                      );
+                    })()}
                   </div>
                   <div className="flex-1">
                     <div className="mb-1">
@@ -4673,6 +5204,30 @@ export default function OrderDetailsPage() {
         </div>
       )}
       {ConfirmDialogComponent}
+
+      {/* Complaint Form Modal */}
+      {showComplaintForm && booking && (
+        <ComplaintForm
+          onClose={() => setShowComplaintForm(false)}
+          onSuccess={() => {
+            setShowComplaintForm(false);
+          }}
+          userName={localStorage.getItem('userName') || 'Salesman'}
+          bookingId={booking.id}
+        />
+      )}
+
+      {/* Feedback Form Modal */}
+      {showFeedbackForm && booking && (
+        <FeedbackForm
+          onClose={() => setShowFeedbackForm(false)}
+          onSuccess={() => {
+            setShowFeedbackForm(false);
+          }}
+          userName={localStorage.getItem('userName') || 'Salesman'}
+          bookingId={booking.id}
+        />
+      )}
     </div>
   );
 }

@@ -45,7 +45,7 @@ export default function DateRangePicker({
       } else if (!endDate || endDate === '') {
         setSelecting('end');
       } else {
-        // Both dates are set, next time calendar opens, start fresh
+        // Both dates are set, next time calendar opens, allow changing start date first
         setSelecting('start');
       }
     }
@@ -91,9 +91,8 @@ export default function DateRangePicker({
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 
     if (selecting === 'start') {
-      // Setting start date - clear end date and switch to end selection
+      // Setting start date - switch to end selection
       onStartDateChange(dateStr);
-      onEndDateChange(''); // Clear end date when changing start
       setSelecting('end');
     } else {
       // Setting end date
@@ -260,13 +259,6 @@ export default function DateRangePicker({
         type="button"
         onClick={() => {
           setIsOpen(!isOpen);
-          if (!isOpen) {
-            // When opening, always start with selecting start date if both are already set
-            // This allows changing the pickup date
-            if (startDate && endDate) {
-              setSelecting('start');
-            }
-          }
         }}
         className={`w-full border border-gray-300 rounded-lg bg-white text-left flex items-center justify-between hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
           compact ? 'px-2 py-1.5 text-sm' : 'px-4 py-3'

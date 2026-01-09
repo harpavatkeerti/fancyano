@@ -120,6 +120,19 @@ export function PaymentManagement({
       const totalRequired = totalAmount + securityDeposit;
       const isFullyPaid = paidAmount >= totalRequired;
       const hasRentalPayment = paidAmount > 0;
+      
+      // Debug logging for PaymentManagement status calculation
+      console.log('📊 PaymentManagement Status Calculation:', {
+        bookingId: currentBooking.id,
+        totalAmount,
+        securityDeposit,
+        totalRequired,
+        paidAmount,
+        isFullyPaid,
+        hasRentalPayment,
+        calculation: `${paidAmount} >= ${totalRequired} = ${isFullyPaid}`,
+        currentStatus: currentBooking.status
+      });
 
       let newStatus = currentBooking.status;
 
@@ -159,6 +172,18 @@ export function PaymentManagement({
         newStatus = 'pending';
       }
 
+      // Debug: Log what status will be set
+      console.log('📊 PaymentManagement Status Decision:', {
+        bookingId: currentBooking.id,
+        currentStatus: currentBooking.status,
+        newStatus,
+        willUpdate: currentBooking.status !== newStatus,
+        reason: allProductsHaveRefunds ? 'all refunds' : 
+                hasAnyRefund ? 'partial refunds' :
+                isFullyPaid ? 'fully paid' :
+                hasRentalPayment ? 'rental payment' : 'no payment'
+      });
+      
       // Only update if status changed
       if (currentBooking.status !== newStatus) {
         // Check if trying to confirm a booking that has a credit note
@@ -305,13 +330,39 @@ export function PaymentManagement({
           
           const totalRequired = totalAmountNum + securityDepositNum;
           
-          // Calculate netAmount excluding date_change_charge transactions
-          // Date change charges are separate and don't affect payment calculations
+          // Calculate netAmount excluding date_change_charge, exchange_penalty, and exchange_lapsed transactions
+          // Date change charges, exchange penalties, and lapsed amounts are separate and don't affect payment calculations
           // Also exclude any transactions with date change notes (handles old transactions recorded as 'payment')
+          const lapsedAmounts: any[] = [];
+          const lapsedRefunds: any[] = [];
           const netAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
             // Exclude date_change_charge type
             if (t.type === 'date_change_charge') {
               console.log('Excluding date_change_charge transaction:', t);
+              return sum;
+            }
+            
+            // CRITICAL: Exclude exchange_penalty transactions (collected separately at exchange time)
+            // These should NEVER affect rent or security calculations
+            const method = String(t.method || '').toLowerCase().trim();
+            if (method === 'exchange_penalty' || method === 'exchange') {
+              console.log('Excluding exchange_penalty transaction:', t);
+              return sum;
+            }
+            
+            // CRITICAL: Exclude exchange_lapsed transactions (non-refundable amounts from cancelled exchanges)
+            // These are kept for record but don't affect payment calculations
+            if (method === 'exchange_lapsed') {
+              console.log('⚠️ LAPSED (non-refundable) transaction:', t);
+              lapsedAmounts.push(t);
+              return sum;
+            }
+            
+            // CRITICAL: Track lapsed_refund (one-time refunds of lapsed amounts)
+            // These are special refunds that don't affect rent/security calculations but reduce lapsed amount display
+            if (method === 'lapsed_refund') {
+              console.log('⚠️ LAPSED REFUND (does not affect calculations):', t);
+              lapsedRefunds.push(t);
               return sum;
             }
             
@@ -325,12 +376,55 @@ export function PaymentManagement({
               return sum;
             }
             
+            // Exclude transactions with exchange penalty/charge notes (unless it's rent difference)
+            if (notes.includes('exchange penalty') || notes.includes('exchange charge')) {
+              // Keep exchange_upgrade (rent differences) only if not lapsed
+              if (method !== 'exchange_upgrade' && method !== 'exchange_lapsed' && !notes.includes('additional rent') && !notes.includes('rent difference')) {
+                console.log('Excluding transaction with exchange penalty note:', t);
+                return sum;
+              }
+            }
+            
+            // Include refunds in calculation (they may exist to correct overpayments)
+            // Only exclude exchange_downgrade refunds which shouldn't exist
+            if (t.type === 'refund' && method === 'exchange_downgrade') {
+              console.log('Excluding exchange_downgrade REFUND:', t);
+              return sum;
+            }
+            
+            if (t.type === 'refund') {
+              console.log('Including REFUND transaction:', t);
+            }
+            
+            // Calculate amount
             const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-            return sum + (t.type === 'refund' ? -amount : amount);
+            
+            // Specifically log exchange_upgrade payments
+            if (method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference')) {
+              console.log('✅ INCLUDING RENT DIFFERENCE payment:', {
+                id: t.id,
+                method: method,
+                amount: amount,
+                notes: notes.substring(0, 80)
+              });
+            }
+            
+            return sum + amount; // Only payments remain after filtering refunds
           }, 0);
           
           // Use the recalculated value to ensure date_change_charge is excluded
           const netAmount = netAmountFromTransactions;
+          
+          console.log('========================================');
+          console.log('💰 PAYMENT BREAKDOWN - PaymentManagement Component');
+          console.log('========================================');
+          console.log('Total transactions processed:', transactions.length);
+          console.log('Net Amount (from transactions):', netAmount);
+          console.log('Total Amount (rent):', totalAmount);
+          console.log('Security Deposit:', securityDeposit);
+          console.log('Rent Paid:', Math.min(netAmount, totalAmount));
+          console.log('Rent Due:', Math.max(0, totalAmount - netAmount));
+          console.log('========================================');
           
           // Debug log to help identify issues
           if (netAmount > totalRequired) {
@@ -348,12 +442,18 @@ export function PaymentManagement({
             });
           }
           
-          // Check if any refunds have been processed
-          const hasAnyRefund = transactions.some((t: any) => t.type === 'refund');
+          // Check if any refunds have been processed (exclude lapsed_refund)
+          const hasAnyRefund = transactions.some((t: any) => {
+            const method = String(t.method || '').toLowerCase().trim();
+            return t.type === 'refund' && method !== 'lapsed_refund';
+          });
           const totalRefunds = parseFloat(String(summary?.total_refunds || '0')) || 0;
           
-          // Calculate which products have refunds
-          const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
+          // Calculate which products have refunds (exclude lapsed_refund)
+          const refundTransactions = transactions.filter((t: any) => {
+            const method = String(t.method || '').toLowerCase().trim();
+            return t.type === 'refund' && method !== 'lapsed_refund';
+          });
           const productsWithRefunds = new Set<number>();
           refundTransactions.forEach((transaction: any) => {
             const notes = transaction.notes || '';
@@ -445,6 +545,89 @@ export function PaymentManagement({
                   </p>
                 </div>
               </div>
+
+              {/* Lapsed Amount Warning (Non-refundable) */}
+              {lapsedAmounts.length > 0 && (
+                <div className="mb-4 p-4 bg-yellow-50 border-l-4 border-yellow-400 rounded">
+                  <div className="flex items-start">
+                    <div className="flex-shrink-0">
+                      <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div className="ml-3 flex-1">
+                      <h3 className="text-sm font-medium text-yellow-800">
+                        ⚠️ Lapsed Amount (Non-refundable)
+                      </h3>
+                      <div className="mt-2 text-sm text-yellow-700">
+                        <p className="mb-2">
+                          The following amount(s) were paid for exchanges that were later cancelled. 
+                          As per policy, exchange-related payments are <strong>non-refundable</strong> and cannot be adjusted against other dues.
+                        </p>
+                        {lapsedAmounts.map((t: any) => {
+                          const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                          return (
+                            <div key={t.id} className="bg-yellow-100 p-2 rounded mb-2">
+                              <p className="font-semibold">₹{amount.toFixed(2)}</p>
+                              <p className="text-xs mt-1">{t.notes}</p>
+                            </div>
+                          );
+                        })}
+                        
+                        {/* Calculate net lapsed amount after refunds */}
+                        {(() => {
+                          const totalLapsed = lapsedAmounts.reduce((sum: number, t: any) => {
+                            const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                            return sum + amount;
+                          }, 0);
+                          
+                          const totalRefunded = lapsedRefunds.reduce((sum: number, t: any) => {
+                            const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                            return sum + amount;
+                          }, 0);
+                          
+                          const netLapsed = totalLapsed - totalRefunded;
+                          
+                          return (
+                            <>
+                              {lapsedRefunds.length > 0 && (
+                                <div className="bg-green-100 border border-green-300 p-2 rounded mb-2">
+                                  <p className="text-xs font-semibold text-green-800">
+                                    ✅ Refunded: {formatCurrency(totalRefunded)}
+                                  </p>
+                                  {lapsedRefunds.map((t: any) => {
+                                    const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                                    return (
+                                      <p key={t.id} className="text-xs text-green-700 mt-1">
+                                        • ₹{amount.toFixed(2)} - {t.notes?.substring(0, 80)}
+                                      </p>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                              
+                              <div className="bg-yellow-200 p-2 rounded mt-2">
+                                <p className="text-xs font-bold text-yellow-900">
+                                  {lapsedRefunds.length > 0 ? 'Net ' : 'Total '}Lapsed Amount: {formatCurrency(netLapsed)}
+                                </p>
+                                {lapsedRefunds.length > 0 && (
+                                  <p className="text-xs text-yellow-800 mt-1">
+                                    (Original: {formatCurrency(totalLapsed)} - Refunded: {formatCurrency(totalRefunded)})
+                                  </p>
+                                )}
+                              </div>
+                            </>
+                          );
+                        })()}
+                        
+                        <p className="text-xs mt-2 bg-yellow-200 p-2 rounded">
+                          💡 <strong>Note:</strong> Lapsed amounts are non-refundable as per exchange policy. Any refunds already processed are shown above.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Detailed Payment Breakdown - Always show */}
               <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
@@ -541,11 +724,17 @@ export function PaymentManagement({
                     </div>
                     
                     {/* Show refund details and deduction reasons */}
-                    {transactions.filter((t: any) => t.type === 'refund').length > 0 && (
+                    {transactions.filter((t: any) => {
+                      const method = String(t.method || '').toLowerCase().trim();
+                      return t.type === 'refund' && method !== 'lapsed_refund';
+                    }).length > 0 && (
                       <div className="mt-4 pt-3 border-t border-green-200">
                         <p className="text-sm font-semibold text-green-900 mb-2">📋 Refund Details:</p>
                         <div className="space-y-2">
-                          {transactions.filter((t: any) => t.type === 'refund').map((refund: any) => {
+                          {transactions.filter((t: any) => {
+                            const method = String(t.method || '').toLowerCase().trim();
+                            return t.type === 'refund' && method !== 'lapsed_refund';
+                          }).map((refund: any) => {
                             const refundAmount = typeof refund.amount === 'number' 
                               ? refund.amount 
                               : parseFloat(String(refund.amount || '0')) || 0;
@@ -647,11 +836,17 @@ export function PaymentManagement({
                       </div>
                       
                       {/* Show refund details and deduction reasons */}
-                      {transactions.filter((t: any) => t.type === 'refund').length > 0 && (
+                      {transactions.filter((t: any) => {
+                        const method = String(t.method || '').toLowerCase().trim();
+                        return t.type === 'refund' && method !== 'lapsed_refund';
+                      }).length > 0 && (
                         <div className="mt-4 pt-3 border-t border-yellow-200">
                           <p className="text-sm font-semibold text-yellow-900 mb-2">📋 Refund Details:</p>
                           <div className="space-y-2">
-                            {transactions.filter((t: any) => t.type === 'refund').map((refund: any) => {
+                            {transactions.filter((t: any) => {
+                              const method = String(t.method || '').toLowerCase().trim();
+                              return t.type === 'refund' && method !== 'lapsed_refund';
+                            }).map((refund: any) => {
                               const refundAmount = typeof refund.amount === 'number' 
                                 ? refund.amount 
                                 : parseFloat(String(refund.amount || '0')) || 0;
