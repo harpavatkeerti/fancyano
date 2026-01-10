@@ -3,9 +3,13 @@
 import { useEffect, useState } from 'react';
 import { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
+import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, BookingProductTrackingModal } from '@/components/common';
 import dynamic from 'next/dynamic';
+import axios from 'axios';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 // Dynamically import QRScanner to avoid SSR issues with html5-qrcode
 const QRScanner = dynamic(
@@ -63,11 +67,13 @@ export default function BookingsPage() {
   const [phoneNumberError, setPhoneNumberError] = useState('');
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [productSearchCode, setProductSearchCode] = useState('');
-  const [transportationCharge, setTransportationCharge] = useState(0);
+  const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
   
   // Credit note modal state
   const [showCreditNoteModal, setShowCreditNoteModal] = useState(false);
   const [bookingToCancel, setBookingToCancel] = useState<Booking | null>(null);
+  const [showCancellationModal, setShowCancellationModal] = useState(false);
+  const [bookingToCancelWithPolicy, setBookingToCancelWithPolicy] = useState<Booking | null>(null);
   const [creditNoteData, setCreditNoteData] = useState({
     validity: '',
     amount: '',
@@ -87,14 +93,23 @@ export default function BookingsPage() {
     min_charge: 0,
     max_charge: 0,
   });
-  const [customTransportationCharge, setCustomTransportationCharge] = useState('');
+  
+  // Payment collection modal state for new booking
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('Cash/UPI');
+  const [paymentNotes, setPaymentNotes] = useState('');
+  const [pendingBookingData, setPendingBookingData] = useState<any>(null);
+  const [customTransportationCharge, setCustomTransportationCharge] = useState('0'); // Default to '0'
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1); // For keyboard navigation
   const [trackingBooking, setTrackingBooking] = useState<Booking | null>(null);
   const [showProductTrackingList, setShowProductTrackingList] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
+  const [statusFilter, setStatusFilter] = useState<string>('all'); // New status filter
   
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
@@ -366,14 +381,20 @@ export default function BookingsPage() {
       // Fetch the booking details
       const response = await bookingsApi.getById(id);
       const booking = response.data;
-      setBookingToCancel(booking);
-      setShowCreditNoteModal(true);
-      // Reset credit note form
-      setCreditNoteData({ validity: '', amount: '' });
+      
+      // Use new cancellation modal with policy
+      setBookingToCancelWithPolicy(booking);
+      setShowCancellationModal(true);
     } catch (error) {
       console.error('Error fetching booking:', error);
       toast.error('Failed to load booking details');
     }
+  }
+
+  function handleCancellationComplete() {
+    setShowCancellationModal(false);
+    setBookingToCancelWithPolicy(null);
+    fetchBookings(); // Refresh the bookings list
   }
 
   async function handleConfirmCancel() {
@@ -570,6 +591,7 @@ export default function BookingsPage() {
   // Handle product search input change with autocomplete
   function handleSearchInputChange(value: string) {
     setProductSearchCode(value);
+    setSelectedSuggestionIndex(-1); // Reset selection when typing
     
     if (value.trim().length > 0) {
       // Filter products by code or name, excluding already added products
@@ -593,7 +615,43 @@ export default function BookingsPage() {
     setProductSearchCode('');
     setShowSuggestions(false);
     setFilteredProducts([]);
+    setSelectedSuggestionIndex(-1); // Reset selection
     alert(`✅ Product "${product.name}" added successfully!`);
+  }
+
+  // Handle keyboard navigation in product suggestions
+  function handleKeyboardNavigation(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!showSuggestions || filteredProducts.length === 0) {
+      if (e.key === 'Enter') {
+        handleSearchByCode(productSearchCode);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => 
+          prev < filteredProducts.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => (prev > 0 ? prev - 1 : -1));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < filteredProducts.length) {
+          handleSelectSuggestion(filteredProducts[selectedSuggestionIndex]);
+        } else {
+          handleSearchByCode(productSearchCode);
+        }
+        break;
+      case 'Escape':
+        setShowSuggestions(false);
+        setSelectedSuggestionIndex(-1);
+        break;
+    }
   }
 
   // Search product by code (for Enter key or Add button)
@@ -862,40 +920,165 @@ export default function BookingsPage() {
       return;
     }
 
-    await createBookingConfirmed();
+    // All validations passed - show payment collection modal
+    const finalTotal = calculateTotal();
+    setPendingBookingData({
+      customer_name: addFormData.customer_name,
+      fullPhone1,
+      fullPhone2,
+      customer_address: addFormData.customer_address,
+      booking_date: addFormData.booking_date,
+      products: addFormData.products,
+      finalTotal,
+      transportation_opted: addFormData.transportation_opted,
+      other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+    });
+    setPaymentAmount(''); // Reset payment amount
+    setPaymentMethod('Cash/UPI');
+    setPaymentNotes(''); // Empty notes field
+    setShowPaymentModal(true);
   }
 
   async function createBookingConfirmed() {
+    if (!pendingBookingData) {
+      // Fallback to old method if no pending data
+      try {
+        const country1 = getCountryByCode(addFormData.customer_phone_country);
+        const country2 = getCountryByCode(addFormData.alternate_phone_country);
+        const fullPhone1 = `${country1?.callingCode}${addFormData.customer_phone}`;
+        const fullPhone2 = `${country2?.callingCode}${addFormData.alternate_phone}`;
+        const finalTotal = calculateTotal();
+        
+        await bookingsApi.create({
+          customer_name: addFormData.customer_name,
+          customer_phone: fullPhone1,
+          alternate_phone: fullPhone2,
+          customer_address: addFormData.customer_address,
+          booking_date: addFormData.booking_date,
+          booked_from: addFormData.booked_from || '',
+          booked_to: addFormData.booked_to || '',
+          products: addFormData.products.map(p => ({ 
+            id: p.id, 
+            booked_from: p.booked_from,
+            booked_to: p.booked_to
+          })),
+          total_amount: finalTotal,
+          transportation_opted: addFormData.transportation_opted,
+          other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+          status: 'pending',
+        } as any);
+        
+        await fetchBookings();
+        setShowAddModal(false);
+        setProductSearchCode('');
+        toast.success(`Booking created successfully! Total: ₹${Math.floor(finalTotal)}`);
+        return;
+      } catch (error) {
+        console.error('Error creating booking:', error);
+        toast.error('Error creating booking');
+        return;
+      }
+    }
+    
     try {
-      const country1 = getCountryByCode(addFormData.customer_phone_country);
-      const country2 = getCountryByCode(addFormData.alternate_phone_country);
-      const fullPhone1 = `${country1?.callingCode}${addFormData.customer_phone}`;
-      const fullPhone2 = `${country2?.callingCode}${addFormData.alternate_phone}`;
-      const finalTotal = calculateTotal();
-      
-      await bookingsApi.create({
-        customer_name: addFormData.customer_name,
-        customer_phone: fullPhone1,
-        alternate_phone: fullPhone2,
-        customer_address: addFormData.customer_address,
-        booking_date: addFormData.booking_date,
-        booked_from: addFormData.booked_from || '',
-        booked_to: addFormData.booked_to || '',
-        products: addFormData.products.map(p => ({ 
+      const response = await bookingsApi.create({
+        customer_name: pendingBookingData.customer_name,
+        customer_phone: pendingBookingData.fullPhone1,
+        alternate_phone: pendingBookingData.fullPhone2,
+        customer_address: pendingBookingData.customer_address,
+        booking_date: pendingBookingData.booking_date,
+        booked_from: '', // Not used anymore, kept for compatibility
+        booked_to: '', // Not used anymore, kept for compatibility
+        products: pendingBookingData.products.map((p: any) => ({ 
           id: p.id, 
           booked_from: p.booked_from,
           booked_to: p.booked_to
         })),
-        total_amount: finalTotal,
-        transportation_opted: addFormData.transportation_opted,
-        other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+        total_amount: pendingBookingData.finalTotal,
+        transportation_opted: pendingBookingData.transportation_opted,
+        other_charges: pendingBookingData.other_charges,
         status: 'pending',
       } as any);
       
+      const newBookingId = response.data.id;
+      console.log('🆔 Created booking ID:', newBookingId);
+      
+      // If payment amount is provided, record it
+      if (paymentAmount && parseFloat(paymentAmount) > 0) {
+        try {
+          const paymentData = {
+            booking_id: newBookingId,
+            amount: parseFloat(paymentAmount),
+            type: 'payment',
+            method: paymentMethod,
+            notes: paymentNotes || 'Initial payment recorded', // Default note if empty
+            recorded_by: 'admin'
+          };
+          console.log('📝 Recording payment:', paymentData);
+          
+          await axios.post(`${API_URL}/payment-transactions`, paymentData);
+          console.log('✅ Payment recorded successfully');
+          
+          // Calculate proper booking status based on payment
+          const paidAmount = parseFloat(paymentAmount);
+          const totalAmount = pendingBookingData.finalTotal;
+          
+          // Calculate security deposit from products
+          const securityDeposit = response.data.products?.reduce((sum: number, p: any) => {
+            return sum + (parseFloat(p.security_deposit) || 0);
+          }, 0) || 0;
+          
+          const totalRequired = totalAmount + securityDeposit;
+          const isFullyPaid = paidAmount >= totalRequired;
+          const hasRentalPayment = paidAmount > 0;
+          
+          let newStatus = 'pending';
+          if (isFullyPaid) {
+            // Full payment received (rent + security) - Order picked up
+            newStatus = 'in_progress';
+          } else if (hasRentalPayment) {
+            // At least some payment recorded - Confirmed
+            newStatus = 'confirmed';
+          }
+          
+          console.log('📊 Status calculation:', {
+            paidAmount,
+            totalAmount,
+            securityDeposit,
+            totalRequired,
+            isFullyPaid,
+            hasRentalPayment,
+            newStatus
+          });
+          
+          // Update booking status and paid amount
+          await bookingsApi.update(newBookingId, {
+            status: newStatus,
+            paid_amount: paidAmount,
+            security_deposit: securityDeposit
+          });
+          console.log(`✅ Booking status updated to ${newStatus}`);
+        } catch (paymentError: any) {
+          console.error('❌ Error recording payment:', paymentError);
+          console.error('Error response:', paymentError.response?.data);
+          toast.warning('Booking created but failed to record payment. Please record it manually.');
+        }
+      }
+      
       await fetchBookings();
       setShowAddModal(false);
+      setShowPaymentModal(false);
+      setPendingBookingData(null);
+      setPaymentAmount('');
+      setPaymentMethod('Cash/UPI');
+      setPaymentNotes('');
       setProductSearchCode('');
-      toast.success(`Booking created successfully! Total: ₹${Math.floor(finalTotal)}`);
+      
+      if (paymentAmount && parseFloat(paymentAmount) > 0) {
+        toast.success(`Booking created successfully! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. Payment of ₹${paymentAmount} recorded.`);
+      } else {
+        toast.success(`Booking created successfully! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. No payment recorded - dates are free until payment.`);
+      }
     } catch (error) {
       console.error('Error creating booking:', error);
       toast.error('Error creating booking');
@@ -906,6 +1089,9 @@ export default function BookingsPage() {
     // Search filter
     const matchesSearch = b.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (b.customer_phone && b.customer_phone.includes(searchTerm));
+    
+    // Status filter
+    const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
     
     // Urgent filter
     const isUrgent = isBookingUrgent(b);
@@ -940,7 +1126,7 @@ export default function BookingsPage() {
       matchesDateRange = hasOverlap;
     }
     
-    return matchesSearch && matchesUrgentFilter && matchesDateRange;
+    return matchesSearch && matchesStatus && matchesUrgentFilter && matchesDateRange;
   });
 
   if (loading) {
@@ -978,7 +1164,22 @@ export default function BookingsPage() {
             />
           </div>
           <div className="flex items-center space-x-2">
-            <label className="text-sm font-medium text-gray-700">Status:</label>
+            <label className="text-sm font-medium text-gray-700">Booking Status:</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"
+            >
+              <option value="all">All Status</option>
+              <option value="pending">⏳ Pending</option>
+              <option value="confirmed">✅ Confirmed</option>
+              <option value="in_progress">🔄 In Progress</option>
+              <option value="completed">✔️ Completed</option>
+              <option value="cancelled">❌ Cancelled</option>
+            </select>
+          </div>
+          <div className="flex items-center space-x-2">
+            <label className="text-sm font-medium text-gray-700">Priority:</label>
             <select
               value={urgentFilter}
               onChange={(e) => setUrgentFilter(e.target.value as 'all' | 'urgent' | 'normal')}
@@ -989,15 +1190,17 @@ export default function BookingsPage() {
               <option value="normal">Normal Only</option>
             </select>
           </div>
-          {(filterDateFrom || filterDateTo) && (
+          {(filterDateFrom || filterDateTo || statusFilter !== 'all' || urgentFilter !== 'all') && (
             <button
               onClick={() => {
                 setFilterDateFrom('');
                 setFilterDateTo('');
+                setStatusFilter('all');
+                setUrgentFilter('all');
               }}
-              className="px-4 py-2 text-sm text-red-600 hover:text-red-800 font-medium"
+              className="px-4 py-2 text-sm text-red-600 hover:text-red-800 font-medium whitespace-nowrap"
             >
-              Clear Dates
+              Clear Filters
             </button>
           )}
         </div>
@@ -1627,11 +1830,7 @@ export default function BookingsPage() {
                           type="text"
                           value={productSearchCode}
                           onChange={(e) => handleSearchInputChange(e.target.value)}
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter') {
-                              handleSearchByCode(productSearchCode);
-                            }
-                          }}
+                          onKeyDown={handleKeyboardNavigation}
                           onFocus={() => {
                             if (productSearchCode.trim() && filteredProducts.length > 0) {
                               setShowSuggestions(true);
@@ -1639,7 +1838,10 @@ export default function BookingsPage() {
                           }}
                           onBlur={() => {
                             // Delay to allow click on suggestion
-                            setTimeout(() => setShowSuggestions(false), 200);
+                            setTimeout(() => {
+                              setShowSuggestions(false);
+                              setSelectedSuggestionIndex(-1);
+                            }, 200);
                           }}
                           placeholder="Type code or name... (e.g., SH-000001 or Sherwani)"
                           className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -1652,11 +1854,15 @@ export default function BookingsPage() {
                               <p className="text-xs text-gray-500 px-3 py-1 font-semibold uppercase">
                                 {filteredProducts.length} {filteredProducts.length === 1 ? 'match' : 'matches'} found
                               </p>
-                              {filteredProducts.map((product) => (
+                              {filteredProducts.map((product, index) => (
                                 <button
                                   key={product.id}
                                   onClick={() => handleSelectSuggestion(product)}
-                                  className="w-full text-left px-3 py-3 hover:bg-blue-50 rounded-lg transition-colors border-b border-gray-100 last:border-0"
+                                  className={`w-full text-left px-3 py-3 rounded-lg transition-colors border-b border-gray-100 last:border-0 ${
+                                    index === selectedSuggestionIndex 
+                                      ? 'bg-blue-100 border-blue-300 border-2' 
+                                      : 'hover:bg-blue-50'
+                                  }`}
                                 >
                                   <div className="flex items-center justify-between">
                                     <div className="flex-1">
@@ -2345,6 +2551,10 @@ export default function BookingsPage() {
                   const isMale = isMaleClothing(product.name);
                   // Prioritize unique key first, then fall back to productId for backward compatibility
                   const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || parsedSpecReqs[productId] || '';
+                  
+                  // Get product image URL
+                  const hasProductImage = product.image && product.image !== null && product.image !== '';
+                  const productImageUrl = hasProductImage ? getImageUrl(product.image) : null;
 
                   return (
                     <div key={`${uniqueKey}_${index}`} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
@@ -2355,14 +2565,43 @@ export default function BookingsPage() {
                         })}
                     className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
                   >
-                    <h3 className="text-lg font-semibold text-gray-800 flex items-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-pink-600">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
-                      </svg>
-                          {hasMeasurements ? 'Customer Measurements' : 'Special Requirements'} - {product.name}
-                          <span className="ml-2 text-sm text-pink-600">(Click to {isExpanded ? 'hide' : 'view'})</span>
-                    </h3>
+                    <div className="flex items-center">
+                      {/* Product Image */}
+                      <div className="w-14 h-14 rounded-lg overflow-hidden border-2 border-pink-200 mr-3 flex-shrink-0 bg-white">
+                        {productImageUrl ? (
+                          <img 
+                            src={productImageUrl} 
+                            alt={product.name}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = '/placeholder-product.png';
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center bg-gray-100">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-gray-400">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 19.5h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5z" />
+                            </svg>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Product Info & Title */}
+                      <div className="flex flex-col items-start">
+                        {/* Product Code Badge */}
+                        <span className="text-xs font-bold text-pink-700 bg-pink-100 px-2 py-0.5 rounded mb-1">
+                          {product.code}
+                        </span>
+                        <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1 text-pink-600">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
+                          </svg>
+                          {hasMeasurements ? 'Measurements' : 'Special Requirements'} - {product.name}
+                        </h3>
+                        <span className="text-xs text-pink-600">(Click to {isExpanded ? 'hide' : 'view'})</span>
+                      </div>
+                    </div>
                     <svg
                       xmlns="http://www.w3.org/2000/svg"
                       fill="none"
@@ -2581,11 +2820,146 @@ export default function BookingsPage() {
               <button
                 onClick={() => {
                   setShowWarningModal(false);
-                  createBookingConfirmed();
+                  // Show payment modal after warning is accepted
+                  const finalTotal = calculateTotal();
+                  setPendingBookingData({
+                    customer_name: addFormData.customer_name,
+                    fullPhone1: `${getCountryByCode(addFormData.customer_phone_country)?.callingCode}${addFormData.customer_phone}`,
+                    fullPhone2: `${getCountryByCode(addFormData.alternate_phone_country)?.callingCode}${addFormData.alternate_phone}`,
+                    customer_address: addFormData.customer_address,
+                    booking_date: addFormData.booking_date,
+                    products: addFormData.products,
+                    finalTotal,
+                    transportation_opted: addFormData.transportation_opted,
+                    other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+                  });
+                  setPaymentAmount('');
+                  setPaymentMethod('Cash/UPI');
+                  setPaymentNotes(''); // Empty notes field
+                  setShowPaymentModal(true);
                 }}
                 className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Collection Modal for New Booking */}
+      {showPaymentModal && pendingBookingData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-lg">
+            <div className="bg-blue-600 text-white px-6 py-4 rounded-t-lg">
+              <h3 className="text-lg font-bold">💰 Collect Payment (Optional)</h3>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
+                <p className="text-sm font-semibold text-blue-800 mb-2">
+                  📋 Booking Summary
+                </p>
+                <div className="text-sm text-blue-700 space-y-1">
+                  <p><strong>Customer:</strong> {pendingBookingData.customer_name}</p>
+                  <p><strong>Total Amount:</strong> ₹{Math.floor(pendingBookingData.finalTotal).toLocaleString('en-IN')}</p>
+                  <p><strong>Products:</strong> {pendingBookingData.products.length} item(s)</p>
+                </div>
+              </div>
+
+              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
+                <p className="text-xs font-semibold text-yellow-800 mb-1">
+                  ⚠️ Important Note
+                </p>
+                <p className="text-xs text-yellow-700">
+                  • If you collect payment now, the product dates will be <strong>blocked immediately</strong>
+                  <br />
+                  • If you skip payment, the booking will be <strong>auto-cancelled after 5 minutes</strong>
+                  <br />
+                  • You must record payment within 5 minutes to confirm the booking
+                  <br />
+                  • You can record payment later from the order details page (within 5 min)
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Payment Amount (Optional)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₹</span>
+                  <input
+                    type="number"
+                    value={paymentAmount}
+                    onChange={(e) => setPaymentAmount(e.target.value)}
+                    min="0"
+                    max={pendingBookingData.finalTotal}
+                    step="0.01"
+                    className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    placeholder="0.00"
+                  />
+                </div>
+                <p className="text-xs text-gray-600 mt-1">
+                  Max: ₹{Math.floor(pendingBookingData.finalTotal).toLocaleString('en-IN')} • Leave empty to skip payment
+                </p>
+              </div>
+
+              {parseFloat(paymentAmount) > 0 && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Payment Method <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    >
+                      <option value="Cash/UPI">Cash/UPI</option>
+                      <option value="Cash">Cash</option>
+                      <option value="UPI">UPI</option>
+                      <option value="Card">Card</option>
+                      <option value="Bank Transfer">Bank Transfer</option>
+                      <option value="Cheque">Cheque</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Notes/Transaction Details
+                    </label>
+                    <textarea
+                      value={paymentNotes}
+                      onChange={(e) => setPaymentNotes(e.target.value)}
+                      rows={3}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      placeholder="Add transaction ID, notes, or any other details..."
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-3 p-6 border-t border-gray-200 bg-gray-50">
+              <button
+                onClick={() => {
+                  setShowPaymentModal(false);
+                  setPendingBookingData(null);
+                  setPaymentAmount('');
+                  setPaymentMethod('Cash/UPI');
+                  setPaymentNotes('');
+                }}
+                className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 font-medium transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createBookingConfirmed}
+                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors"
+              >
+                {parseFloat(paymentAmount) > 0 
+                  ? `Collect ₹${paymentAmount} & Create Booking` 
+                  : 'Create Booking Without Payment'}
               </button>
             </div>
           </div>
@@ -2670,6 +3044,19 @@ export default function BookingsPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* New Cancellation Modal with Policy */}
+      {showCancellationModal && bookingToCancelWithPolicy && (
+        <BookingCancellation
+          bookingId={bookingToCancelWithPolicy.id}
+          bookingStatus={bookingToCancelWithPolicy.status}
+          onCancellationComplete={handleCancellationComplete}
+          userRole="admin"
+          userName="Admin"
+          canCancel={true}
+          autoOpen={true}
+        />
       )}
     </div>
   );

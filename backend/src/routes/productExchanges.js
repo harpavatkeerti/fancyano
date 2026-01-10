@@ -216,14 +216,26 @@ router.post('/', async (req, res) => {
     const newTotalRent = parseFloat(recalcResult.rows[0].total_rent) || 0;
     const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
     
-    // Update booking with recalculated totals (sum of all products' rent_per_day)
+    // Get current other_charges (transportation, etc.) - these should NOT be reset
+    const bookingChargesResult = await client.query(
+      `SELECT COALESCE(other_charges, 0) as other_charges FROM bookings WHERE id = $1`,
+      [booking_id]
+    );
+    const otherCharges = parseFloat(bookingChargesResult.rows[0].other_charges) || 0;
+    
+    // total_amount = sum of products' rent + other_charges (transportation, etc.)
+    // security_deposit = sum of products' security deposits ONLY (not affected by transportation)
+    const newTotalAmount = newTotalRent + otherCharges;
+    
+    // Update booking with recalculated totals
+    // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $3`,
-      [newTotalRent, newTotalSecurity, booking_id]
+      [newTotalAmount, newTotalSecurity, booking_id]
     );
     
     const originalProductName = originalProduct.name || `Product ${original_product_id}`;
@@ -712,18 +724,32 @@ router.delete('/:id', async (req, res) => {
     const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
     
     console.log('🔢 RECALCULATED TOTALS:');
-    console.log('  New Total Rent:', `₹${newTotalRent}`);
-    console.log('  New Total Security:', `₹${newTotalSecurity}`);
+    console.log('  New Total Rent (sum of products):', `₹${newTotalRent}`);
+    console.log('  New Total Security (sum of products):', `₹${newTotalSecurity}`);
+    
+    // Get current other_charges (transportation, etc.) - these should NOT be reset
+    const bookingChargesResult = await client.query(
+      `SELECT COALESCE(other_charges, 0) as other_charges FROM bookings WHERE id = $1`,
+      [exchange.booking_id]
+    );
+    const otherCharges = parseFloat(bookingChargesResult.rows[0].other_charges) || 0;
+    console.log('  Other Charges (preserved):', `₹${otherCharges}`);
+    
+    // total_amount = sum of products' rent + other_charges (transportation, etc.)
+    // security_deposit = sum of products' security deposits ONLY (not affected by transportation)
+    const newTotalAmount = newTotalRent + otherCharges;
+    console.log('  New Total Amount (rent + other charges):', `₹${newTotalAmount}`);
     console.log('');
     
     // Update booking with recalculated totals
+    // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $3`,
-      [newTotalRent, newTotalSecurity, exchange.booking_id]
+      [newTotalAmount, newTotalSecurity, exchange.booking_id]
     );
     
     console.log('🗑️ HANDLING EXCHANGE-RELATED TRANSACTIONS:');

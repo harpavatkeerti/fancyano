@@ -39,25 +39,25 @@ export default function SettingsPage() {
   const [editingPolicyType, setEditingPolicyType] = useState<'refund' | 'cancellation' | null>(null);
   
   // Modal state for editing
-  const [modalPenalties, setModalPenalties] = useState<number[]>([0, 50, 75, 100]);
-  const [modalDays, setModalDays] = useState<number[]>([7, 3, 1, -1]);
+  const [modalPenalties, setModalPenalties] = useState<number[]>([0, 10, 20, 50]);
+  const [modalDays, setModalDays] = useState<number[]>([3, 5, 7, -1]);
   
   const [refundPolicy, setRefundPolicy] = useState<RefundPolicy>({
     booked_date: 0,
-    before_7_days: 0,
-    before_3_days: 50,
-    before_1_day: 75,
-    on_booking_date: 100,
-    days: [7, 3, 1, -1],
+    before_7_days: 0,    // Within 3 days: 0%
+    before_3_days: 10,   // Within 5 days: 10%
+    before_1_day: 20,    // Within 7 days: 20%
+    on_booking_date: 50, // After 7 days: 50%
+    days: [3, 5, 7, -1], // Days thresholds: 3, 5, 7, after 7
   });
   
   const [cancellationPolicy, setCancellationPolicy] = useState<CancellationPolicy>({
     booked_date: 0,
-    before_7_days: 0,
-    before_3_days: 50,
-    before_1_day: 75,
-    on_booking_date: 100,
-    days: [7, 3, 1, -1],
+    before_7_days: 0,    // Within 3 days: 0%
+    before_3_days: 10,   // Within 5 days: 10%
+    before_1_day: 20,    // Within 7 days: 20%
+    on_booking_date: 50, // After 7 days: 50%
+    days: [3, 5, 7, -1], // Days thresholds: 3, 5, 7, after 7
   });
   
   const [salesmanPermissions, setSalesmanPermissions] = useState<SalesmanPermissions>({
@@ -83,18 +83,18 @@ export default function SettingsPage() {
         const refundData = await settingsApi.getByKey('refund_policy');
         if (refundData.data?.setting_value) {
           const parsed = JSON.parse(refundData.data.setting_value);
-          // Normalize days array to ensure consistent structure: [7, 3, 1, -1]
+          // Normalize days array to ensure consistent structure: [3, 5, 7, -1]
           if (!parsed.days || parsed.days.length !== 4) {
-            parsed.days = [7, 3, 1, -1];
+            parsed.days = [3, 5, 7, -1];
           } else {
-            // Ensure the last value is -1 (for "after 7 days" display)
+            // Ensure the last value is -1 (for "after X days" display)
             parsed.days[3] = -1;
           }
           // Ensure all required fields exist for backward compatibility
           if (parsed.before_7_days === undefined) parsed.before_7_days = 0;
-          if (parsed.before_3_days === undefined) parsed.before_3_days = 50;
-          if (parsed.before_1_day === undefined) parsed.before_1_day = 75;
-          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 100;
+          if (parsed.before_3_days === undefined) parsed.before_3_days = 10;
+          if (parsed.before_1_day === undefined) parsed.before_1_day = 20;
+          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 50;
           // Remove before_0_days if it exists (cleanup)
           if (parsed.before_0_days !== undefined) {
             delete parsed.before_0_days;
@@ -110,18 +110,18 @@ export default function SettingsPage() {
         const cancelData = await settingsApi.getByKey('cancellation_policy');
         if (cancelData.data?.setting_value) {
           const parsed = JSON.parse(cancelData.data.setting_value);
-          // Normalize days array to ensure consistent structure: [7, 3, 1, -1]
+          // Normalize days array to ensure consistent structure: [3, 5, 7, -1]
           if (!parsed.days || parsed.days.length !== 4) {
-            parsed.days = [7, 3, 1, -1];
+            parsed.days = [3, 5, 7, -1];
           } else {
-            // Ensure the last value is -1 (for "after 7 days" display)
+            // Ensure the last value is -1 (for "after X days" display)
             parsed.days[3] = -1;
           }
           // Ensure all required fields exist for backward compatibility
           if (parsed.before_7_days === undefined) parsed.before_7_days = 0;
-          if (parsed.before_3_days === undefined) parsed.before_3_days = 50;
-          if (parsed.before_1_day === undefined) parsed.before_1_day = 75;
-          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 100;
+          if (parsed.before_3_days === undefined) parsed.before_3_days = 10;
+          if (parsed.before_1_day === undefined) parsed.before_1_day = 20;
+          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 50;
           // Remove before_0_days if it exists (cleanup)
           if (parsed.before_0_days !== undefined) {
             delete parsed.before_0_days;
@@ -265,19 +265,19 @@ export default function SettingsPage() {
   function openEditModal(type: 'refund' | 'cancellation') {
     setEditingPolicyType(type);
     const policy = type === 'refund' ? refundPolicy : cancellationPolicy;
-    // Set modal values based on current policy - 4 fields: before 7 days, before 3 days, before 1 day, on booking date
+    // Set modal values based on current policy - 4 fields mapping to within X days
     // Ensure consistent order and structure for both policies
     const normalizedDays = policy.days && policy.days.length === 4 
       ? policy.days 
-      : [7, 3, 1, -1]; // Default: 7 days, 3 days, 1 day, after 7 days
+      : [3, 5, 7, -1]; // Default: within 3, 5, 7 days, and after 7 days
     
     setModalPenalties([
       policy.before_7_days || 0,
-      policy.before_3_days || 50,
-      policy.before_1_day || 75,
-      policy.on_booking_date || 100,
+      policy.before_3_days || 10,
+      policy.before_1_day || 20,
+      policy.on_booking_date || 50,
     ]);
-    // Load saved days or use defaults - order: 7, 3, 1, -1 (after 7 days)
+    // Load saved days or use defaults - order: 3, 5, 7, -1 (after X days)
     setModalDays(normalizedDays);
     setShowEditModal(true);
   }
@@ -293,11 +293,11 @@ export default function SettingsPage() {
     try {
       if (editingPolicyType === 'refund') {
         const updatedPolicy = {
-          booked_date: 0, // More than 7 days - default 0%
-          before_7_days: modalPenalties[0] || 0,
-          before_3_days: modalPenalties[1] || 50,
-          before_1_day: modalPenalties[2] || 75,
-          on_booking_date: modalPenalties[3] || 100,
+          booked_date: 0, // Not used - placeholder
+          before_7_days: modalPenalties[0] || 0,    // Within first threshold (e.g., 3 days)
+          before_3_days: modalPenalties[1] || 10,   // Within second threshold (e.g., 5 days)
+          before_1_day: modalPenalties[2] || 20,    // Within third threshold (e.g., 7 days)
+          on_booking_date: modalPenalties[3] || 50, // After third threshold
           days: modalDays, // Save the days values
         };
         setRefundPolicy(updatedPolicy);
@@ -312,11 +312,11 @@ export default function SettingsPage() {
         });
       } else {
         const updatedPolicy = {
-          booked_date: 0, // More than 7 days - default 0%
-          before_7_days: modalPenalties[0] || 0,
-          before_3_days: modalPenalties[1] || 50,
-          before_1_day: modalPenalties[2] || 75,
-          on_booking_date: modalPenalties[3] || 100,
+          booked_date: 0, // Not used - placeholder
+          before_7_days: modalPenalties[0] || 0,    // Within first threshold (e.g., 3 days)
+          before_3_days: modalPenalties[1] || 10,   // Within second threshold (e.g., 5 days)
+          before_1_day: modalPenalties[2] || 20,    // Within third threshold (e.g., 7 days)
+          on_booking_date: modalPenalties[3] || 50, // After third threshold
           days: modalDays, // Save the days values
         };
         setCancellationPolicy(updatedPolicy);
@@ -411,38 +411,51 @@ export default function SettingsPage() {
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
-            {/* Penalty Visualization Bar */}
-            <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden">
-              <div className="absolute inset-0 flex items-center justify-between px-6">
-                <span className="text-xs font-bold text-white drop-shadow-lg">0% of Booking Amount</span>
-                <span className="text-xs font-bold text-white drop-shadow-lg">50% of Booking Amount</span>
-                <span className="text-xs font-bold text-white drop-shadow-lg">100% of Booking Amount</span>
+            {/* Penalty Visualization Bar - 4 points perfectly aligned with data below */}
+            <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden mb-2">
+              <div className="absolute inset-0 grid grid-cols-4 gap-6 px-0">
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {refundPolicy.before_7_days || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {refundPolicy.before_3_days || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {refundPolicy.before_1_day || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {refundPolicy.on_booking_date || 0}%
+                  </span>
+                </div>
               </div>
             </div>
           </div>
           
           <div>
-            <p className="text-sm font-medium text-gray-700 mb-3">Cancel / Refund:</p>
-            <div className="grid grid-cols-5 gap-6">
-              <div>
-                <p className="text-xs text-gray-600 mb-2">Booked Date</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.booked_date}%</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
+            <div className="grid grid-cols-4 gap-6">
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[0] || 3} days</p>
+                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_7_days || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">7 days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_7_days}%</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[1] || 5} days</p>
+                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_3_days || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">3 days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_3_days}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">1 day</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[2] || 7} days</p>
                 <p className="text-base font-semibold text-gray-900">{refundPolicy.before_1_day || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">Booking date</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.on_booking_date}%</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">After {refundPolicy.days?.[2] || 7} days</p>
+                <p className="text-base font-semibold text-gray-900">{refundPolicy.on_booking_date || 0}%</p>
               </div>
             </div>
           </div>
@@ -464,38 +477,51 @@ export default function SettingsPage() {
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
-            {/* Penalty Visualization Bar */}
-            <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden">
-              <div className="absolute inset-0 flex items-center justify-between px-6">
-                <span className="text-xs font-bold text-white drop-shadow-lg">0% of Booking Amount</span>
-                <span className="text-xs font-bold text-white drop-shadow-lg">50% of Booking Amount</span>
-                <span className="text-xs font-bold text-white drop-shadow-lg">100% of Booking Amount</span>
+            {/* Penalty Visualization Bar - 4 points perfectly aligned with data below */}
+            <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden mb-2">
+              <div className="absolute inset-0 grid grid-cols-4 gap-6 px-0">
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {cancellationPolicy.before_7_days || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {cancellationPolicy.before_3_days || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {cancellationPolicy.before_1_day || 0}%
+                  </span>
+                </div>
+                <div className="flex items-center justify-center">
+                  <span className="text-xs font-bold text-white drop-shadow-lg">
+                    {cancellationPolicy.on_booking_date || 0}%
+                  </span>
+                </div>
               </div>
             </div>
           </div>
           
           <div>
-            <p className="text-sm font-medium text-gray-700 mb-3">Cancel / Refund:</p>
-            <div className="grid grid-cols-5 gap-6">
-              <div>
-                <p className="text-xs text-gray-600 mb-2">Booked Date</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.booked_date}%</p>
+            <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
+            <div className="grid grid-cols-4 gap-6">
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[0] || 3} days</p>
+                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_7_days || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">7 days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_7_days}%</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[1] || 5} days</p>
+                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_3_days || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">3 days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_3_days}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">1 day</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[2] || 7} days</p>
                 <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_1_day || 0}%</p>
               </div>
-              <div>
-                <p className="text-xs text-gray-600 mb-2">Booking date</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.on_booking_date}%</p>
+              <div className="text-center">
+                <p className="text-xs text-gray-600 mb-2">After {cancellationPolicy.days?.[2] || 7} days</p>
+                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.on_booking_date || 0}%</p>
               </div>
             </div>
           </div>

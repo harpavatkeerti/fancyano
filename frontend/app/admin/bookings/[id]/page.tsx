@@ -6,6 +6,7 @@ import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Booking } from '@/types';
 import { Button, PaymentManagement, ProductExchange } from '@/components/common';
+import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
 import axios from 'axios';
@@ -981,13 +982,52 @@ export default function OrderDetailsPage() {
 
         {/* Payment Management Section */}
         <div className="mt-6">
+          {/* Auto-cancel countdown for bookings with no payment */}
+          {booking.paid_amount === 0 && booking.status === 'pending' && (
+            <div className="mb-4">
+              <AutoCancelCountdown
+                createdAt={booking.created_at}
+                paidAmount={parseFloat(booking.paid_amount || '0')}
+                onExpired={() => {
+                  // Refresh booking data when countdown expires
+                  fetchBooking();
+                }}
+              />
+            </div>
+          )}
+          
           <PaymentManagement
             bookingId={booking.id}
-            totalAmount={
-              typeof booking.total_amount === 'number'
-                ? booking.total_amount
-                : parseFloat(booking.total_amount || '0') || 0
-            }
+            totalAmount={(() => {
+              // Calculate total amount from products + transportation
+              const products = Array.isArray(booking.products) ? booking.products : [];
+              
+              if (products.length > 0) {
+                // Calculate from products
+                const rentFromProducts = products.reduce((sum: number, product: any) => {
+                  const rent = typeof product.rent_per_day === 'number'
+                    ? product.rent_per_day
+                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                  return sum + rent;
+                }, 0);
+                
+                let transportationCharges = 0;
+                if (booking.other_charges !== null && booking.other_charges !== undefined) {
+                  if (typeof booking.other_charges === 'number') {
+                    transportationCharges = booking.other_charges;
+                  } else if (typeof booking.other_charges === 'string') {
+                    transportationCharges = parseFloat(booking.other_charges) || 0;
+                  }
+                }
+                
+                return rentFromProducts + transportationCharges;
+              } else {
+                // Fallback to booking.total_amount if products not loaded
+                return typeof booking.total_amount === 'number'
+                  ? booking.total_amount
+                  : parseFloat(booking.total_amount || '0') || 0;
+              }
+            })()}
             securityDeposit={(() => {
               // Calculate security deposit from products if booking.security_deposit is 0 or missing
               const bookingSecurityDeposit = typeof booking.security_deposit === 'number'
@@ -1010,6 +1050,7 @@ export default function OrderDetailsPage() {
               
               return calculatedSecurity;
             })()}
+            userRole="admin"
             onPaymentUpdate={() => {
               fetchBooking(); // Refresh booking and transactions
             }}

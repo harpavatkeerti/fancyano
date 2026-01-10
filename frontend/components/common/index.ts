@@ -14,6 +14,7 @@ export { ConfirmDialog } from './ConfirmDialog';
 export { default as ComplaintForm } from './ComplaintForm';
 export { default as FeedbackForm } from './FeedbackForm';
 export { ProductExchange } from './ProductExchange';
+export { BookingCancellation } from './BookingCancellation';
 export type { Toast, ToastType } from './Toast';
 export type { ConfirmDialogOptions } from './ConfirmDialog';
 

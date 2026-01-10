@@ -21,7 +21,7 @@ COMMENT ON COLUMN settings.category IS 'Category for grouping settings (e.g., "b
 -- Insert default transportation charge
 INSERT INTO settings (setting_key, setting_value, setting_type, description, category)
 VALUES 
-    ('transportation_charge', '500', 'number', 'Transportation/delivery charge in rupees', 'billing')
+    ('transportation_charge', '0', 'number', 'Transportation/delivery charge in rupees', 'billing')
 ON CONFLICT (setting_key) DO NOTHING;
 
 -- Insert other useful default settings
@@ -31,4 +31,29 @@ VALUES
     ('currency_symbol', '₹', 'string', 'Currency symbol for display', 'general'),
     ('business_name', 'Rental Store', 'string', 'Business name for bills and invoices', 'general')
 ON CONFLICT (setting_key) DO NOTHING;
+
+-- Insert default refund/cancellation policy
+INSERT INTO settings (setting_key, setting_value, setting_type, description, category)
+VALUES 
+    ('refund_policy', '{"booked_date":0,"before_7_days":0,"before_3_days":10,"before_1_day":20,"on_booking_date":50,"days":[3,5,7,-1]}', 'json', 'Refund penalty percentages based on days from booking', 'policies')
+ON CONFLICT (setting_key) DO NOTHING;
+
+-- Insert default cancellation policy  
+INSERT INTO settings (setting_key, setting_value, setting_type, description, category)
+VALUES 
+    ('cancellation_policy', '{"booked_date":0,"before_7_days":0,"before_3_days":10,"before_1_day":20,"on_booking_date":50,"days":[3,5,7,-1]}', 'json', 'Cancellation penalty percentages based on days from booking', 'policies')
+ON CONFLICT (setting_key) DO NOTHING;
+
+-- Insert default exchange charges
+INSERT INTO settings (setting_key, setting_value, setting_type, description, category)
+VALUES 
+    ('exchange_charges', '0', 'number', 'Fixed exchange charge in rupees', 'billing')
+ON CONFLICT (setting_key) DO NOTHING;
+
+-- Insert default late return charges
+INSERT INTO settings (setting_key, setting_value, setting_type, description, category)
+VALUES 
+    ('late_return_charges', '100', 'number', 'Late return charge percentage', 'billing')
+ON CONFLICT (setting_key) DO NOTHING;
+
 

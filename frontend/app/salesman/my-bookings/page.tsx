@@ -14,6 +14,12 @@ export default function MyBookingsPage() {
   const [allBookings, setAllBookings] = useState<Booking[]>([]); // All bookings for comparison
   const [loading, setLoading] = useState(true);
   
+  // Search functionality
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Booking[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<string>('all'); // Status filter
+  
   // Function to check if a booking is urgent (based on tight scheduling with other bookings)
   function isBookingUrgent(booking: Booking): boolean {
     // Don't check urgent status for cancelled bookings
@@ -105,6 +111,36 @@ export default function MyBookingsPage() {
     }
 
     return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
+  }
+
+  // Handle search across all bookings
+  function handleSearch(query: string) {
+    setSearchQuery(query);
+    
+    if (!query.trim()) {
+      setIsSearching(false);
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    const searchTerm = query.toLowerCase().trim();
+    
+    // Search in ALL bookings (not just salesman's own)
+    const results = allBookings.filter((booking) => {
+      // Search by Booking ID
+      const bookingIdMatch = booking.id.toString().includes(searchTerm);
+      
+      // Search by Customer Name
+      const customerNameMatch = booking.customer_name?.toLowerCase().includes(searchTerm);
+      
+      // Search by Mobile Number (remove country code and search)
+      const phoneMatch = booking.customer_phone?.replace(/\D/g, '').includes(searchTerm.replace(/\D/g, ''));
+      
+      return bookingIdMatch || customerNameMatch || phoneMatch;
+    });
+    
+    setSearchResults(results);
   }
 
   useEffect(() => {
@@ -374,13 +410,94 @@ export default function MyBookingsPage() {
     <div className="max-w-7xl mx-auto px-6 py-8">
       <h1 className="text-3xl font-bold text-gray-900 mb-8">My Bookings</h1>
 
-      {bookings.length === 0 ? (
-        <div className="text-center py-12">
-          <p className="text-gray-500 mb-4">No bookings found</p>
+      {/* Search Bar */}
+      <div className="mb-8 bg-white border-2 border-gray-300 rounded-lg p-6">
+        <h2 className="text-lg font-semibold text-gray-900 mb-4">🔍 Search All Bookings</h2>
+        <div className="flex gap-4">
+          <div className="flex-1">
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearch(e.target.value)}
+              placeholder="Search by Booking ID, Customer Name, or Mobile Number..."
+              className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-base"
+            />
+            <p className="text-xs text-gray-500 mt-2">
+              💡 Tip: Type booking ID (e.g., "120"), customer name, or mobile number to search across all bookings
+            </p>
+          </div>
+          {searchQuery && (
+            <button
+              onClick={() => {
+                setSearchQuery('');
+                setIsSearching(false);
+                setSearchResults([]);
+              }}
+              className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+            >
+              Clear
+            </button>
+          )}
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-6">
-          {bookings.map((booking) => {
+        
+        {/* Status Filter */}
+        <div className="flex items-center gap-3 mt-4">
+          <label className="text-sm font-medium text-gray-700">Filter by Status:</label>
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="px-4 py-2 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"
+          >
+            <option value="all">All Status</option>
+            <option value="pending">⏳ Pending</option>
+            <option value="confirmed">✅ Confirmed</option>
+            <option value="in_progress">🔄 In Progress</option>
+            <option value="completed">✔️ Completed</option>
+            <option value="cancelled">❌ Cancelled</option>
+          </select>
+        </div>
+        
+        {/* Search Results Summary */}
+        {isSearching && (
+          <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+            <p className="text-sm text-blue-800">
+              {searchResults.length === 0 ? (
+                <>❌ No bookings found matching "<strong>{searchQuery}</strong>"</>
+              ) : (
+                <>✅ Found <strong>{searchResults.length}</strong> booking(s) matching "<strong>{searchQuery}</strong>"</>
+              )}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Display appropriate bookings list */}
+      {(() => {
+        const displayBookings = (isSearching ? searchResults : bookings)
+          .filter(b => statusFilter === 'all' || b.status === statusFilter);
+        const listTitle = isSearching ? 'Search Results' : 'My Bookings';
+        
+        return (
+          <>
+            {isSearching && searchResults.length > 0 && (
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">{listTitle}</h2>
+            )}
+            
+            {displayBookings.length === 0 ? (
+              <div className="text-center py-12 bg-gray-50 rounded-lg">
+                <p className="text-gray-500 mb-4">
+                  {isSearching 
+                    ? 'No bookings found matching your search'
+                    : 'No bookings found'}
+                </p>
+                {!isSearching && (
+                  <p className="text-sm text-gray-400">
+                    Create a booking from the cart to see it here
+                  </p>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-6">{displayBookings.map((booking) => {
             const products = Array.isArray(booking.products) ? booking.products : [];
             const canDelete = isPending(booking);
             const isUrgent = isBookingUrgent(booking);
@@ -458,7 +575,10 @@ export default function MyBookingsPage() {
             );
           })}
         </div>
-      )}
+            )}
+          </>
+        );
+      })()}
       {ConfirmDialogComponent}
     </div>
   );

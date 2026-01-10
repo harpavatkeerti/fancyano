@@ -54,6 +54,57 @@ router.post('/', async (req, res) => {
         [booking_id, amount, type, method, recorded_by, notes]
       );
       
+      // If this is a REFUND transaction, check if it's for a specific product's security deposit
+      // If so, free that product from booking_products (mark as completed/returned)
+      if (type === 'refund' && method === 'refund' && notes) {
+        // Parse notes to extract product ID or code
+        // Notes format examples:
+        // "Security deposit refund for Product ID: 28 (Sherwani SH-001)"
+        // "Refund for Product: Sherwani SH-001"
+        
+        const productIdMatch = notes.match(/Product ID[:\s]+(\d+)/i);
+        const productCodeMatch = notes.match(/\(([A-Z]+-\d+)\)/);
+        
+        let productToFree = null;
+        
+        if (productIdMatch) {
+          const productId = parseInt(productIdMatch[1]);
+          const productCheck = await client.query(
+            'SELECT id, code, name FROM products WHERE id = $1',
+            [productId]
+          );
+          if (productCheck.rows.length > 0) {
+            productToFree = productCheck.rows[0];
+          }
+        } else if (productCodeMatch) {
+          const productCode = productCodeMatch[1];
+          const productCheck = await client.query(
+            'SELECT id, code, name FROM products WHERE code = $1',
+            [productCode]
+          );
+          if (productCheck.rows.length > 0) {
+            productToFree = productCheck.rows[0];
+          }
+        }
+        
+        // DON'T free products here - they will be freed when booking status becomes "completed"
+        // This prevents wrong calculations when status is recalculated after refund
+        // if (productToFree) {
+        //   const freedProduct = await client.query(
+        //     `DELETE FROM booking_products 
+        //      WHERE booking_id = $1 AND product_id = $2
+        //      RETURNING product_id, booked_from, booked_to`,
+        //     [booking_id, productToFree.id]
+        //   );
+        //   
+        //   if (freedProduct.rows.length > 0) {
+        //     const freed = freedProduct.rows[0];
+        //     console.log(`✅ Freed product ${productToFree.name} (${productToFree.code}) from booking ${booking_id}`);
+        //     console.log(`   Dates freed: ${freed.booked_from} to ${freed.booked_to}`);
+        //   }
+        // }
+      }
+      
       // Update booking paid_amount ONLY for payment and refund types
       // date_change_charge, exchange_penalty, and adjustments do NOT affect payment calculations
       // Exchange penalties are collected separately and should not be counted in paid_amount

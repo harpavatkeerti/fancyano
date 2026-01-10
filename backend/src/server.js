@@ -44,6 +44,7 @@ app.use('/api/complaints', require('./routes/complaints'));
 app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/product-exchanges', require('./routes/productExchanges'));
+app.use('/api/booking-cancellation', require('./routes/bookingCancellation'));
 
 // Error handling middleware
 app.use((err, req, res, next) => {

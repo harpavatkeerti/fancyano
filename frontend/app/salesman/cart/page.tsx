@@ -19,7 +19,7 @@ export default function CartPage() {
   const router = useRouter();
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [transportationRequired, setTransportationRequired] = useState<'yes' | 'no'>('no');
-  const [transportationCharge, setTransportationCharge] = useState(0);
+  const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
   const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cash'>('upi');
   const [showUPIModal, setShowUPIModal] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);

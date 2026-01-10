@@ -7,6 +7,7 @@ import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange } from '@/components/common';
+import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -196,7 +197,14 @@ export default function OrderDetailsPage() {
       const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
       included.push({ ...t, amount, reason: 'regular_payment' });
       console.log('✅ INCLUDING regular payment:', t.id, 'method:', method, 'amount:', amount);
-      return sum + amount; // Only payments reach here (refunds already excluded above)
+      
+      // CRITICAL: If this is a refund, SUBTRACT it from the sum
+      // If it's a payment, ADD it to the sum
+      if (t.type === 'refund') {
+        return sum - amount; // Subtract refunds
+      } else {
+        return sum + amount; // Add payments
+      } // Only payments reach here (refunds already excluded above)
     }, 0);
     
     // Always log for debugging
@@ -254,6 +262,7 @@ export default function OrderDetailsPage() {
   // Salesman permissions
   const [salesmanPermissions, setSalesmanPermissions] = useState({
     exchange_allowed: false,
+    cancellation_allowed: false,
   });
 
   // Auto-recalculate when payment amount changes and breakdown is visible
@@ -278,6 +287,7 @@ export default function OrderDetailsPage() {
         const permissions = JSON.parse(response.data.setting_value);
         setSalesmanPermissions({
           exchange_allowed: permissions.exchange_allowed || false,
+          cancellation_allowed: permissions.cancellation_allowed || false,
         });
       }
     } catch (error) {
@@ -1931,6 +1941,26 @@ export default function OrderDetailsPage() {
             </div>
           )}
 
+          {/* Booking Cancellation Section */}
+          {salesmanPermissions.cancellation_allowed && booking && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Cancel Booking
+              </h3>
+              <p className="text-sm text-gray-600 mb-4">
+                Cancel this booking and apply cancellation policy. Refunds will be processed based on the cancellation timing.
+              </p>
+              <BookingCancellation
+                bookingId={booking.id}
+                bookingStatus={booking.status}
+                onCancellationComplete={fetchBooking}
+                userRole="salesman"
+                userName={localStorage.getItem('userName') || 'Salesman'}
+                canCancel={salesmanPermissions.cancellation_allowed}
+              />
+            </div>
+          )}
+
           {/* Customer Details */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
@@ -1980,27 +2010,26 @@ export default function OrderDetailsPage() {
             </div>
             <div className="space-y-3">
               {(() => {
-                // Calculate rental subtotal (total_amount - other_charges)
-                const totalAmount = typeof booking.total_amount === 'number' 
-                  ? booking.total_amount 
-                  : parseFloat(String(booking.total_amount || '0')) || 0;
+                // Calculate Subtotal (Rent) from products instead of booking.total_amount
+                // This ensures accuracy even if booking.total_amount includes wrong values
+                const products = Array.isArray(booking.products) ? booking.products : [];
+                const rentalSubtotalFromProducts = products.reduce((sum: number, product: any) => {
+                  const rent = typeof product.rent_per_day === 'number'
+                    ? product.rent_per_day
+                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                  return sum + rent;
+                }, 0);
                 
-                let otherCharges = 0;
-                if (booking.other_charges !== null && booking.other_charges !== undefined) {
-                  if (typeof booking.other_charges === 'number') {
-                    otherCharges = booking.other_charges;
-                  } else if (typeof booking.other_charges === 'string') {
-                    otherCharges = parseFloat(booking.other_charges) || 0;
-                  }
-                }
-                
-                const rentalSubtotal = totalAmount - otherCharges;
+                console.log('💰 SUBTOTAL CALCULATION (SALESMAN):');
+                console.log('  Products count:', products.length);
+                console.log('  Calculated from products:', rentalSubtotalFromProducts);
+                console.log('  Booking total_amount (reference):', booking.total_amount);
                 
                 return (
                   <div className="flex justify-between">
                     <span className="text-gray-600">Subtotal</span>
                     <span className="font-medium">
-                      ₹{Math.floor(rentalSubtotal).toLocaleString('en-IN')}
+                      ₹{Math.floor(rentalSubtotalFromProducts).toLocaleString('en-IN')}
                     </span>
                   </div>
                 );
@@ -2134,24 +2163,66 @@ export default function OrderDetailsPage() {
               console.log('🔍 Payment Breakdown Rendering - hasAnyRefund:', hasAnyRefund);
               console.log('🔍 Transactions array length:', transactions.length);
               
-              const totalAmountNum = typeof booking.total_amount === 'number'
-                ? booking.total_amount
-                : parseFloat(booking.total_amount) || 0;
+              // ALWAYS calculate rent from products + transportation charges separately
+              // This ensures accuracy even if booking.total_amount has wrong values
+              const products = Array.isArray(booking.products) ? booking.products : [];
               
-              // Calculate security deposit - use booking value or calculate from products
-              let securityDepositNum = typeof booking.security_deposit === 'number'
-                ? booking.security_deposit
-                : parseFloat(booking.security_deposit) || 0;
+              let totalAmountNum = 0;
+              if (products.length > 0) {
+                const rentFromProducts = products.reduce((sum: number, product: any) => {
+                  const rent = typeof product.rent_per_day === 'number'
+                    ? product.rent_per_day
+                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                  return sum + rent;
+                }, 0);
+                
+                // Get transportation charges separately
+                let transportationCharges = 0;
+                if (booking.other_charges !== null && booking.other_charges !== undefined) {
+                  if (typeof booking.other_charges === 'number') {
+                    transportationCharges = booking.other_charges;
+                  } else if (typeof booking.other_charges === 'string') {
+                    transportationCharges = parseFloat(booking.other_charges) || 0;
+                  }
+                }
+                
+                // Total Amount = Products Rent + Transportation
+                totalAmountNum = rentFromProducts + transportationCharges;
+                
+                console.log('💰 TOTAL AMOUNT CALCULATION (SALESMAN):');
+                console.log('  Rent from products:', rentFromProducts);
+                console.log('  Transportation charges:', transportationCharges);
+                console.log('  Total Amount (rent + transport):', totalAmountNum);
+              } else {
+                // Fallback to booking.total_amount if products not loaded
+                totalAmountNum = typeof booking.total_amount === 'number'
+                  ? booking.total_amount
+                  : parseFloat(String(booking.total_amount || '0')) || 0;
+                console.log('💰 TOTAL AMOUNT (FALLBACK):', totalAmountNum);
+              }
+              console.log('  Booking total_amount (reference):', booking.total_amount);
               
-              // If security deposit is 0, calculate from products
-              if (securityDepositNum === 0 && products.length > 0) {
+              // ALWAYS calculate security deposit from products (source of truth)
+              // This prevents issues where booking.security_deposit might include transportation or other incorrect values
+              let securityDepositNum = 0;
+              if (products.length > 0) {
                 securityDepositNum = products.reduce((sum: number, product: any) => {
                   const productSecurity = typeof product.security_deposit === 'number'
                     ? product.security_deposit
                     : parseFloat(String(product.security_deposit || '0')) || 0;
                   return sum + productSecurity;
                 }, 0);
+              } else {
+                // Fallback to booking value only if no products
+                securityDepositNum = typeof booking.security_deposit === 'number'
+                  ? booking.security_deposit
+                  : parseFloat(booking.security_deposit) || 0;
               }
+              
+              console.log('🔐 SECURITY DEPOSIT CALCULATION (SALESMAN):');
+              console.log('  Products count:', products.length);
+              console.log('  Calculated from products:', securityDepositNum);
+              console.log('  Booking value (reference):', booking.security_deposit);
               
               // CRITICAL: Filter out exchange penalties BEFORE any calculation
               // Exchange penalties should NEVER affect rent or security calculations
@@ -2263,13 +2334,33 @@ export default function OrderDetailsPage() {
               console.log('💰 Security Paid calculation:', securityPaidCalc);
               console.log('💰 Formula: min(security, max(0, paid - rent)) = min(', securityDepositNum, ', max(0,', paidAmountNum, '-', totalAmountNum, ')) =', securityPaidCalc);
               
-              // Balance Due = (Total Rent + Security Deposit) - Total Paid
-              // This shows the total amount still due (rent + security)
+              // Check if refunds exist
+              const refundTransactions = transactions.filter((t: any) => 
+                t.type === 'refund' && 
+                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+              );
+              const hasRefunds = refundTransactions.length > 0;
+              
+              // Calculate total required for display
               const totalRequired = totalAmountNum + securityDepositNum;
-              const amountDue = totalRequired - paidAmountNum;
+              
+              // Balance Due calculation
+              // If refunds exist, the customer already paid and we refunded - so Balance Due = 0
+              // If no refunds, calculate normally: (Rent Due + Security Due)
+              let amountDue = 0;
+              if (hasRefunds) {
+                // Refund process is active - no more money due from customer
+                amountDue = 0;
+              } else {
+                // Normal flow - calculate due amount
+                const rentDue = Math.max(0, totalAmountNum - paidAmountNum);
+                const securityDue = Math.max(0, securityDepositNum - securityPaidCalc);
+                amountDue = rentDue + securityDue;
+              }
               
               console.log('💰 Balance Due calculation:');
-              console.log('  Total Required (Rent + Security): ₹' + totalRequired.toLocaleString('en-IN'));
+              console.log('  Has Refunds:', hasRefunds);
+              console.log('  Total Required (Rent + Security): ₹' + (totalAmountNum + securityDepositNum).toLocaleString('en-IN'));
               console.log('  Total Paid: ₹' + paidAmountNum.toLocaleString('en-IN'));
               console.log('  Balance Due: ₹' + amountDue.toLocaleString('en-IN'));
               
@@ -2307,28 +2398,96 @@ export default function OrderDetailsPage() {
                           <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(securityDepositNum).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">
-                            {(() => {
-                              // Use paidAmountNum which is already calculated above with exchange penalties excluded
+                          {(() => {
+                            // Check if there are any refunds
+                            const refundTransactions = transactions.filter((t: any) => 
+                              t.type === 'refund' && 
+                              !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                            );
+                            const hasRefunds = refundTransactions.length > 0;
+                            
+                            if (hasRefunds) {
+                              // Show "Refunded" instead of "Security Paid"
+                              const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
+                                const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                                return sum + amount;
+                              }, 0);
+                              
+                              return (
+                                <>
+                                  <span className="text-xs text-gray-500 mb-0.5">Refunded</span>
+                                  <span className="font-bold text-green-600 text-sm break-words">
+                                    ₹{Math.floor(totalRefunded).toLocaleString('en-IN')}
+                                  </span>
+                                </>
+                              );
+                            } else {
+                              // Show "Security Paid"
                               const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                              return `₹${Math.floor(securityPaid).toLocaleString('en-IN')}`;
-                            })()}
-                          </span>
+                              return (
+                                <>
+                                  <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
+                                  <span className="font-bold text-green-600 text-sm break-words">
+                                    ₹{Math.floor(securityPaid).toLocaleString('en-IN')}
+                                  </span>
+                                </>
+                              );
+                            }
+                          })()}
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">Security Due</span>
-                          <span className={`font-bold text-sm break-words ${(() => {
-                            // Use the already-calculated paidAmountNum which excludes exchange penalties
-                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                            const securityDue = securityDepositNum - securityPaid;
-                            return securityDue <= 0 ? 'text-green-600' : 'text-red-600';
-                          })()}`}>
+                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">
                             {(() => {
-                              // Use the already-calculated paidAmountNum which excludes exchange penalties
+                              const refundTransactions = transactions.filter((t: any) => 
+                                t.type === 'refund' && 
+                                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                              );
+                              return refundTransactions.length > 0 ? 'Deducted/Due' : 'Security Due';
+                            })()}
+                          </span>
+                          <span className={`font-bold text-sm break-words ${(() => {
+                            const refundTransactions = transactions.filter((t: any) => 
+                              t.type === 'refund' && 
+                              !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                            );
+                            const hasRefunds = refundTransactions.length > 0;
+                            
+                            if (hasRefunds) {
+                              // Show deducted amount (security not refunded)
+                              const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
+                                const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                                return sum + amount;
+                              }, 0);
+                              const deducted = securityDepositNum - totalRefunded;
+                              return deducted <= 0 ? 'text-green-600' : 'text-red-600';
+                            } else {
+                              // Show security due
                               const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
                               const securityDue = securityDepositNum - securityPaid;
-                              return securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`;
+                              return securityDue <= 0 ? 'text-green-600' : 'text-red-600';
+                            }
+                          })()}`}>
+                            {(() => {
+                              const refundTransactions = transactions.filter((t: any) => 
+                                t.type === 'refund' && 
+                                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                              );
+                              const hasRefunds = refundTransactions.length > 0;
+                              
+                              if (hasRefunds) {
+                                // Show deducted amount
+                                const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
+                                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                                  return sum + amount;
+                                }, 0);
+                                const deducted = securityDepositNum - totalRefunded;
+                                return deducted <= 0 ? 'Fully Refunded' : `₹${Math.floor(deducted).toLocaleString('en-IN')}`;
+                              } else {
+                                // Show security due
+                                const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                                const securityDue = securityDepositNum - securityPaid;
+                                return securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`;
+                              }
                             })()}
                           </span>
                         </div>
@@ -2429,20 +2588,61 @@ export default function OrderDetailsPage() {
 
               {/* Balance/Overpayment warning */}
               {(() => {
-                const totalAmount = typeof booking.total_amount === 'number'
-                  ? booking.total_amount
-                  : parseFloat(booking.total_amount) || 0;
-                const securityDeposit = typeof booking.security_deposit === 'number'
-                  ? booking.security_deposit
-                  : parseFloat(booking.security_deposit) || 0;
+                // Calculate total amount from products + transportation (same logic as above)
+                const products = Array.isArray(booking.products) ? booking.products : [];
+                const rentFromProducts = products.reduce((sum: number, product: any) => {
+                  const rent = typeof product.rent_per_day === 'number'
+                    ? product.rent_per_day
+                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                  return sum + rent;
+                }, 0);
+                
+                let transportationCharges = 0;
+                if (booking.other_charges !== null && booking.other_charges !== undefined) {
+                  if (typeof booking.other_charges === 'number') {
+                    transportationCharges = booking.other_charges;
+                  } else if (typeof booking.other_charges === 'string') {
+                    transportationCharges = parseFloat(booking.other_charges) || 0;
+                  }
+                }
+                
+                // Use fallback if products are empty (already freed)
+                let totalAmount = 0;
+                if (products.length > 0) {
+                  totalAmount = rentFromProducts + transportationCharges;
+                } else {
+                  // Fallback to booking.total_amount
+                  totalAmount = typeof booking.total_amount === 'number'
+                    ? booking.total_amount
+                    : parseFloat(String(booking.total_amount || '0')) || 0;
+                }
+                
+                // Calculate security from products, with fallback
+                let securityDeposit = 0;
+                if (products.length > 0) {
+                  securityDeposit = products.reduce((sum: number, product: any) => {
+                    const security = typeof product.security_deposit === 'number'
+                      ? product.security_deposit
+                      : parseFloat(String(product.security_deposit || '0')) || 0;
+                    return sum + security;
+                  }, 0);
+                } else {
+                  // Fallback to booking.security_deposit
+                  securityDeposit = typeof booking.security_deposit === 'number'
+                    ? booking.security_deposit
+                    : parseFloat(String(booking.security_deposit || '0')) || 0;
+                }
                 
                 // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
                 const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
                   // Exclude date_change_charge type
                   if (t.type === 'date_change_charge') return sum;
                   
-                  // Exclude exchange_penalty transactions (collected separately at exchange time)
-                  if (t.method === 'exchange_penalty') return sum;
+                  // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
+                  const method = String(t.method || '').toLowerCase().trim();
+                  if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                    return sum;
+                  }
                   
                   // Also exclude transactions with date change notes (handles old transactions)
                   const notes = (t.notes || '').toLowerCase();
@@ -2465,6 +2665,25 @@ export default function OrderDetailsPage() {
                 const paidAmount = paidAmountFromTransactions;
                 const totalRequired = totalAmount + securityDeposit;
                 const overpayment = paidAmount - totalRequired;
+                
+                console.log('⚠️ OVERPAYMENT CHECK (SALESMAN):');
+                console.log('  Rent from products:', rentFromProducts);
+                console.log('  Transportation:', transportationCharges);
+                console.log('  Total Amount:', totalAmount);
+                console.log('  Security Deposit:', securityDeposit);
+                console.log('  Total Required:', totalRequired);
+                console.log('  Paid Amount:', paidAmount);
+                console.log('  Overpayment:', overpayment);
+                console.log('  Transactions:', transactions.map((t: any) => ({
+                  id: t.id,
+                  type: t.type,
+                    method: t.method,
+                  amount: t.amount,
+                  included: !(
+                    t.type === 'date_change_charge' ||
+                    ['exchange_penalty', 'exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                  )
+                })));
                 
                 if (overpayment > 0) {
                   return (

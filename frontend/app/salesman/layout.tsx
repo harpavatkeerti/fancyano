@@ -14,6 +14,7 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   const [searchQuery, setSearchQuery] = useState('');
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1); // For keyboard navigation
   const [products, setProducts] = useState<any[]>([]);
   const [cartCount, setCartCount] = useState(0);
   const searchRef = useRef<HTMLDivElement>(null);
@@ -239,6 +240,7 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
 
   function handleSearchChange(value: string) {
     setSearchQuery(value);
+    setSelectedSuggestionIndex(-1); // Reset selection when typing
     
     // Get all unique product types
     const allProductTypes = getUniqueProductTypes();
@@ -268,7 +270,48 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   function handleSuggestionClick(suggestion: string) {
     setSearchQuery(suggestion);
     setShowSuggestions(false);
+    setSelectedSuggestionIndex(-1);
     router.push(`/salesman/products?search=${encodeURIComponent(suggestion)}`);
+  }
+
+  // Handle keyboard navigation in search suggestions
+  function handleKeyboardNavigation(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!showSuggestions || suggestions.length === 0) {
+      if (e.key === 'Enter' && searchQuery.trim()) {
+        e.preventDefault();
+        router.push(`/salesman/products?search=${encodeURIComponent(searchQuery)}`);
+        setSearchQuery('');
+        setShowSuggestions(false);
+      }
+      return;
+    }
+
+    switch (e.key) {
+      case 'ArrowDown':
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => 
+          prev < suggestions.length - 1 ? prev + 1 : prev
+        );
+        break;
+      case 'ArrowUp':
+        e.preventDefault();
+        setSelectedSuggestionIndex((prev) => (prev > 0 ? prev - 1 : -1));
+        break;
+      case 'Enter':
+        e.preventDefault();
+        if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < suggestions.length) {
+          handleSuggestionClick(suggestions[selectedSuggestionIndex]);
+        } else if (searchQuery.trim()) {
+          router.push(`/salesman/products?search=${encodeURIComponent(searchQuery)}`);
+          setSearchQuery('');
+          setShowSuggestions(false);
+        }
+        break;
+      case 'Escape':
+        setShowSuggestions(false);
+        setSelectedSuggestionIndex(-1);
+        break;
+    }
   }
 
   function handleSearch(e: React.FormEvent) {
@@ -303,6 +346,7 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
                   value={searchQuery}
                   onChange={(e) => handleSearchChange(e.target.value)}
                   onFocus={handleSearchFocus}
+                  onKeyDown={handleKeyboardNavigation}
                   className="w-full px-4 py-2 pl-10 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
                 />
                 <button type="submit" className="absolute left-3 top-1/2 transform -translate-y-1/2">
@@ -329,7 +373,11 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
                         key={index}
                         type="button"
                         onClick={() => handleSuggestionClick(suggestion)}
-                        className="w-full text-left px-4 py-2 hover:bg-gray-100 transition-colors border-b border-gray-100 last:border-0"
+                        className={`w-full text-left px-4 py-2 transition-colors border-b border-gray-100 last:border-0 ${
+                          index === selectedSuggestionIndex 
+                            ? 'bg-red-100 border-red-300 border-2' 
+                            : 'hover:bg-gray-100'
+                        }`}
                       >
                         {suggestion}
                       </button>

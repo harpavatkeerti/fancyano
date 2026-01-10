@@ -340,6 +340,24 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
+    // If status is being changed to 'completed', free all products from booking_products
+    // This makes all products available for other bookings
+    if (status === 'completed') {
+      const freedProducts = await pool.query(
+        `DELETE FROM booking_products 
+         WHERE booking_id = $1
+         RETURNING product_id, booked_from, booked_to`,
+        [id]
+      );
+      
+      if (freedProducts.rows.length > 0) {
+        console.log(`✅ Booking ${id} completed - Freed ${freedProducts.rows.length} product(s):`);
+        freedProducts.rows.forEach((p, idx) => {
+          console.log(`   ${idx + 1}. Product ID: ${p.product_id} (${p.booked_from} to ${p.booked_to})`);
+        });
+      }
+    }
+
     // Update product dates if provided
     if (products && Array.isArray(products) && products.length > 0) {
       console.log('Updating product dates:', products);
