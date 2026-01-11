@@ -10,7 +10,7 @@ export interface ProductExchange {
   exchange_date: string;
   days_from_booking: number;
   penalty_percentage: number;
-  exchange_charge: number;
+  rent_diff: number;
   total_charge: number;
   reason?: string;
   exchanged_by?: string;

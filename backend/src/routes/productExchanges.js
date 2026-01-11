@@ -103,18 +103,18 @@ router.post('/', async (req, res) => {
       }
     }
     
-    // Fetch exchange charge from settings
-    let exchangeCharge = 0;
+    // Fetch rent difference setting from settings (currently stored as 'exchange_charges' for backward compatibility)
+    let rentDiff = 0;
     try {
       const chargeResult = await client.query(
         'SELECT setting_value FROM settings WHERE setting_key = $1',
         ['exchange_charges']
       );
       if (chargeResult.rows.length > 0) {
-        exchangeCharge = parseFloat(chargeResult.rows[0].setting_value) || 0;
+        rentDiff = parseFloat(chargeResult.rows[0].setting_value) || 0;
       }
     } catch (error) {
-      console.error('Error fetching exchange charges:', error);
+      console.error('Error fetching rent diff setting:', error);
     }
     
     // Fetch original product to get rent per day
@@ -129,15 +129,15 @@ router.post('/', async (req, res) => {
     
     const rentPerDay = parseFloat(productResult.rows[0].rent_per_day) || 0;
     
-    // Calculate total charge: (rent_per_day * penalty_percentage / 100) + exchange_charge
+    // Calculate total charge: (rent_per_day * penalty_percentage / 100) + rent_diff
     const penaltyCharge = (rentPerDay * penaltyPercentage) / 100;
-    const totalCharge = penaltyCharge + exchangeCharge;
+    const totalCharge = penaltyCharge + rentDiff;
     
     // Insert exchange record
     const exchangeResult = await client.query(
       `INSERT INTO product_exchanges 
        (booking_id, original_product_id, exchanged_product_id, exchange_date, days_from_booking, 
-        penalty_percentage, exchange_charge, total_charge, reason, exchanged_by)
+        penalty_percentage, rent_diff, total_charge, reason, exchanged_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
@@ -147,7 +147,7 @@ router.post('/', async (req, res) => {
         exchange_date || new Date().toISOString().split('T')[0],
         daysDiff,
         penaltyPercentage,
-        exchangeCharge,
+        rentDiff,
         totalCharge,
         reason || null,
         exchanged_by || null
@@ -206,7 +206,9 @@ router.post('/', async (req, res) => {
     const recalcResult = await client.query(
       `SELECT 
         COALESCE(SUM(p.rent_per_day), 0) as total_rent,
-        COALESCE(SUM(p.security_deposit), 0) as total_security
+        COALESCE(SUM(p.security_deposit), 0) as total_security,
+        MIN(bp.booked_from) as min_booked_from,
+        MAX(bp.booked_to) as max_booked_to
        FROM booking_products bp
        JOIN products p ON bp.product_id = p.id
        WHERE bp.booking_id = $1`,
@@ -215,6 +217,8 @@ router.post('/', async (req, res) => {
     
     const newTotalRent = parseFloat(recalcResult.rows[0].total_rent) || 0;
     const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
+    const minBookedFrom = recalcResult.rows[0].min_booked_from;
+    const maxBookedTo = recalcResult.rows[0].max_booked_to;
     
     // Get current other_charges (transportation, etc.) - these should NOT be reset
     const bookingChargesResult = await client.query(
@@ -227,15 +231,17 @@ router.post('/', async (req, res) => {
     // security_deposit = sum of products' security deposits ONLY (not affected by transportation)
     const newTotalAmount = newTotalRent + otherCharges;
     
-    // Update booking with recalculated totals
+    // Update booking with recalculated totals AND booking dates (min start date and max end date)
     // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
+           booked_from = $3,
+           booked_to = $4,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $3`,
-      [newTotalAmount, newTotalSecurity, booking_id]
+       WHERE id = $5`,
+      [newTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, booking_id]
     );
     
     const originalProductName = originalProduct.name || `Product ${original_product_id}`;
@@ -319,7 +325,7 @@ router.post('/:id/payment', async (req, res) => {
     const existingPayment = await client.query(
       `SELECT id FROM payment_transactions 
        WHERE booking_id = $1 
-       AND method = 'exchange_penalty' 
+       AND transaction_type = 'exchange_penalty' 
        AND notes LIKE $2`,
       [exchange.booking_id, `%Exchange Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name}%`]
     );
@@ -329,16 +335,17 @@ router.post('/:id/payment', async (req, res) => {
     }
     
     // Create payment transaction for exchange penalty
-    // Store payment method in notes, use 'exchange_penalty' as method for identification
-    const notesText = `Exchange Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (${exchange.penalty_percentage}% penalty + ₹${exchange.exchange_charge} charge) | Payment Method: ${payment_method}${narration ? ` | Narration: ${narration}` : ''}`;
+    // Store actual payment method and use transaction_type for categorization
+    const notesText = `Exchange Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (${exchange.penalty_percentage}% penalty + ₹${exchange.rent_diff} rent diff)${narration ? ` | Narration: ${narration}` : ''}`;
     
     await client.query(
       `INSERT INTO payment_transactions 
-       (booking_id, amount, type, method, notes, recorded_by)
-       VALUES ($1, $2, 'payment', 'exchange_penalty', $3, $4)`,
+       (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+       VALUES ($1, $2, 'payment', 'exchange_penalty', $3, $4, $5)`,
       [
         exchange.booking_id,
         parseFloat(amount),
+        payment_method,
         notesText,
         recorded_by || 'system'
       ]
@@ -434,7 +441,7 @@ router.post('/:id/rent-payment', async (req, res) => {
     const existingPayment = await client.query(
       `SELECT id FROM payment_transactions 
        WHERE booking_id = $1 
-       AND method = 'exchange_upgrade' 
+       AND transaction_type = 'exchange_upgrade' 
        AND notes LIKE $2`,
       [exchange.booking_id, `%Additional Rent: ${exchange.original_product_name} → ${exchange.exchanged_product_name}%`]
     );
@@ -444,15 +451,16 @@ router.post('/:id/rent-payment', async (req, res) => {
     }
     
     // Create payment transaction for rent difference
-    const notesText = `Additional Rent: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (₹${rentDifference} difference) | Payment Method: ${payment_method}${narration ? ` | Narration: ${narration}` : ''}`;
+    const notesText = `Additional Rent: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (₹${rentDifference} difference)${narration ? ` | Narration: ${narration}` : ''}`;
     
     await client.query(
       `INSERT INTO payment_transactions 
-       (booking_id, amount, type, method, notes, recorded_by)
-       VALUES ($1, $2, 'payment', 'exchange_upgrade', $3, $4)`,
+       (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+       VALUES ($1, $2, 'payment', 'exchange_upgrade', $3, $4, $5)`,
       [
         exchange.booking_id,
         parseFloat(amount),
+        payment_method,
         notesText,
         recorded_by || 'system'
       ]
@@ -713,7 +721,9 @@ router.delete('/:id', async (req, res) => {
     const recalcResult = await client.query(
       `SELECT 
         COALESCE(SUM(p.rent_per_day), 0) as total_rent,
-        COALESCE(SUM(p.security_deposit), 0) as total_security
+        COALESCE(SUM(p.security_deposit), 0) as total_security,
+        MIN(bp.booked_from) as min_booked_from,
+        MAX(bp.booked_to) as max_booked_to
        FROM booking_products bp
        JOIN products p ON bp.product_id = p.id
        WHERE bp.booking_id = $1`,
@@ -722,10 +732,14 @@ router.delete('/:id', async (req, res) => {
     
     const newTotalRent = parseFloat(recalcResult.rows[0].total_rent) || 0;
     const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
+    const minBookedFrom = recalcResult.rows[0].min_booked_from;
+    const maxBookedTo = recalcResult.rows[0].max_booked_to;
     
     console.log('🔢 RECALCULATED TOTALS:');
     console.log('  New Total Rent (sum of products):', `₹${newTotalRent}`);
     console.log('  New Total Security (sum of products):', `₹${newTotalSecurity}`);
+    console.log('  Min Booked From (earliest start date):', minBookedFrom);
+    console.log('  Max Booked To (latest end date):', maxBookedTo);
     
     // Get current other_charges (transportation, etc.) - these should NOT be reset
     const bookingChargesResult = await client.query(
@@ -741,15 +755,17 @@ router.delete('/:id', async (req, res) => {
     console.log('  New Total Amount (rent + other charges):', `₹${newTotalAmount}`);
     console.log('');
     
-    // Update booking with recalculated totals
+    // Update booking with recalculated totals AND booking dates (min start date and max end date)
     // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
+           booked_from = $3,
+           booked_to = $4,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $3`,
-      [newTotalAmount, newTotalSecurity, exchange.booking_id]
+       WHERE id = $5`,
+      [newTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, exchange.booking_id]
     );
     
     console.log('🗑️ HANDLING EXCHANGE-RELATED TRANSACTIONS:');
@@ -764,7 +780,7 @@ router.delete('/:id', async (req, res) => {
       `SELECT id, amount, type, method, notes
        FROM payment_transactions 
        WHERE booking_id = $1 
-       AND method = 'exchange_penalty'`,
+       AND transaction_type = 'exchange_penalty'`,
       [exchange.booking_id]
     );
     
@@ -774,8 +790,8 @@ router.delete('/:id', async (req, res) => {
        FROM payment_transactions 
        WHERE booking_id = $1 
        AND (
-         method = 'exchange_upgrade'
-         OR method = 'exchange_downgrade'
+         transaction_type = 'exchange_upgrade'
+         OR transaction_type = 'exchange_downgrade'
        )`,
       [exchange.booking_id]
     );
@@ -796,7 +812,7 @@ router.delete('/:id', async (req, res) => {
     const deletedPenalties = await client.query(
       `DELETE FROM payment_transactions 
        WHERE booking_id = $1 
-       AND method = 'exchange_penalty'
+       AND transaction_type = 'exchange_penalty'
        RETURNING id, amount`,
       [exchange.booking_id]
     );
@@ -806,10 +822,10 @@ router.delete('/:id', async (req, res) => {
     // MARK rent difference as LAPSED (non-refundable, kept for records)
     const lapsedTransactions = await client.query(
       `UPDATE payment_transactions 
-       SET method = 'exchange_lapsed',
+       SET transaction_type = 'exchange_lapsed',
            notes = CONCAT(notes, ' | [LAPSED - Exchange Deleted: Non-refundable amount paid for cancelled exchange]')
        WHERE booking_id = $1 
-       AND (method = 'exchange_upgrade' OR method = 'exchange_downgrade')
+       AND (transaction_type = 'exchange_upgrade' OR transaction_type = 'exchange_downgrade')
        RETURNING id, amount`,
       [exchange.booking_id]
     );
@@ -824,7 +840,7 @@ router.delete('/:id', async (req, res) => {
        FROM payment_transactions
        WHERE booking_id = $1
        AND type IN ('payment', 'refund')
-       AND method NOT IN ('exchange_penalty', 'exchange_lapsed', 'exchange')`,
+       AND (transaction_type IS NULL OR transaction_type NOT IN ('exchange_penalty', 'exchange_lapsed', 'exchange'))`,
       [exchange.booking_id]
     );
     

@@ -976,6 +976,7 @@ export default function OrderDetailsPage() {
               currentProducts={Array.isArray(booking.products) ? booking.products : []}
               onExchangeComplete={fetchBooking}
               userRole="admin"
+              bookingStatus={booking.status}
             />
           </div>
         )}

@@ -24,7 +24,7 @@ router.get('/booking/:bookingId', async (req, res) => {
 // POST create a new payment transaction
 router.post('/', async (req, res) => {
   try {
-    const { booking_id, amount, type, method, recorded_by, notes } = req.body;
+    const { booking_id, amount, type, transaction_type, method, recorded_by, notes } = req.body;
     
     // Validate required fields
     if (!booking_id || !amount || !type || !recorded_by) {
@@ -45,13 +45,13 @@ router.post('/', async (req, res) => {
     try {
       await client.query('BEGIN');
       
-      // Insert transaction
+      // Insert transaction (include transaction_type, default to 'booking')
       const transactionResult = await client.query(
         `INSERT INTO payment_transactions 
-         (booking_id, amount, type, method, recorded_by, notes) 
-         VALUES ($1, $2, $3, $4, $5, $6) 
+         (booking_id, amount, type, transaction_type, method, recorded_by, notes) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) 
          RETURNING *`,
-        [booking_id, amount, type, method, recorded_by, notes]
+        [booking_id, amount, type, transaction_type || 'booking', method, recorded_by, notes]
       );
       
       // If this is a REFUND transaction, check if it's for a specific product's security deposit
@@ -109,10 +109,11 @@ router.post('/', async (req, res) => {
       // date_change_charge, exchange_penalty, and adjustments do NOT affect payment calculations
       // Exchange penalties are collected separately and should not be counted in paid_amount
       // Adjustments are changes to booking total, not payments received
+      const txnType = transaction_type || 'booking';
       if (type !== 'date_change_charge' && 
           type !== 'adjustment' &&
-          method !== 'exchange_penalty' && 
-          method !== 'exchange') {
+          txnType !== 'exchange_penalty' && 
+          txnType !== 'exchange') {
         // For payments: add to paid_amount
         // For refunds: subtract from paid_amount
         const amountChange = type === 'refund' ? -Math.abs(amount) : Math.abs(amount);
@@ -157,7 +158,7 @@ router.get('/summary/:bookingId', async (req, res) => {
         COUNT(*) as transaction_count,
         SUM(CASE 
           WHEN type = 'payment' 
-          AND (method IS NULL OR (method != 'exchange_penalty' AND method != 'exchange'))
+          AND (transaction_type IS NULL OR (transaction_type != 'exchange_penalty' AND transaction_type != 'exchange'))
           AND (notes IS NULL OR (LOWER(notes) NOT LIKE '%exchange penalty%' AND LOWER(notes) NOT LIKE '%exchange charge%'))
           THEN amount 
           ELSE 0 
@@ -166,8 +167,8 @@ router.get('/summary/:bookingId', async (req, res) => {
         SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
         SUM(CASE WHEN type = 'date_change_charge' THEN amount ELSE 0 END) as total_date_change_charges,
         SUM(CASE 
-          WHEN method = 'exchange_penalty' 
-          OR method = 'exchange'
+          WHEN transaction_type = 'exchange_penalty' 
+          OR transaction_type = 'exchange'
           OR (notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%'))
           THEN amount 
           ELSE 0 
@@ -177,7 +178,7 @@ router.get('/summary/:bookingId', async (req, res) => {
           -- Since exchanges are only allowed when new rent >= old rent, refunds should not affect the balance
           WHEN type = 'refund' THEN 0
           WHEN type = 'date_change_charge' THEN 0
-          WHEN method = 'exchange_penalty' OR method = 'exchange' THEN 0
+          WHEN transaction_type = 'exchange_penalty' OR transaction_type = 'exchange' THEN 0
           WHEN notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%') THEN 0
           ELSE amount 
         END) as net_amount

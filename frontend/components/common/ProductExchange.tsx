@@ -6,6 +6,7 @@ import { productsApi, bookingsApi } from '@/lib/api';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
+import QRScanner from '@/components/common/QRScanner';
 import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
@@ -17,6 +18,7 @@ interface ProductExchangeProps {
   onExchangeComplete?: () => void;
   userRole?: 'admin' | 'salesman';
   userName?: string;
+  bookingStatus?: string;
 }
 
 export function ProductExchange({
@@ -25,7 +27,8 @@ export function ProductExchange({
   currentProducts,
   onExchangeComplete,
   userRole = 'admin',
-  userName
+  userName,
+  bookingStatus
 }: ProductExchangeProps) {
   const [exchanges, setExchanges] = useState<any[]>([]);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
@@ -51,6 +54,7 @@ export function ProductExchange({
   
   // Payment collection state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [totalPaymentDue, setTotalPaymentDue] = useState<number>(0);
   const [exchangePenaltyAmount, setExchangePenaltyAmount] = useState<number>(0);
   const [rentDifferenceAmount, setRentDifferenceAmount] = useState<number>(0);
   const [paymentMethod, setPaymentMethod] = useState('Cash');
@@ -59,9 +63,14 @@ export function ProductExchange({
   const [pendingExchangeData, setPendingExchangeData] = useState<any>(null); // Store exchange data before creating it
   const [paymentType, setPaymentType] = useState<'penalty' | 'rent' | 'both'>('penalty');
   
+  // UPI QR Code state
+  const [showUPIModal, setShowUPIModal] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
+  const [paymentScanned, setPaymentScanned] = useState(false);
+  
   // Exchange policy and charge preview
   const [exchangePolicy, setExchangePolicy] = useState<any>(null);
-  const [exchangeCharge, setExchangeCharge] = useState<number>(0);
+  const [rentDiff, setRentDiff] = useState<number>(0);
   const [calculatedPenalty, setCalculatedPenalty] = useState<number>(0);
   const [calculatedTotal, setCalculatedTotal] = useState<number>(0);
   const [rentDifference, setRentDifference] = useState<number>(0);
@@ -94,7 +103,84 @@ export function ProductExchange({
     if (selectedOriginalProduct && selectedExchangedProduct && exchangePolicy && bookingDate) {
       calculateExchangeCharges();
     }
-  }, [selectedOriginalProduct, selectedExchangedProduct, exchangePolicy, bookingDate, additionalProducts, availableProducts, exchangeCharge]);
+  }, [selectedOriginalProduct, selectedExchangedProduct, exchangePolicy, bookingDate, additionalProducts, availableProducts, rentDiff]);
+  
+  // Auto-calculate and show payment section when products are selected
+  useEffect(() => {
+    if (!selectedOriginalProduct || !selectedExchangedProduct || !exchangePolicy || !bookingDate) {
+      setTotalPaymentDue(0);
+      setPendingExchangeData(null);
+      return;
+    }
+
+    const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
+    const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
+    
+    if (!originalProduct || !exchangedProduct) return;
+
+    // Calculate charges using the same logic as in calculateExchangeCharges
+    const bookingDateObj = new Date(bookingDate);
+    const today = new Date();
+    const daysDiff = Math.floor((today.getTime() - bookingDateObj.getTime()) / (1000 * 60 * 60 * 24));
+    
+    let penaltyPercentage = 0;
+    const days = exchangePolicy.days || [3, 5, 7, -1];
+    const penalties = [
+      exchangePolicy.before_7_days || 0,
+      exchangePolicy.before_3_days || 0,
+      exchangePolicy.before_1_day || 0,
+      exchangePolicy.on_booking_date || 0
+    ];
+    
+    if (daysDiff <= days[0]) penaltyPercentage = penalties[0];
+    else if (daysDiff <= days[1]) penaltyPercentage = penalties[1];
+    else if (daysDiff <= days[2]) penaltyPercentage = penalties[2];
+    else penaltyPercentage = penalties[3];
+
+    const originalRent = parseFloat(originalProduct.rent_per_day) || 0;
+    const newRent = parseFloat(exchangedProduct.rent_per_day) || 0;
+    
+    const additionalRent = additionalProducts.reduce((sum, productId) => {
+      const product = availableProducts.find(p => p.id === productId);
+      return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+    }, 0);
+    
+    const totalNewRent = newRent + additionalRent;
+    const exchangePenalty = (originalRent * penaltyPercentage) / 100;
+    const calculatedRentDiff = originalRent <= (totalNewRent + exchangePenalty) 
+      ? 0 
+      : originalRent - (totalNewRent + exchangePenalty);
+    
+    const calculatedTotalPaymentDue = Math.max(0, totalNewRent + exchangePenalty + calculatedRentDiff - originalRent);
+
+    if (calculatedTotalPaymentDue > 0) {
+      setTotalPaymentDue(calculatedTotalPaymentDue);
+      setExchangePenaltyAmount(exchangePenalty);
+      setRentDifferenceAmount(calculatedRentDiff);
+      
+      // Prepare exchange data
+      const exchangeDataToCreate = {
+        booking_id: bookingId,
+        original_product_id: selectedOriginalProduct,
+        exchanged_product_id: selectedExchangedProduct,
+        exchange_reason: exchangeReason,
+        exchanged_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
+        additionalProducts: additionalProducts.map(productId => ({
+          product_id: productId,
+          booked_from: productDates[productId]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+          booked_to: productDates[productId]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+        })),
+        exchanged_product_dates: {
+          booked_from: productDates[selectedExchangedProduct]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+          booked_to: productDates[selectedExchangedProduct]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+        }
+      };
+      setPendingExchangeData(exchangeDataToCreate);
+    } else {
+      setTotalPaymentDue(0);
+      setPendingExchangeData(null);
+    }
+  }, [selectedOriginalProduct, selectedExchangedProduct, exchangePolicy, bookingDate, additionalProducts, availableProducts, exchangeReason, productDates, bookingDates]);
   
   async function fetchExchangePolicy() {
     try {
@@ -114,11 +200,11 @@ export function ProductExchange({
       const response = await settingsApi.getByKey('exchange_charges');
       if (response.data?.setting_value) {
         const charge = parseFloat(response.data.setting_value) || 0;
-        setExchangeCharge(charge);
-        console.log('Exchange Charge loaded:', charge);
+        setRentDiff(charge);
+        console.log('Rent Diff setting loaded:', charge);
       }
     } catch (error) {
-      console.error('Error fetching exchange charges:', error);
+      console.error('Error fetching rent diff setting:', error);
     }
   }
   
@@ -192,16 +278,27 @@ export function ProductExchange({
     }, 0);
     const newTotalSecurity = currentTotalSecurity - originalSecurity + totalNewSecurity;
     
-    // Calculate penalty charge
-    const penaltyCharge = (originalRent * penaltyPercentage) / 100;
-    const totalCharge = penaltyCharge + exchangeCharge;
+    // NEW STREAMLINED LOGIC:
+    // 1. Exchange penalty: Always use percentage from policy (applied to original rent)
+    const exchangePenalty = (originalRent * penaltyPercentage) / 100;
+    
+    // 2. Rent Difference: 
+    //    - If original_rent <= totalNewRent + exchangePenalty: rentDiff = 0
+    //    - Else: rentDiff = original_rent - (totalNewRent + exchangePenalty)
+    const calculatedRentDiff = originalRent <= (totalNewRent + exchangePenalty) 
+      ? 0 
+      : originalRent - (totalNewRent + exchangePenalty);
+    
+    // 3. Total Payment Due = totalNewRent + exchangePenalty + rentDiff - originalRent
+    const totalPaymentDue = Math.max(0, totalNewRent + exchangePenalty + calculatedRentDiff - originalRent);
     
     setRentDifference(newTotalRent);
     setSecurityDifference(newTotalSecurity);
     setCalculatedPenalty(penaltyPercentage);
-    setCalculatedTotal(totalCharge);
+    setCalculatedTotal(exchangePenalty); // This is the exchange penalty
+    setRentDiff(calculatedRentDiff); // Store rent difference
     
-    console.log('Exchange calculation:', {
+    console.log('Exchange calculation (streamlined):', {
       daysDiff,
       currentTotalRent,
       originalRent,
@@ -216,9 +313,10 @@ export function ProductExchange({
       totalNewSecurity,
       newTotalSecurity,
       penaltyPercentage,
-      penaltyCharge,
-      fixedExchangeCharge: exchangeCharge,
-      totalCharge,
+      exchangePenalty,
+      calculatedRentDiff,
+      totalPaymentDue,
+      formula: `${totalNewRent} + ${exchangePenalty} + ${calculatedRentDiff} - ${originalRent} = ${totalPaymentDue}`,
       additionalProductsCount: additionalProducts.length
     });
   }
@@ -277,6 +375,9 @@ export function ProductExchange({
       
       for (const booking of bookings) {
         if (!booking.booked_from || !booking.booked_to) continue;
+        
+        // Skip completed and cancelled bookings
+        if (booking.status === 'completed' || booking.status === 'cancelled') continue;
         
         const bookingFrom = new Date(booking.booked_from);
         const bookingTo = new Date(booking.booked_to);
@@ -346,7 +447,7 @@ export function ProductExchange({
       return;
     }
 
-    // VALIDATION: Total new product rent must be greater than or equal to original product rent
+    // Validate product selection
     const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
     const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
     
@@ -364,13 +465,6 @@ export function ProductExchange({
       return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
     }, 0);
     const totalNewRent = newRent + additionalRent;
-
-    if (totalNewRent < originalRent) {
-      toast.error(
-        `Exchange not allowed: Total new product rent (₹${totalNewRent.toLocaleString('en-IN')}) must be greater than or equal to original product rent (₹${originalRent.toLocaleString('en-IN')}). Please add more products.`
-      );
-      return;
-    }
 
     try {
       setLoading(true);
@@ -430,14 +524,18 @@ export function ProductExchange({
         }
       }
 
-      // IMPORTANT: Don't create exchange yet - show payment modal first
-      // Store exchange data to create after payment is collected
+      // If payment is required (already calculated by useEffect), don't proceed - let user click payment button
+      if (totalPaymentDue > 0 && pendingExchangeData) {
+        toast.info('Please complete payment to proceed with exchange');
+        return;
+      }
+
+      // No payment needed, create exchange directly
       const additionalProdCodes = additionalProducts.map(id => {
         const p = availableProducts.find(prod => prod.id === id);
         return p ? `${p.name} (${p.code})` : `Product ${id}`;
       });
 
-      // Append additional product list into reason so we can display later
       const combinedReason = additionalProdCodes.length
         ? `${exchangeReason ? `${exchangeReason} | ` : ''}Added: ${additionalProdCodes.join(', ')}`
         : exchangeReason || undefined;
@@ -457,72 +555,36 @@ export function ProductExchange({
           booked_to: productDates[productId].booked_to
         }))
       };
-      
-      setPendingExchangeData(exchangeDataToCreate);
 
-      // Calculate rent difference including additional products
-      const originalRent = parseFloat(originalProduct.rent_per_day || '0') || 0;
-      const newRent = parseFloat(exchangedProduct.rent_per_day || '0') || 0;
-      
-      // Calculate additional products rent
-      const additionalRent = additionalProducts.reduce((sum, productId) => {
-        const product = availableProducts.find(p => p.id === productId);
-        return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
-      }, 0);
-      
-      // Total new rent (main product + additional products)
-      const totalNewRent = newRent + additionalRent;
-      
-      // Rent difference is the amount customer needs to pay if new rent > original rent
-      const calculatedRentDifference = totalNewRent > originalRent ? totalNewRent - originalRent : 0;
-      
-      // Check if we need to collect payments
-      const needsPenaltyPayment = calculatedTotal > 0;
-      const needsRentPayment = calculatedRentDifference > 0;
-      
-      if (needsPenaltyPayment || needsRentPayment) {
-        // Show payment modal first (exchange will be created after payment)
-        setExchangePenaltyAmount(calculatedTotal);
-        setRentDifferenceAmount(calculatedRentDifference);
-        setPaymentType(needsPenaltyPayment && needsRentPayment ? 'both' : (needsPenaltyPayment ? 'penalty' : 'rent'));
-        setShowExchangeModal(false);
-        setShowPaymentModal(true);
-      } else {
-        // No payment needed, create exchange directly
-        try {
-          const exchangeResult = await productExchangesApi.create(exchangeDataToCreate);
-          
-          // Handle additional products
-          if (exchangeDataToCreate.additionalProducts.length > 0) {
-            for (const addProd of exchangeDataToCreate.additionalProducts) {
-              try {
-                await axios.post(`${API_URL}/bookings/${bookingId}/products`, addProd);
-              } catch (error) {
-                console.error('Error adding additional product:', error);
-              }
-            }
+      const exchangeResult = await productExchangesApi.create(exchangeDataToCreate);
+        
+      // Handle additional products
+      if (exchangeDataToCreate.additionalProducts.length > 0) {
+        for (const addProd of exchangeDataToCreate.additionalProducts) {
+          try {
+            await axios.post(`${API_URL}/bookings/${bookingId}/products`, addProd);
+          } catch (error) {
+            console.error('Error adding additional product:', error);
           }
-          
-          toast.success(`Product${additionalProducts.length > 0 ? 's' : ''} exchanged successfully`);
-          setShowExchangeModal(false);
-          setSelectedOriginalProduct(null);
-          setSelectedExchangedProduct(null);
-          setAdditionalProducts([]);
-          setProductSearchTerm('');
-          setProductDates({});
-          setProductBookings({});
-          setAvailabilityErrors({});
-          setExchangeReason('');
-          setPendingExchangeData(null);
-          
-          await fetchExchanges();
-          if (onExchangeComplete) {
-            onExchangeComplete();
-          }
-        } catch (error: any) {
-          console.error('Error creating exchange:', error);
-          toast.error('Failed to create exchange');
         }
+      }
+      
+      toast.success(`Product${additionalProducts.length > 0 ? 's' : ''} exchanged successfully`);
+      setShowExchangeModal(false);
+      setSelectedOriginalProduct(null);
+      setSelectedExchangedProduct(null);
+      setAdditionalProducts([]);
+      setProductSearchTerm('');
+      setProductDates({});
+      setProductBookings({});
+      setAvailabilityErrors({});
+      setExchangeReason('');
+      setPendingExchangeData(null);
+      
+      await fetchExchanges();
+      await fetchBookingDates(); // Refresh booking dates after exchange
+      if (onExchangeComplete) {
+        onExchangeComplete();
       }
     } catch (error: any) {
       console.error('Error exchanging product:', error);
@@ -538,22 +600,8 @@ export function ProductExchange({
       return;
     }
 
-    const needsPenalty = exchangePenaltyAmount > 0;
-    const needsRent = rentDifferenceAmount > 0;
-    
-    if (!needsPenalty && !needsRent) {
+    if (totalPaymentDue <= 0) {
       toast.error('No payment to collect');
-      return;
-    }
-
-    // Validate amounts are positive numbers
-    if (needsPenalty && (isNaN(exchangePenaltyAmount) || exchangePenaltyAmount <= 0)) {
-      toast.error('Invalid exchange penalty amount');
-      return;
-    }
-    
-    if (needsRent && (isNaN(rentDifferenceAmount) || rentDifferenceAmount <= 0)) {
-      toast.error('Invalid rent difference amount');
       return;
     }
 
@@ -565,17 +613,54 @@ export function ProductExchange({
     try {
       setLoading(true);
       
+      // Prepare exchange by name
+      let exchangeBy = pendingExchangeData.exchanged_by;
+      if (!exchangeBy) {
+        if (userRole === 'admin') {
+          const adminData = localStorage.getItem('admin_user');
+          if (adminData) {
+            const admin = JSON.parse(adminData);
+            exchangeBy = admin.name || 'Admin';
+          }
+        } else {
+          const salesmanData = localStorage.getItem('salesman_user') || localStorage.getItem('user');
+          if (salesmanData) {
+            const salesman = JSON.parse(salesmanData);
+            exchangeBy = salesman.name || 'Salesman';
+          }
+        }
+      }
+
+      // Get main product dates
+      const mainProductDates = pendingExchangeData.exchanged_product_dates || 
+                               productDates[pendingExchangeData.exchanged_product_id];
+      
+      if (!mainProductDates?.booked_from || !mainProductDates?.booked_to) {
+        toast.error('Please select dates for the exchanged product');
+        return;
+      }
+
+      // Prepare additional product codes for reason
+      const additionalProdCodes = (pendingExchangeData.additionalProducts || []).map((addProd: any) => {
+        const p = availableProducts.find(prod => prod.id === addProd.product_id);
+        return p ? `${p.name} (${p.code})` : `Product ${addProd.product_id}`;
+      });
+
+      const combinedReason = additionalProdCodes.length
+        ? `${pendingExchangeData.exchange_reason ? `${pendingExchangeData.exchange_reason} | ` : ''}Added: ${additionalProdCodes.join(', ')}`
+        : pendingExchangeData.exchange_reason || undefined;
+      
       // STEP 1: Create exchange in database first
       console.log('📝 Creating exchange in database...');
       const exchangeResult = await productExchangesApi.create({
         booking_id: pendingExchangeData.booking_id,
         original_product_id: pendingExchangeData.original_product_id,
         exchanged_product_id: pendingExchangeData.exchanged_product_id,
-        exchange_date: pendingExchangeData.exchange_date,
-        reason: pendingExchangeData.reason,
-        exchanged_by: pendingExchangeData.exchanged_by,
-        booked_from: pendingExchangeData.booked_from,
-        booked_to: pendingExchangeData.booked_to
+        exchange_date: new Date().toISOString().split('T')[0],
+        reason: combinedReason,
+        exchanged_by: exchangeBy,
+        booked_from: mainProductDates.booked_from,
+        booked_to: mainProductDates.booked_to
       });
       
       const createdExchange = exchangeResult.data;
@@ -593,56 +678,51 @@ export function ProductExchange({
         }
       }
       
-      // STEP 3: Record payment for exchange penalty if needed
-      if (needsPenalty) {
-        console.log('💰 Recording exchange penalty payment...');
-        await productExchangesApi.recordPayment({
-          exchange_id: createdExchange.id,
-          amount: Math.max(0, parseFloat(exchangePenaltyAmount.toString()) || 0),
-          payment_method: paymentMethod.trim(),
-          recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
-          narration: paymentNarration.trim()
-        });
-      }
+      // STEP 3: Record ONE payment for the TOTAL PAYMENT DUE amount
+      console.log('💰 Recording TOTAL payment due:', {
+        exchange_id: createdExchange.id,
+        total_payment_due: totalPaymentDue,
+        breakdown: {
+          exchangePenalty: exchangePenaltyAmount,
+          rentDifference: rentDifferenceAmount
+        },
+        payment_method: paymentMethod,
+        narration: paymentNarration
+      });
       
-      // STEP 4: Record payment for rent difference if needed
-      if (needsRent) {
-        try {
-          console.log('💰 Recording rent difference payment:', {
-            exchange_id: createdExchange.id,
-            amount: rentDifferenceAmount,
-            payment_method: paymentMethod,
-            narration: paymentNarration
-          });
-          const rentPaymentResponse = await productExchangesApi.recordRentPayment({
-            exchange_id: createdExchange.id,
-            amount: Math.max(0, parseFloat(rentDifferenceAmount.toString()) || 0),
-            payment_method: paymentMethod.trim(),
-            recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
-            narration: paymentNarration.trim()
-          });
-          console.log('✅ Rent difference payment recorded successfully:', rentPaymentResponse.data);
-        } catch (error: any) {
-          console.error('❌ Error recording rent difference payment:', error);
-          console.error('❌ Error response:', error.response?.data);
-          toast.error(`Failed to record rent difference payment: ${error.response?.data?.error || error.message}`);
-          throw error; // Re-throw to prevent continuing if rent payment failed
-        }
+      // Build detailed narration showing the breakdown
+      const breakdownParts = [];
+      if (exchangePenaltyAmount > 0) {
+        breakdownParts.push(`Exchange Penalty: ₹${exchangePenaltyAmount.toLocaleString('en-IN')}`);
       }
+      if (rentDifferenceAmount > 0) {
+        breakdownParts.push(`Rent Difference: ₹${rentDifferenceAmount.toLocaleString('en-IN')}`);
+      }
+      const detailedNarration = `Total Payment: ₹${totalPaymentDue.toLocaleString('en-IN')} (${breakdownParts.join(' + ')})${paymentNarration ? ` | ${paymentNarration.trim()}` : ''}`;
+      
+      // Record the TOTAL payment amount
+      await productExchangesApi.recordPayment({
+        exchange_id: createdExchange.id,
+        amount: Math.max(0, parseFloat(totalPaymentDue.toString()) || 0),
+        payment_method: paymentMethod.trim(),
+        recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
+        narration: detailedNarration
+      });
+      
+      console.log('✅ Total payment recorded successfully');
 
-      const messages = [];
-      if (needsPenalty) messages.push(`Exchange penalty: ₹${exchangePenaltyAmount.toLocaleString('en-IN')}`);
-      if (needsRent) messages.push(`Rent difference: ₹${rentDifferenceAmount.toLocaleString('en-IN')}`);
+      toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
       
-      toast.success(`${messages.join(' + ')} collected via ${paymentMethod}`);
-      
+      setShowExchangeModal(false);
       setShowPaymentModal(false);
       setPendingExchange(null);
       setPendingExchangeData(null); // Clear pending exchange data
+      setTotalPaymentDue(0);
       setExchangePenaltyAmount(0);
       setRentDifferenceAmount(0);
       setPaymentMethod('Cash');
       setPaymentNarration('');
+      setPaymentScanned(false);
       setSelectedOriginalProduct(null);
       setSelectedExchangedProduct(null);
       setAdditionalProducts([]);
@@ -652,6 +732,7 @@ export function ProductExchange({
       setExchangeReason('');
       
       await fetchExchanges();
+      await fetchBookingDates(); // Refresh booking dates after exchange
       if (onExchangeComplete) {
         onExchangeComplete();
       }
@@ -735,6 +816,7 @@ export function ProductExchange({
       }
       
       await fetchExchanges();
+      await fetchBookingDates(); // Refresh booking dates after deleting exchange
       if (onExchangeComplete) {
         onExchangeComplete();
       }
@@ -775,6 +857,8 @@ export function ProductExchange({
   const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
   const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
 
+  const canExchange = bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
@@ -793,7 +877,12 @@ export function ProductExchange({
               fetchAvailableProducts();
               setShowExchangeModal(true);
             }}
-            className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
+            disabled={!canExchange}
+            className={`px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
+              canExchange
+                ? 'bg-red-600 text-white hover:bg-red-700'
+                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            }`}
           >
             Exchange Product
           </button>
@@ -844,7 +933,7 @@ export function ProductExchange({
                     </div>
                   </div>
                   <div className="text-xs text-gray-600 space-y-1">
-                    <p>Date: {new Date(exchange.exchange_date).toLocaleDateString()}</p>
+                    <p>Date: {new Date(exchange.exchange_date).toLocaleDateString("en-GB")}</p>
                     <p>Days from booking: {exchange.days_from_booking}</p>
                     <p>Penalty: {exchange.penalty_percentage}%</p>
                     <p className="font-semibold text-gray-800">
@@ -894,13 +983,13 @@ export function ProductExchange({
                     </details>
                   </div>
                 </div>
-                <button
+                {/* <button
                   onClick={() => handleDeleteExchange(exchange.id)}
                   disabled={loading}
                   className="ml-4 text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50"
                 >
                   Delete
-                </button>
+                </button> */}
               </div>
             </div>
           )})}
@@ -1010,188 +1099,170 @@ export function ProductExchange({
                 />
               </div>
 
-              {/* Validation Warning with Add More Products Option */}
-              {selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
-                const originalRent = parseFloat(originalProduct.rent_per_day || '0') || 0;
-                const newRent = parseFloat(exchangedProduct.rent_per_day || '0') || 0;
-                
-                // Calculate total rent of all selected products (main + additional)
-                const additionalRent = additionalProducts.reduce((sum, productId) => {
-                  const product = availableProducts.find(p => p.id === productId);
-                  return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
-                }, 0);
-                const totalNewRent = newRent + additionalRent;
-                const isValid = totalNewRent >= originalRent;
-                
-                if (!isValid) {
-                  return (
-                    <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4">
-                      <div className="flex items-start mb-3">
-                        <svg className="w-5 h-5 text-red-600 mt-0.5 mr-2 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                        </svg>
-                        <div className="flex-1">
-                          <p className="text-sm font-semibold text-red-800 mb-1">Exchange Not Allowed</p>
-                          <p className="text-sm text-red-700 mb-2">
-                            Total new product rent (₹{totalNewRent.toLocaleString('en-IN')}) must be <strong>greater than or equal to</strong> original product rent (₹{originalRent.toLocaleString('en-IN')}).
-                          </p>
-                          <p className="text-xs text-red-600 mb-3">
-                            Current: ₹{newRent.toLocaleString('en-IN')} {additionalProducts.length > 0 && `+ ₹${additionalRent.toLocaleString('en-IN')} (additional)`} = ₹{totalNewRent.toLocaleString('en-IN')}
-                          </p>
-                        </div>
-                      </div>
-                      
-                      {/* Add More Products Option */}
-                      <div className="border-t border-red-200 pt-3 mt-3">
-                        <label className="block text-sm font-medium text-red-800 mb-2">
-                          Add More Products to Meet Requirement
-                        </label>
-                        
-                        {/* Search Input */}
-                        <div className="mb-3">
-                          <input
-                            type="text"
-                            value={productSearchTerm}
-                            onChange={(e) => setProductSearchTerm(e.target.value)}
-                            placeholder="Search by product name or code..."
-                            className="w-full px-4 py-2.5 border-2 border-red-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 bg-white text-sm"
-                          />
-                        </div>
+              {/* Add More Products Section - Always visible when exchanged product is selected */}
+              {selectedOriginalProduct && selectedExchangedProduct && (
+                <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-4">
+                  <label className="block text-sm font-medium text-blue-800 mb-2">
+                    Add More Products (Optional)
+                  </label>
+                  <p className="text-xs text-blue-600 mb-3">
+                    You can add more products to this exchange along with the main product selected above.
+                  </p>
+                  
+                  {/* Search Input */}
+                  <div className="mb-3">
+                    <input
+                      type="text"
+                      value={productSearchTerm}
+                      onChange={(e) => setProductSearchTerm(e.target.value)}
+                      placeholder="Search by product name or code..."
+                      className="w-full px-4 py-2.5 border-2 border-blue-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white text-sm"
+                    />
+                  </div>
 
-                        {/* Product List with Checkboxes */}
-                        <div className="border-2 border-red-300 rounded-lg bg-white max-h-[200px] overflow-y-auto">
-                          {(() => {
-                            const filteredProducts = availableProducts
-                              .filter(p => p.id !== selectedExchangedProduct)
-                              .filter(p => {
-                                if (!productSearchTerm) return true;
-                                const search = productSearchTerm.toLowerCase();
-                                return (
-                                  p.name?.toLowerCase().includes(search) ||
-                                  p.code?.toLowerCase().includes(search)
-                                );
-                              });
+                  {/* Product List with Checkboxes */}
+                  <div className="border-2 border-blue-300 rounded-lg bg-white max-h-[200px] overflow-y-auto">
+                    {(() => {
+                      const filteredProducts = availableProducts
+                        .filter(p => p.id !== selectedExchangedProduct)
+                        .filter(p => {
+                          if (!productSearchTerm) return true;
+                          const search = productSearchTerm.toLowerCase();
+                          return (
+                            p.name?.toLowerCase().includes(search) ||
+                            p.code?.toLowerCase().includes(search)
+                          );
+                        });
 
-                            if (filteredProducts.length === 0) {
-                              return (
-                                <div className="p-4 text-center text-sm text-gray-500">
-                                  No products found matching your search
-                                </div>
-                              );
-                            }
+                      if (filteredProducts.length === 0) {
+                        return (
+                          <div className="p-4 text-center text-sm text-gray-500">
+                            {productSearchTerm ? 'No products found matching your search' : 'No additional products available'}
+                          </div>
+                        );
+                      }
 
+                      return (
+                        <div className="divide-y divide-gray-200">
+                          {filteredProducts.map((product) => {
+                            const isSelected = additionalProducts.includes(product.id);
                             return (
-                              <div className="divide-y divide-gray-200">
-                                {filteredProducts.map((product) => {
-                                  const isSelected = additionalProducts.includes(product.id);
-                                  return (
-                                    <label
-                                      key={product.id}
-                                      className={`flex items-center p-3 hover:bg-gray-50 cursor-pointer transition-colors ${
-                                        isSelected ? 'bg-red-50' : ''
-                                      }`}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={isSelected}
-                                        onChange={(e) => {
-                                          if (e.target.checked) {
-                                            setAdditionalProducts([...additionalProducts, product.id]);
-                                          } else {
-                                            setAdditionalProducts(additionalProducts.filter(id => id !== product.id));
-                                          }
-                                        }}
-                                        className="w-4 h-4 text-red-600 border-gray-300 rounded focus:ring-red-500 mr-3 flex-shrink-0"
-                                      />
-                                      <div className="flex-1 min-w-0">
-                                        <div className="flex items-center justify-between">
-                                          <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium text-gray-900 truncate">
-                                              {product.name}
-                                            </p>
-                                            <p className="text-xs text-gray-500 mt-0.5">
-                                              Code: {product.code}
-                                            </p>
-                                          </div>
-                                          <div className="ml-3 text-right">
-                                            <p className="text-sm font-semibold text-gray-900">
-                                              ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}
-                                            </p>
-                                            <p className="text-xs text-gray-500">per day</p>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            );
-                          })()}
-                        </div>
-
-                        {/* Selected Products Summary */}
-                        {additionalProducts.length > 0 && (
-                          <div className="mt-3 p-3 bg-white rounded-lg border-2 border-red-200">
-                            <p className="text-sm font-semibold text-red-800 mb-2">Selected Additional Products ({additionalProducts.length}):</p>
-                            <div className="space-y-2 max-h-[120px] overflow-y-auto">
-                              {additionalProducts.map((productId) => {
-                                const product = availableProducts.find(p => p.id === productId);
-                                if (!product) return null;
-                                return (
-                                  <div key={productId} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                                    <div className="flex-1">
-                                      <p className="text-sm font-medium text-gray-900">{product.name}</p>
-                                      <p className="text-xs text-gray-500">{product.code}</p>
+                              <label
+                                key={product.id}
+                                className={`flex items-center p-3 hover:bg-gray-50 cursor-pointer transition-colors ${
+                                  isSelected ? 'bg-blue-50' : ''
+                                }`}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={async (e) => {
+                                    if (e.target.checked) {
+                                      setAdditionalProducts([...additionalProducts, product.id]);
+                                      // Initialize dates for the new product
+                                      setProductDates(prev => ({
+                                        ...prev,
+                                        [product.id]: {
+                                          booked_from: bookingDates?.booked_from?.split('T')[0] || '',
+                                          booked_to: bookingDates?.booked_to?.split('T')[0] || ''
+                                        }
+                                      }));
+                                      // Fetch bookings for availability checking
+                                      await fetchProductBookings(product.id);
+                                    } else {
+                                      setAdditionalProducts(additionalProducts.filter(id => id !== product.id));
+                                      // Clear dates for removed product
+                                      setProductDates(prev => {
+                                        const newDates = { ...prev };
+                                        delete newDates[product.id];
+                                        return newDates;
+                                      });
+                                    }
+                                  }}
+                                  className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500 mr-3 flex-shrink-0"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-medium text-gray-900 truncate">
+                                        {product.name}
+                                      </p>
+                                      <p className="text-xs text-gray-500 mt-0.5">
+                                        Code: {product.code}
+                                      </p>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-sm font-semibold text-gray-900">
-                                        ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}/day
-                                      </span>
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setAdditionalProducts(additionalProducts.filter(id => id !== productId));
-                                        }}
-                                        className="text-red-600 hover:text-red-800 p-1"
-                                        title="Remove"
-                                      >
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                        </svg>
-                                      </button>
+                                    <div className="ml-3 text-right">
+                                      <p className="text-sm font-semibold text-gray-900">
+                                        ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}
+                                      </p>
+                                      <p className="text-xs text-gray-500">per day</p>
                                     </div>
                                   </div>
-                                );
-                              })}
-                            </div>
-                            <div className="mt-3 pt-3 border-t border-red-200 space-y-1">
-                              <div className="flex justify-between text-sm font-semibold text-red-800">
-                                <span>Total Additional Rent:</span>
-                                <span>₹{additionalRent.toLocaleString('en-IN')}</span>
-                              </div>
-                              <div className="flex justify-between text-base font-bold text-red-900">
-                                <span>New Total Rent:</span>
-                                <span>₹{totalNewRent.toLocaleString('en-IN')}</span>
-                              </div>
-                              {totalNewRent >= originalRent && (
-                                <div className="mt-2 pt-2 border-t border-green-300">
-                                  <p className="text-sm font-semibold text-green-700 flex items-center">
-                                    <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                                    </svg>
-                                    Requirement met! You can now proceed with exchange.
-                                  </p>
                                 </div>
-                              )}
+                              </label>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Selected Additional Products Summary */}
+                  {additionalProducts.length > 0 && (
+                    <div className="mt-3 p-3 bg-white rounded-lg border-2 border-blue-200">
+                      <p className="text-sm font-semibold text-blue-800 mb-2">Selected Additional Products ({additionalProducts.length}):</p>
+                      <div className="space-y-2 max-h-[120px] overflow-y-auto">
+                        {additionalProducts.map((productId) => {
+                          const product = availableProducts.find(p => p.id === productId);
+                          if (!product) return null;
+                          return (
+                            <div key={productId} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                              <div className="flex-1">
+                                <p className="text-sm font-medium text-gray-900">{product.name}</p>
+                                <p className="text-xs text-gray-500">{product.code}</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-semibold text-gray-900">
+                                  ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}/day
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAdditionalProducts(additionalProducts.filter(id => id !== productId));
+                                    // Clear dates for removed product
+                                    setProductDates(prev => {
+                                      const newDates = { ...prev };
+                                      delete newDates[productId];
+                                      return newDates;
+                                    });
+                                  }}
+                                  className="text-red-600 hover:text-red-800 p-1"
+                                  title="Remove"
+                                >
+                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          );
+                        })}
+                      </div>
+                      <div className="mt-3 pt-3 border-t border-blue-200 space-y-1">
+                        <div className="flex justify-between text-sm font-semibold text-blue-800">
+                          <span>Total Additional Rent:</span>
+                          <span>₹{additionalProducts.reduce((sum, productId) => {
+                            const product = availableProducts.find(p => p.id === productId);
+                            return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+                          }, 0).toLocaleString('en-IN')}</span>
+                        </div>
                       </div>
                     </div>
-                  );
-                }
-                return null;
-              })()}
+                  )}
+                </div>
+              )}
+
+              {/* Lower Value Exchange Info - Removed, now unified logic */}
 
               {/* Selected Products Preview */}
               {selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
@@ -1204,9 +1275,6 @@ export function ProductExchange({
                   return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
                 }, 0);
                 const totalNewRent = newRent + additionalRent;
-                const isValid = totalNewRent >= originalRent;
-                
-                if (!isValid) return null;
                 
                 // Get dates for display
                 const bookedFrom = bookingDates?.booked_from || '';
@@ -1370,113 +1438,178 @@ export function ProductExchange({
                             <span className="font-semibold text-green-700">₹{Math.floor(securityDifference).toLocaleString('en-IN')}</span>
                           </div>
                         </div>
+                        
+                        {/* Payment Breakdown - New Streamlined Logic */}
                         <div className="border-t border-blue-300 pt-2 mt-2">
+                          <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-3">
+                            <p className="text-xs font-semibold text-yellow-800 mb-1">Payment Calculation:</p>
+                            <p className="text-xs text-yellow-700">
+                              Total = New Rent + Exchange Penalty + Rent Difference - Original Rent
+                            </p>
+                          </div>
+                          
+                          {/* Original Rent */}
+                          <div className="flex justify-between">
+                            <span>Original Product Rent:</span>
+                            <span className="font-semibold">₹{originalRent.toLocaleString('en-IN')}</span>
+                          </div>
+                          
+                          {/* New Rent */}
+                          <div className="flex justify-between">
+                            <span>New Product(s) Rent:</span>
+                            <span className="font-semibold text-green-700">₹{totalNewRent.toLocaleString('en-IN')}</span>
+                          </div>
+                          
+                          {/* Exchange Penalty */}
                           <div className="flex justify-between">
                             <span>Exchange Penalty ({calculatedPenalty}%):</span>
-                            <span className="font-semibold">₹{Math.floor((originalProduct.rent_per_day * calculatedPenalty) / 100).toLocaleString('en-IN')}</span>
+                            <span className="font-semibold text-orange-700">₹{Math.floor(calculatedTotal).toLocaleString('en-IN')}</span>
                           </div>
+                          
+                          {/* Rent Difference */}
                           <div className="flex justify-between">
-                            <span>Fixed Exchange Charge:</span>
-                            <span className="font-semibold">₹{exchangeCharge.toLocaleString('en-IN')}</span>
+                            <span>Rent Difference:</span>
+                            <span className="font-semibold text-purple-700">₹{Math.floor(rentDiff).toLocaleString('en-IN')}</span>
                           </div>
-                          <div className="flex justify-between font-bold text-base mt-2">
-                            <span>Total Exchange Penalty:</span>
-                            <span className="text-red-600">₹{Math.floor(calculatedTotal).toLocaleString('en-IN')}</span>
-                          </div>
+                          {rentDiff > 0 && (
+                            <p className="text-xs text-purple-600 mt-1 ml-4">
+                              (Balancing amount: ₹{originalRent.toLocaleString('en-IN')} - ₹{totalNewRent.toLocaleString('en-IN')} - ₹{Math.floor(calculatedTotal).toLocaleString('en-IN')} = ₹{Math.floor(rentDiff).toLocaleString('en-IN')})
+                            </p>
+                          )}
                         </div>
                         
-                        {/* Rent Difference */}
+                        {/* Total Payment Due */}
                         {(() => {
-                          const rentDiff = totalNewRent > originalRent ? totalNewRent - originalRent : 0;
-                          if (rentDiff > 0) {
-                            return (
-                              <div className="border-t border-blue-300 pt-2 mt-2">
-                                <div className="flex justify-between">
-                                  <span>Additional Rent (Upgrade):</span>
-                                  <span className="font-semibold text-blue-700">₹{Math.floor(rentDiff).toLocaleString('en-IN')}</span>
-                                </div>
-                                <p className="text-xs text-blue-600 mt-1">
-                                  (New total rent is higher than original rent)
+                          // Calculate using the formula: totalNewRent + exchangePenalty + rentDiff - originalRent
+                          const totalPaymentDue = Math.max(0, totalNewRent + calculatedTotal + rentDiff - originalRent);
+                          
+                          return (
+                            <div className="border-t-2 border-blue-400 pt-3 mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3">
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-base font-bold text-gray-900">Total Payment Due:</span>
+                                <span className="text-2xl font-bold text-indigo-600">₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}</span>
+                              </div>
+                              <div className="text-xs text-gray-600 bg-white rounded p-2">
+                                <p className="font-mono">
+                                  ₹{totalNewRent.toLocaleString('en-IN')} + ₹{Math.floor(calculatedTotal).toLocaleString('en-IN')} + ₹{Math.floor(rentDiff).toLocaleString('en-IN')} - ₹{originalRent.toLocaleString('en-IN')} = ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
                                 </p>
                               </div>
-                            );
-                          }
-                          return null;
-                        })()}
-                        
-                        {/* Total Amount to Collect */}
-                        {(() => {
-                          const rentDiff = totalNewRent > originalRent ? totalNewRent - originalRent : 0;
-                          const totalToCollect = calculatedTotal + rentDiff;
-                          if (totalToCollect > 0) {
-                            return (
-                              <div className="border-t-2 border-red-300 pt-3 mt-3 bg-red-50 rounded-lg p-3">
-                                <div className="flex justify-between items-center mb-2">
-                                  <span className="text-base font-bold text-gray-900">Total Amount to Collect:</span>
-                                  <span className="text-2xl font-bold text-red-600">₹{Math.floor(totalToCollect).toLocaleString('en-IN')}</span>
-                                </div>
-                                <div className="text-xs text-gray-600 space-y-1">
-                                  {calculatedTotal > 0 && (
-                                    <div className="flex justify-between">
-                                      <span>Exchange Penalty:</span>
-                                      <span>₹{Math.floor(calculatedTotal).toLocaleString('en-IN')}</span>
-                                    </div>
-                                  )}
-                                  {rentDiff > 0 && (
-                                    <div className="flex justify-between">
-                                      <span>Additional Rent:</span>
-                                      <span>₹{Math.floor(rentDiff).toLocaleString('en-IN')}</span>
-                                    </div>
-                                  )}
-                                </div>
-                                <p className="text-sm font-semibold text-red-700 mt-3 text-center">
-                                  Please pay Total ₹{Math.floor(totalToCollect).toLocaleString('en-IN')} to confirm your exchange
+                              {totalPaymentDue > 0 && (
+                                <p className="text-sm font-semibold text-indigo-700 mt-3 text-center">
+                                  Customer needs to pay ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
                                 </p>
-                              </div>
-                            );
-                          }
-                          return null;
+                              )}
+                              {totalPaymentDue === 0 && (
+                                <p className="text-sm font-semibold text-green-700 mt-3 text-center">
+                                  No additional payment required
+                                </p>
+                              )}
+                            </div>
+                          );
                         })()}
                       </div>
                     </div>
                     
                     <p className="text-xs text-blue-700 mt-3">
-                      <strong>Note:</strong> Total rental and security will be recalculated as sum of all products. Exchange penalty and additional rent will be collected separately.
+                      <strong>Note:</strong> Total rental and security will be recalculated as sum of all products.
                     </p>
                   </div>
                 );
               })()}
+
+              {/* Payment Collection Section - Inline */}
+              {totalPaymentDue > 0 && pendingExchangeData && (
+                <div className="bg-gradient-to-r from-green-50 to-blue-50 border-2 border-green-400 rounded-lg p-6">
+                  <h4 className="text-lg font-semibold text-gray-900 mb-4">💳 Payment Collection</h4>
+                  
+                  {/* Total Payment Due */}
+                  <div className="bg-white border-2 border-indigo-400 rounded-lg p-4 mb-4">
+                    <div className="flex justify-between items-center">
+                      <span className="text-base font-bold text-gray-900">Total Payment Due:</span>
+                      <span className="text-3xl font-bold text-indigo-600">
+                        ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Payment Method Dropdown */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Payment Method <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value)}
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white"
+                    >
+                      <option value="Cash">Cash</option>
+                      <option value="UPI">UPI</option>
+                      <option value="Card">Card</option>
+                      <option value="Bank Transfer">Bank Transfer</option>
+                      <option value="Cheque">Cheque</option>
+                      <option value="Other">Other</option>
+                    </select>
+                  </div>
+
+                  {/* Show UPI QR Button if UPI is selected */}
+                  {paymentMethod === 'UPI' && (
+                    <div className="mb-4">
+                      <button
+                        onClick={() => setShowUPIModal(true)}
+                        className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                        </svg>
+                        Show UPI QR Code
+                      </button>
+                      {paymentScanned && (
+                        <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3">
+                          <p className="text-sm text-green-800 text-center">
+                            ✅ Payment QR scanned successfully!
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Narration */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Narration / Notes (Optional)
+                    </label>
+                    <textarea
+                      value={paymentNarration}
+                      onChange={(e) => setPaymentNarration(e.target.value)}
+                      placeholder="Enter transaction details, reference number, etc."
+                      rows={3}
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white resize-none"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-4 p-6 border-t border-gray-200">
               <button
-                onClick={() => setShowExchangeModal(false)}
+                onClick={() => {
+                  setShowExchangeModal(false);
+                  setTotalPaymentDue(0);
+                  setPendingExchangeData(null);
+                  setPaymentMethod('Cash');
+                  setPaymentNarration('');
+                  setPaymentScanned(false);
+                }}
                 className="px-6 py-2.5 bg-white border-2 border-red-600 text-red-600 font-semibold rounded-lg hover:bg-red-50 transition-colors"
               >
                 CANCEL
               </button>
               <button
-                onClick={handleExchange}
-                disabled={(() => {
-                  if (loading || !selectedOriginalProduct || !selectedExchangedProduct) return true;
-                  const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
-                  const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
-                  if (!originalProduct || !exchangedProduct) return true;
-                  const originalRent = parseFloat(originalProduct.rent_per_day || '0') || 0;
-                  const newRent = parseFloat(exchangedProduct.rent_per_day || '0') || 0;
-                  
-                  // Calculate total rent including additional products
-                  const additionalRent = additionalProducts.reduce((sum, productId) => {
-                    const product = availableProducts.find(p => p.id === productId);
-                    return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
-                  }, 0);
-                  const totalNewRent = newRent + additionalRent;
-                  
-                  return totalNewRent < originalRent;
-                })()}
-                className="px-6 py-2.5 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={totalPaymentDue > 0 ? handlePaymentCollection : handleExchange}
+                disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct}
+                className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? 'Processing...' : 'EXCHANGE'}
+                {loading ? 'Processing...' : (totalPaymentDue > 0 ? 'COLLECT PAYMENT & EXCHANGE' : 'EXCHANGE')}
               </button>
             </div>
           </div>
@@ -1489,7 +1622,7 @@ export function ProductExchange({
           <div className="bg-white rounded-lg shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
             <div className="flex justify-between items-center p-6 border-b border-gray-200 flex-shrink-0">
               <h2 className="text-xl font-semibold text-gray-800">
-                {paymentType === 'both' ? 'Confirm Exchange - Collect Payments' : paymentType === 'penalty' ? 'Confirm Exchange - Collect Penalty' : 'Confirm Exchange - Collect Rent Difference'}
+                Confirm Exchange - Collect Payment
               </h2>
               <button
                 onClick={() => {
@@ -1512,40 +1645,56 @@ export function ProductExchange({
                 </p>
               </div>
 
-              {exchangePenaltyAmount > 0 && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Exchange Penalty Amount
-                  </label>
-                  <div className="text-2xl font-bold text-red-600">
-                    ₹{Math.floor(exchangePenaltyAmount).toLocaleString('en-IN')}
-                  </div>
+              {/* Total Payment Due - Main Display */}
+              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-400 rounded-lg p-6">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-lg font-bold text-gray-900">Total Payment Due:</span>
+                  <span className="text-4xl font-bold text-indigo-600">
+                    ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
+                  </span>
                 </div>
-              )}
+                <p className="text-sm text-gray-600 mt-2">
+                  This is the total amount to be collected from the customer for this exchange.
+                </p>
+              </div>
 
-              {rentDifferenceAmount > 0 && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Rent Difference Amount
-                  </label>
-                  <div className="text-2xl font-bold text-blue-600">
-                    ₹{Math.floor(rentDifferenceAmount).toLocaleString('en-IN')}
+              {/* Payment Breakdown */}
+              {(exchangePenaltyAmount > 0 || rentDifferenceAmount > 0) && (
+                <details className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <summary className="cursor-pointer font-semibold text-gray-700 text-sm">
+                    View Payment Breakdown
+                  </summary>
+                  <div className="mt-4 space-y-3">
+                    {exchangePenaltyAmount > 0 && (
+                      <div className="flex justify-between items-center pb-2 border-b border-gray-200">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Exchange Penalty</p>
+                          <p className="text-xs text-gray-500">(Policy-based exchange penalty)</p>
+                        </div>
+                        <span className="text-lg font-bold text-orange-600">
+                          ₹{Math.floor(exchangePenaltyAmount).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                    )}
+                    {rentDifferenceAmount > 0 && (
+                      <div className="flex justify-between items-center pb-2 border-b border-gray-200">
+                        <div>
+                          <p className="text-sm font-medium text-gray-700">Rent Difference</p>
+                          <p className="text-xs text-gray-500">(Balancing amount)</p>
+                        </div>
+                        <span className="text-lg font-bold text-purple-600">
+                          ₹{Math.floor(rentDifferenceAmount).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex justify-between items-center pt-2">
+                      <span className="text-sm font-bold text-gray-900">Total:</span>
+                      <span className="text-lg font-bold text-indigo-600">
+                        ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
+                      </span>
+                    </div>
                   </div>
-                  <p className="text-xs text-gray-500 mt-1">
-                    (Additional rent for upgraded product)
-                  </p>
-                </div>
-              )}
-
-              {paymentType === 'both' && (
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-700">Total Amount:</span>
-                    <span className="text-xl font-bold text-gray-900">
-                      ₹{Math.floor(exchangePenaltyAmount + rentDifferenceAmount).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                </div>
+                </details>
               )}
 
               <div>
@@ -1623,11 +1772,83 @@ export function ProductExchange({
                 disabled={loading || !paymentMethod}
                 className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {loading ? 'Recording...' : `COLLECT ${paymentType === 'both' ? 'PAYMENTS' : 'PAYMENT'}`}
+                {loading ? 'Recording...' : 'COLLECT PAYMENT'}
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* UPI Payment QR Modal */}
+      {showUPIModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-md p-6 relative">
+            <button
+              onClick={() => {
+                setShowUPIModal(false);
+                setPaymentScanned(false);
+              }}
+              className="absolute top-4 right-4 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+            >
+              ×
+            </button>
+            
+            <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
+            <p className="text-center text-gray-700 mb-4">
+              Amount to collect: ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
+            </p>
+            <div className="flex justify-center mb-4">
+              <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                <img 
+                  src="/upi-qr.png" 
+                  alt="UPI QR Code" 
+                  className="rounded-lg"
+                  style={{ 
+                    maxWidth: '280px', 
+                    maxHeight: '310px', 
+                    width: 'auto', 
+                    height: 'auto'
+                  }}
+                />
+              </div>
+            </div>
+            <p className="text-center text-gray-600 mb-4">OR</p>
+            <p className="text-center text-sm text-gray-700 mb-6">
+              Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={() => setShowQRScanner(true)}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                Scan Payment QR
+              </button>
+              <button
+                onClick={() => setShowUPIModal(false)}
+                className="w-full px-6 py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          title="📷 Scan Payment QR Code"
+          onScan={(code: string) => {
+            console.log('Payment QR scanned:', code);
+            setPaymentScanned(true);
+            setShowQRScanner(false);
+            toast.success('Payment QR scanned successfully!');
+          }}
+          onClose={() => setShowQRScanner(false)}
+        />
       )}
 
       {/* Refund Modal for Lapsed Amount */}

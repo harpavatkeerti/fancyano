@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, QRScanner } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
@@ -51,6 +51,11 @@ export default function OrderDetailsPage() {
 
   // Payment form
   const [paymentAmount, setPaymentAmount] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
+  const [paymentNotes, setPaymentNotes] = useState('');
+  const [showUPIModal, setShowUPIModal] = useState(false);
+  const [showQRScanner, setShowQRScanner] = useState(false);
+  const [paymentScanned, setPaymentScanned] = useState(false);
   const [showPaymentBreakdown, setShowPaymentBreakdown] = useState(false);
   const [paymentBreakdown, setPaymentBreakdown] = useState({
     rentDue: '',
@@ -238,6 +243,7 @@ export default function OrderDetailsPage() {
   // Refund form - per-item structure
   const [showRecordRefund, setShowRecordRefund] = useState(false);
   const [refundMethod, setRefundMethod] = useState('Cash');
+  const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
   // Per-item refund state: { productId: { selected: boolean, amount: string, notes: string } }
   const [itemRefunds, setItemRefunds] = useState<{[key: number]: {selected: boolean, amount: string, notes: string}}>({});
 
@@ -1118,15 +1124,18 @@ export default function OrderDetailsPage() {
         booking_id: bookingId,
         amount: amount,
         type: 'payment',
-        method: 'Cash/UPI', // You can make this selectable later
-        recorded_by: 'Salesman', // You can add salesman name later
-        notes: 'Payment recorded from customer',
+        transaction_type: 'booking',
+        method: paymentMethod,
+        recorded_by: 'Salesman',
+        notes: paymentNotes || 'Payment recorded from customer',
       });
 
       toast.success('Payment recorded successfully!');
       setShowRecordPayment(false);
       setShowPaymentBreakdown(false);
       setPaymentAmount('');
+      setPaymentMethod('Cash');
+      setPaymentNotes('');
       
       // Update booking status based on payment (this will fetch fresh data)
       await updateBookingStatus();
@@ -1422,7 +1431,76 @@ export default function OrderDetailsPage() {
     // Get selected items
     const selectedItems = products.filter((p: any) => itemRefunds[p.id]?.selected);
     
-    if (selectedItems.length === 0) {
+    // Calculate overpayment
+    const rentFromProducts = products.reduce((sum: number, product: any) => {
+      const rent = typeof product.rent_per_day === 'number'
+        ? product.rent_per_day
+        : parseFloat(String(product.rent_per_day || '0')) || 0;
+      return sum + rent;
+    }, 0);
+    
+    let transportationCharges = 0;
+    if (booking.other_charges !== null && booking.other_charges !== undefined) {
+      if (typeof booking.other_charges === 'number') {
+        transportationCharges = booking.other_charges;
+      } else if (typeof booking.other_charges === 'string') {
+        transportationCharges = parseFloat(booking.other_charges) || 0;
+      }
+    }
+    
+    let totalAmount = 0;
+    if (products.length > 0) {
+      totalAmount = rentFromProducts + transportationCharges;
+    } else {
+      totalAmount = typeof booking.total_amount === 'number'
+        ? booking.total_amount
+        : parseFloat(String(booking.total_amount || '0')) || 0;
+    }
+    
+    let securityDeposit = 0;
+    if (products.length > 0) {
+      securityDeposit = products.reduce((sum: number, product: any) => {
+        const security = typeof product.security_deposit === 'number'
+          ? product.security_deposit
+          : parseFloat(String(product.security_deposit || '0')) || 0;
+        return sum + security;
+      }, 0);
+    } else {
+      securityDeposit = typeof booking.security_deposit === 'number'
+        ? booking.security_deposit
+        : parseFloat(String(booking.security_deposit || '0')) || 0;
+    }
+    
+    const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
+      if (t.type === 'date_change_charge') return sum;
+      
+      const method = String(t.method || '').toLowerCase().trim();
+      if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+        return sum;
+      }
+      
+      const notes = (t.notes || '').toLowerCase();
+      if (notes.includes('date change charge') || 
+          notes.includes('date change') || 
+          notes.includes('modify booking') ||
+          notes.includes('booking date change')) {
+        return sum;
+      }
+      
+      if (notes.includes('exchange penalty') || (notes.includes('exchange:') && notes.includes('penalty'))) {
+        return sum;
+      }
+      
+      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+      return sum + (t.type === 'refund' ? -amount : amount);
+    }, 0);
+    
+    const paidAmount = paidAmountFromTransactions;
+    const totalRequired = totalAmount + securityDeposit;
+    const overpaymentAmount = Math.max(0, paidAmount - totalRequired);
+    
+    // Need at least one selected item OR overpayment
+    if (selectedItems.length === 0 && overpaymentAmount <= 0) {
       toast.warning('Please select at least one item to refund');
       return;
     }
@@ -1466,9 +1544,14 @@ export default function OrderDetailsPage() {
         // IMPORTANT: Always include product name and code in notes for tracking
         // Format: "Refund for Product Name (CODE): user notes" or "Refund for Product Name (CODE)"
         const baseNotes = `Refund for ${product.name} (${product.code})`;
-        const fullNotes = refundData.notes.trim() 
+        let fullNotes = refundData.notes.trim() 
           ? `${baseNotes}: ${refundData.notes.trim()}` 
           : `${baseNotes} - ₹${Math.floor(amount).toLocaleString('en-IN')}`;
+        
+        // Append general narration if provided
+        if (refundNarration.trim()) {
+          fullNotes += ` | ${refundNarration.trim()}`;
+        }
         
         return paymentTransactionsApi.create({
           booking_id: booking.id,
@@ -1480,12 +1563,34 @@ export default function OrderDetailsPage() {
         });
       });
 
+      // Automatically add overpayment refund if it exists
+      if (overpaymentAmount > 0) {
+        let overpaymentNotes = `Overpayment Refund - ₹${Math.floor(overpaymentAmount).toLocaleString('en-IN')}`;
+        
+        // Append general narration if provided
+        if (refundNarration.trim()) {
+          overpaymentNotes += ` | ${refundNarration.trim()}`;
+        }
+        
+        refundPromises.push(
+          paymentTransactionsApi.create({
+            booking_id: booking.id,
+            amount: overpaymentAmount,
+            type: 'refund',
+            method: refundMethod,
+            recorded_by: 'Salesman',
+            notes: overpaymentNotes,
+          })
+        );
+      }
+
       await Promise.all(refundPromises);
 
       // Close modal and reset form
       setShowRecordRefund(false);
       setItemRefunds({});
       setRefundMethod('Cash');
+      setRefundNarration('');
       
       // Refresh booking and transactions to get latest data
       // This will update the state and trigger re-render with new transactions
@@ -1937,6 +2042,7 @@ export default function OrderDetailsPage() {
                 currentProducts={Array.isArray(booking.products) ? booking.products : []}
                 onExchangeComplete={fetchBooking}
                 userRole="salesman"
+                bookingStatus={booking.status}
               />
             </div>
           )}
@@ -2397,100 +2503,66 @@ export default function OrderDetailsPage() {
                           <span className="text-xs text-gray-500 mb-0.5">Total Security</span>
                           <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(securityDepositNum).toLocaleString('en-IN')}</span>
                         </div>
-                        <div className="flex flex-col pt-1 border-t border-gray-200">
-                          {(() => {
-                            // Check if there are any refunds
-                            const refundTransactions = transactions.filter((t: any) => 
-                              t.type === 'refund' && 
-                              !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-                            );
-                            const hasRefunds = refundTransactions.length > 0;
+                        {(() => {
+                          // Check if there are any refunds
+                          const refundTransactions = transactions.filter((t: any) => 
+                            t.type === 'refund' && 
+                            !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                          );
+                          const hasRefunds = refundTransactions.length > 0;
+                          
+                          if (hasRefunds) {
+                            // Calculate security deposit refunds only (exclude overpayment refunds)
+                            const securityDepositRefunds = refundTransactions.reduce((sum: number, t: any) => {
+                              const notes = String(t.notes || '').toLowerCase();
+                              // Only count security deposit refunds, not overpayment refunds
+                              if (notes.includes('overpayment refund')) {
+                                return sum;
+                              }
+                              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                              return sum + amount;
+                            }, 0);
+                            const deducted = securityDepositNum - securityDepositRefunds;
                             
-                            if (hasRefunds) {
-                              // Show "Refunded" instead of "Security Paid"
-                              const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
-                                const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                                return sum + amount;
-                              }, 0);
-                              
-                              return (
-                                <>
+                            return (
+                              <>
+                                <div className="flex flex-col pt-1 border-t border-gray-200">
+                                  <span className="text-xs text-gray-500 mb-0.5">Deductions</span>
+                                  <span className="font-bold text-red-600 text-sm break-words">
+                                    ₹{Math.floor(Math.max(0, deducted)).toLocaleString('en-IN')}
+                                  </span>
+                                </div>
+                                <div className="flex flex-col pt-1 border-t border-gray-200">
                                   <span className="text-xs text-gray-500 mb-0.5">Refunded</span>
                                   <span className="font-bold text-green-600 text-sm break-words">
-                                    ₹{Math.floor(totalRefunded).toLocaleString('en-IN')}
+                                    ₹{Math.floor(securityDepositRefunds).toLocaleString('en-IN')}
                                   </span>
-                                </>
-                              );
-                            } else {
-                              // Show "Security Paid"
-                              const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                              return (
-                                <>
+                                </div>
+                              </>
+                            );
+                          } else {
+                            // No refunds - show Security Paid and Security Due
+                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                            const securityDue = securityDepositNum - securityPaid;
+                            
+                            return (
+                              <>
+                                <div className="flex flex-col pt-1 border-t border-gray-200">
                                   <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
                                   <span className="font-bold text-green-600 text-sm break-words">
                                     ₹{Math.floor(securityPaid).toLocaleString('en-IN')}
                                   </span>
-                                </>
-                              );
-                            }
-                          })()}
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">
-                            {(() => {
-                              const refundTransactions = transactions.filter((t: any) => 
-                                t.type === 'refund' && 
-                                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-                              );
-                              return refundTransactions.length > 0 ? 'Deducted/Due' : 'Security Due';
-                            })()}
-                          </span>
-                          <span className={`font-bold text-sm break-words ${(() => {
-                            const refundTransactions = transactions.filter((t: any) => 
-                              t.type === 'refund' && 
-                              !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
+                                </div>
+                                <div className="flex flex-col pt-1 border-t border-gray-200">
+                                  <span className="text-xs text-gray-500 mb-0.5 font-semibold">Security Due</span>
+                                  <span className={`font-bold text-sm break-words ${securityDue <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                    {securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`}
+                                  </span>
+                                </div>
+                              </>
                             );
-                            const hasRefunds = refundTransactions.length > 0;
-                            
-                            if (hasRefunds) {
-                              // Show deducted amount (security not refunded)
-                              const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
-                                const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                                return sum + amount;
-                              }, 0);
-                              const deducted = securityDepositNum - totalRefunded;
-                              return deducted <= 0 ? 'text-green-600' : 'text-red-600';
-                            } else {
-                              // Show security due
-                              const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                              const securityDue = securityDepositNum - securityPaid;
-                              return securityDue <= 0 ? 'text-green-600' : 'text-red-600';
-                            }
-                          })()}`}>
-                            {(() => {
-                              const refundTransactions = transactions.filter((t: any) => 
-                                t.type === 'refund' && 
-                                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-                              );
-                              const hasRefunds = refundTransactions.length > 0;
-                              
-                              if (hasRefunds) {
-                                // Show deducted amount
-                                const totalRefunded = refundTransactions.reduce((sum: number, t: any) => {
-                                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                                  return sum + amount;
-                                }, 0);
-                                const deducted = securityDepositNum - totalRefunded;
-                                return deducted <= 0 ? 'Fully Refunded' : `₹${Math.floor(deducted).toLocaleString('en-IN')}`;
-                              } else {
-                                // Show security due
-                                const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
-                                const securityDue = securityDepositNum - securityPaid;
-                                return securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`;
-                              }
-                            })()}
-                          </span>
-                        </div>
+                          }
+                        })()}
                       </div>
                     </div>
 
@@ -2518,76 +2590,9 @@ export default function OrderDetailsPage() {
                 </div>
               );
             })()}
-            
-            {/* Simple view - just show key info */}
-            <div className="space-y-3">
-              {/* Amount Paid */}
-              <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                <span className="text-gray-600">Amount Paid:</span>
-                <span className="font-bold text-green-600 text-lg">
-                  ₹{Math.floor(calculatePaidAmountExcludingExchangePenalties(transactions)).toLocaleString('en-IN')}
-                </span>
-              </div>
 
-              {/* Rental Due */}
-              <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                <span className="text-gray-600">Due Rent:</span>
-                {(() => {
-                  const totalAmount = typeof booking.total_amount === 'number'
-                    ? booking.total_amount
-                    : parseFloat(booking.total_amount) || 0;
-                  const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
-                  const rentalDue = totalAmount - paidAmount;
-                  
-                  if (rentalDue <= 0) {
-                    return <span className="font-bold text-green-600 text-lg">Fully Paid</span>;
-                  } else {
-                    return <span className="font-bold text-red-600 text-lg">₹{Math.floor(rentalDue).toLocaleString('en-IN')}</span>;
-                  }
-                })()}
-              </div>
-
-              {/* Security Deposit Due - Only show if rental is fully paid */}
-              {(() => {
-                const hasRefund = transactions.some((t: any) => t.type === 'refund');
-                const totalAmount = typeof booking.total_amount === 'number'
-                  ? booking.total_amount
-                  : parseFloat(booking.total_amount) || 0;
-                // Use helper function to exclude exchange penalties
-                const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions || []);
-                const rentalDue = totalAmount - paidAmount;
-                
-                if (rentalDue <= 0) {
-                  // Calculate remaining security for products without refunds (same logic as "Remaining to Refund")
-                  const remainingSecurity = products
-                    .filter((p: any) => !productsWithRefunds.has(p.id))
-                    .reduce((sum: number, p: any) => {
-                      const productSecurity = typeof p.security_deposit === 'number'
-                        ? p.security_deposit
-                        : parseFloat(String(p.security_deposit || '0')) || 0;
-                      return sum + productSecurity;
-                    }, 0);
-                  
-                  return (
-                    <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                      <span className="text-gray-600">Security Deposit Due:</span>
-                      {isOrderCompleted ? (
-                        <span className="font-bold text-blue-600 text-lg">All Refunded</span>
-                      ) : isPartiallyCompleted ? (
-                        <span className="font-bold text-yellow-600 text-lg">₹{Math.floor(remainingSecurity).toLocaleString('en-IN')}</span>
-                      ) : remainingSecurity <= 0 ? (
-                        <span className="font-bold text-green-600 text-lg">Fully Paid</span>
-                      ) : (
-                        <span className="font-bold text-red-600 text-lg">₹{Math.floor(remainingSecurity).toLocaleString('en-IN')}</span>
-                      )}
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
-              {/* Balance/Overpayment warning */}
-              {(() => {
+            {/* Balance/Overpayment warning */}
+            {(() => {
                 // Calculate total amount from products + transportation (same logic as above)
                 const products = Array.isArray(booking.products) ? booking.products : [];
                 const rentFromProducts = products.reduce((sum: number, product: any) => {
@@ -2704,7 +2709,6 @@ export default function OrderDetailsPage() {
                 }
                 return null;
               })()}
-            </div>
           </div>
 
           {/* Check if refund exists */}
@@ -2742,13 +2746,29 @@ export default function OrderDetailsPage() {
 
                   {/* Detailed Refund Breakdown with Charges */}
                   {(() => {
-                    const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
-                    if (refundTransactions.length === 0) return null;
+                    const allRefundTransactions = transactions.filter((t: any) => t.type === 'refund');
+                    if (allRefundTransactions.length === 0) return null;
+                    
+                    // Separate security deposit refunds from overpayment refunds
+                    const securityRefunds = allRefundTransactions.filter((t: any) => {
+                      const notes = String(t.notes || '').toLowerCase();
+                      return !notes.includes('overpayment refund');
+                    });
+                    
+                    const overpaymentRefunds = allRefundTransactions.filter((t: any) => {
+                      const notes = String(t.notes || '').toLowerCase();
+                      return notes.includes('overpayment refund');
+                    });
+                    
                     return (
                       <div className="bg-white border border-gray-200 rounded-lg p-6">
                         <h3 className="text-lg font-semibold text-gray-900 mb-4">📋 Refund Details</h3>
                       <div className="space-y-3">
-                        {transactions.filter((t: any) => t.type === 'refund').map((refund: any) => {
+                        {/* Security Deposit Refunds */}
+                        {securityRefunds.length > 0 && (
+                          <div>
+                            <h4 className="text-sm font-semibold text-gray-700 mb-2">Security Deposit Refunds</h4>
+                        {securityRefunds.map((refund: any) => {
                           const refundAmount = typeof refund.amount === 'number' 
                             ? refund.amount 
                             : parseFloat(String(refund.amount || '0')) || 0;
@@ -2829,8 +2849,59 @@ export default function OrderDetailsPage() {
                             </div>
                           );
                         })}
+                          </div>
+                        )}
+                        
+                        {/* Overpayment Refunds */}
+                        {overpaymentRefunds.length > 0 && (
+                          <div className="mt-4 pt-4 border-t border-gray-200">
+                            <h4 className="text-sm font-semibold text-yellow-700 mb-2">Overpayment Refunds</h4>
+                            {overpaymentRefunds.map((refund: any) => {
+                              const refundAmount = typeof refund.amount === 'number' 
+                                ? refund.amount 
+                                : parseFloat(String(refund.amount || '0')) || 0;
+                              
+                              return (
+                                <div key={refund.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                                  <div>
+                                    <p className="text-sm font-semibold text-gray-900 mb-2">
+                                      Overpayment Refund
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+                                      <div className="bg-yellow-100 p-2 rounded">
+                                        <p className="text-gray-600">Refunded</p>
+                                        <p className="font-bold text-yellow-700">
+                                          ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
+                                        </p>
+                                      </div>
+                                      <div className="bg-white p-2 rounded">
+                                        <p className="text-gray-600">Type</p>
+                                        <p className="font-bold text-gray-700">Extra Payment</p>
+                                      </div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mb-1">
+                                      {new Date(refund.created_at).toLocaleDateString('en-IN', {
+                                        year: 'numeric',
+                                        month: 'short',
+                                        day: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })} • {refund.method || refund.payment_method || 'N/A'} • by {refund.recorded_by}
+                                    </p>
+                                    {refund.notes && (
+                                      <div className="bg-white border-l-3 border-l-yellow-500 pl-3 py-2 mt-2">
+                                        <p className="text-xs font-semibold text-yellow-800 mb-1">💬 Notes:</p>
+                                        <p className="text-sm text-gray-700">{refund.notes}</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
-                    </div>
+                      </div>
                     );
                   })()}
 
@@ -2873,6 +2944,18 @@ export default function OrderDetailsPage() {
                                           })}
                                         </span>
                                       </div>
+                                      {/* Transaction Type */}
+                                      <p className="text-sm text-gray-600 mb-1">
+                                        <span className="font-medium">Type:</span> {
+                                          transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                                          transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                                          transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                                          'Booking'
+                                        }
+                                      </p>
+                                      {/* Payment Method */}
                                       <p className="text-sm text-gray-600 mb-1">
                                         <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
                                       </p>
@@ -3780,6 +3863,8 @@ export default function OrderDetailsPage() {
                   setShowRecordPayment(false);
                   setShowPaymentBreakdown(false);
                   setPaymentAmount('');
+                  setPaymentMethod('Cash');
+                  setPaymentNotes('');
                 }}
                 className="mr-4 text-gray-600 hover:text-gray-900"
               >
@@ -3811,6 +3896,63 @@ export default function OrderDetailsPage() {
                 onChange={(e) => setPaymentAmount(e.target.value)}
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
               />
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm text-gray-700 mb-2">
+                Payment Method <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={paymentMethod}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 bg-white"
+              >
+                <option value="Cash">Cash</option>
+                <option value="UPI">UPI</option>
+                <option value="Card">Card</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+                <option value="Cheque">Cheque</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            {/* Show UPI QR Button if UPI is selected */}
+            {paymentMethod === 'UPI' && (
+              <div className="mb-6">
+                <button
+                  onClick={() => setShowUPIModal(true)}
+                  className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                  </svg>
+                  Show UPI QR Code
+                </button>
+                {paymentScanned && (
+                  <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3">
+                    <p className="text-sm text-green-800 text-center">
+                      ✅ Payment QR scanned successfully!
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Payment Notes Field */}
+            <div className="mb-6">
+              <label className="block text-sm text-gray-700 mb-2">
+                Notes (Optional)
+              </label>
+              <textarea
+                placeholder="Enter transaction details, UPI ID, reference number, etc."
+                value={paymentNotes}
+                onChange={(e) => setPaymentNotes(e.target.value)}
+                rows={3}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Add any additional details about this payment
+              </p>
             </div>
 
             {!showPaymentBreakdown ? (
@@ -3896,6 +4038,7 @@ export default function OrderDetailsPage() {
                   setShowRecordRefund(false);
                     setItemRefunds({});
                   setRefundMethod('Cash');
+                  setRefundNarration('');
                 }}
                 className="mr-4 text-gray-600 hover:text-gray-900"
               >
@@ -3931,6 +4074,23 @@ export default function OrderDetailsPage() {
                       <option value="Bank Transfer">Bank Transfer</option>
                       <option value="Other">Other</option>
                     </select>
+                  </div>
+
+                  {/* General Narration Field */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Narration / Notes (Optional)
+                    </label>
+                    <textarea
+                      value={refundNarration}
+                      onChange={(e) => setRefundNarration(e.target.value)}
+                      placeholder="Enter transaction details, UPI ID, reference number, etc."
+                      rows={3}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">
+                      💡 Add any additional details about this refund (e.g., UPI ID, reference number, bank details)
+                    </p>
                   </div>
 
                   <div className="mb-6">
@@ -4089,12 +4249,131 @@ export default function OrderDetailsPage() {
               </div>
                   </div>
 
+                  {/* Overpayment Refund Section */}
+                  {(() => {
+                    // Calculate overpayment
+                    const products = Array.isArray(booking?.products) ? booking.products : [];
+                    const rentFromProducts = products.reduce((sum: number, product: any) => {
+                      const rent = typeof product.rent_per_day === 'number'
+                        ? product.rent_per_day
+                        : parseFloat(String(product.rent_per_day || '0')) || 0;
+                      return sum + rent;
+                    }, 0);
+                    
+                    let transportationCharges = 0;
+                    if (booking?.other_charges !== null && booking?.other_charges !== undefined) {
+                      if (typeof booking.other_charges === 'number') {
+                        transportationCharges = booking.other_charges;
+                      } else if (typeof booking.other_charges === 'string') {
+                        transportationCharges = parseFloat(booking.other_charges) || 0;
+                      }
+                    }
+                    
+                    // Use fallback if products are empty (already freed)
+                    let totalAmount = 0;
+                    if (products.length > 0) {
+                      totalAmount = rentFromProducts + transportationCharges;
+                    } else {
+                      // Fallback to booking.total_amount
+                      totalAmount = typeof booking?.total_amount === 'number'
+                        ? booking.total_amount
+                        : parseFloat(String(booking?.total_amount || '0')) || 0;
+                    }
+                    
+                    // Calculate security from products, with fallback
+                    let securityDeposit = 0;
+                    if (products.length > 0) {
+                      securityDeposit = products.reduce((sum: number, product: any) => {
+                        const security = typeof product.security_deposit === 'number'
+                          ? product.security_deposit
+                          : parseFloat(String(product.security_deposit || '0')) || 0;
+                        return sum + security;
+                      }, 0);
+                    } else {
+                      // Fallback to booking.security_deposit
+                      securityDeposit = typeof booking?.security_deposit === 'number'
+                        ? booking.security_deposit
+                        : parseFloat(String(booking?.security_deposit || '0')) || 0;
+                    }
+                    
+                    // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
+                    const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
+                      // Exclude date_change_charge type
+                      if (t.type === 'date_change_charge') return sum;
+                      
+                      // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
+                      const method = String(t.method || '').toLowerCase().trim();
+                      if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                        return sum;
+                      }
+                      
+                      // Also exclude transactions with date change notes (handles old transactions)
+                      const notes = (t.notes || '').toLowerCase();
+                      if (notes.includes('date change charge') || 
+                          notes.includes('date change') || 
+                          notes.includes('modify booking') ||
+                          notes.includes('booking date change')) {
+                        return sum;
+                      }
+                      
+                      // Exclude exchange penalty notes (handles old transactions)
+                      if (notes.includes('exchange penalty') || (notes.includes('exchange:') && notes.includes('penalty'))) {
+                        return sum;
+                      }
+                      
+                      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                      return sum + (t.type === 'refund' ? -amount : amount);
+                    }, 0);
+                    
+                    const paidAmount = paidAmountFromTransactions;
+                    const totalRequired = totalAmount + securityDeposit;
+                    const overpayment = paidAmount - totalRequired;
+                    
+                    // Only show overpayment section if there's an overpayment
+                    if (overpayment <= 0) return null;
+                    
+                    return (
+                      <div className="mb-6">
+                        <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
+                          <div className="flex items-start">
+                            <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <div className="flex-1">
+                              <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
+                              <p className="text-yellow-800 text-sm mb-3">
+                                Customer has paid <span className="font-bold">₹{Math.floor(overpayment).toLocaleString('en-IN')}</span> extra. 
+                                This full overpayment amount will be automatically refunded along with product security deposits.
+                              </p>
+                              
+                              <div className="bg-white rounded-lg p-4">
+                                {/* Overpayment Refund Amount Display (Read-only) */}
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                                    Overpayment Refund Amount
+                                  </label>
+                                  <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
+                                    ₹{Math.floor(overpayment).toLocaleString('en-IN')}
+                                  </div>
+                                  <p className="text-gray-600 text-xs mt-2 text-center">
+                                    ✓ Full overpayment will be refunded and noted in payment history
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
             <div className="flex gap-3 sticky bottom-0 bg-white pt-4 border-t">
                     <button
                       onClick={() => {
                         setShowRecordRefund(false);
                   setItemRefunds({});
                         setRefundMethod('Cash');
+                        setRefundNarration('');
                       }}
                       className="flex-1 px-6 py-3 bg-gray-200 text-gray-800 rounded-lg font-bold hover:bg-gray-300 transition-colors"
                     >
@@ -5445,6 +5724,78 @@ export default function OrderDetailsPage() {
           }}
           userName={localStorage.getItem('userName') || 'Salesman'}
           bookingId={booking.id}
+        />
+      )}
+
+      {/* UPI Payment QR Modal */}
+      {showUPIModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-md p-6 relative">
+            <button
+              onClick={() => {
+                setShowUPIModal(false);
+                setPaymentScanned(false);
+              }}
+              className="absolute top-4 right-4 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+            >
+              ×
+            </button>
+            
+            <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
+            <p className="text-center text-gray-700 mb-4">
+              Amount to collect: ₹{parseFloat(paymentAmount || '0').toLocaleString('en-IN')}
+            </p>
+            <div className="flex justify-center mb-4">
+              <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                <img 
+                  src="/upi-qr.png" 
+                  alt="UPI QR Code" 
+                  className="rounded-lg"
+                  style={{ 
+                    maxWidth: '280px', 
+                    maxHeight: '310px', 
+                    width: 'auto', 
+                    height: 'auto'
+                  }}
+                />
+              </div>
+            </div>
+            <p className="text-center text-gray-600 mb-4">OR</p>
+            <p className="text-center text-sm text-gray-700 mb-6">
+              Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
+            </p>
+            <div className="space-y-3">
+              <button
+                onClick={() => setShowQRScanner(true)}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                Scan Payment QR
+              </button>
+              <button
+                onClick={() => setShowUPIModal(false)}
+                className="w-full px-6 py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          title="📷 Scan Payment QR Code"
+          onScan={(code: string) => {
+            console.log('Payment QR scanned:', code);
+            setPaymentScanned(true);
+            setShowQRScanner(false);
+            toast.success('Payment QR scanned successfully!');
+          }}
+          onClose={() => setShowQRScanner(false)}
         />
       )}
     </div>

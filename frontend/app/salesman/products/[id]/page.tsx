@@ -211,7 +211,7 @@ export default function ProductDetailPage() {
       thisDropDate.setHours(0, 0, 0, 0);
 
       for (const otherBooking of allBookings) {
-        if (otherBooking.status === 'cancelled') continue;
+        if (otherBooking.status === 'cancelled' || otherBooking.status === 'completed') continue;
 
         const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
         

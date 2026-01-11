@@ -2,16 +2,37 @@ import { useState, useEffect } from 'react';
 import { bookingCancellationApi } from '@/lib/bookingCancellationApi';
 import { toast } from '@/lib/toast';
 
+interface Product {
+  product_id: number;
+  code: string;
+  name: string;
+  rent: number;
+  security_deposit: number;
+}
+
+interface ProductPenalty extends Product {
+  penalty_percentage: number;
+  penalty_amount: number;
+}
+
 interface CancellationPreview {
   booking_id: number;
   booking_date: string;
   days_from_booking: number;
-  total_amount: number;
-  total_paid: number;
   penalty_percentage: number;
-  penalty_amount: number;
-  refund_amount: number;
   policy: any;
+  all_products: Product[];
+  products_to_cancel: ProductPenalty[];
+  total_cancelled_rent: number;
+  total_cancelled_security: number;
+  total_penalty_amount: number;
+  base_refund: number;
+  total_paid: number;
+  total_refunded: number;
+  net_paid: number;
+  payment_action: 'collect' | 'refund' | 'none';
+  payment_difference: number;
+  is_partial: boolean;
 }
 
 interface BookingCancellationProps {
@@ -21,7 +42,7 @@ interface BookingCancellationProps {
   userRole?: 'admin' | 'salesman';
   userName?: string;
   canCancel?: boolean;
-  autoOpen?: boolean; // New prop to auto-open modal
+  autoOpen?: boolean;
 }
 
 export function BookingCancellation({
@@ -38,16 +59,30 @@ export function BookingCancellation({
   const [preview, setPreview] = useState<CancellationPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchingPreview, setFetchingPreview] = useState(false);
+  
+  // Product selection for partial cancellation
+  const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
+  
+  // Manual penalty editing
+  const [editingPenalties, setEditingPenalties] = useState<{[key: number]: string}>({});
+  
+  // Extra refund fields
+  const [extraRefund, setExtraRefund] = useState<string>('');
+  const [extraRefundNote, setExtraRefundNote] = useState('');
+  
+  const [showConfirmation, setShowConfirmation] = useState(false);
 
-  // Check if booking can be cancelled
   const canBeCancelled = bookingStatus !== 'cancelled' && bookingStatus !== 'completed';
 
-  // Auto-open modal if autoOpen prop is true
   useEffect(() => {
     if (autoOpen && canBeCancelled) {
       handleOpenCancelModal();
     }
   }, [autoOpen, bookingId]);
+
+  // Note: Removed auto-refetch on selection changes
+  // The component now calculates totals dynamically based on selected products
+  // without needing to call the API again
 
   async function handleOpenCancelModal() {
     if (!canBeCancelled) {
@@ -62,8 +97,14 @@ export function BookingCancellation({
   async function fetchCancellationPreview() {
     try {
       setFetchingPreview(true);
-      const response = await bookingCancellationApi.preview(bookingId);
+      const response = await bookingCancellationApi.preview(bookingId, selectedProducts.length > 0 ? selectedProducts : undefined);
       setPreview(response.data);
+      
+      // Initialize all products as selected if none selected yet
+      if (selectedProducts.length === 0 && response.data.all_products.length > 0) {
+        setSelectedProducts(response.data.all_products.map((p: Product) => p.product_id));
+      }
+      
       console.log('Cancellation Preview:', response.data);
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
@@ -73,25 +114,134 @@ export function BookingCancellation({
     }
   }
 
-  async function handleConfirmCancellation() {
+  function handleProductSelection(productId: number, checked: boolean) {
+    if (checked) {
+      setSelectedProducts(prev => [...prev, productId]);
+    } else {
+      setSelectedProducts(prev => prev.filter(id => id !== productId));
+    }
+  }
+
+  function handleSelectAll(checked: boolean) {
+    if (checked && preview) {
+      setSelectedProducts(preview.all_products.map(p => p.product_id));
+    } else {
+      setSelectedProducts([]);
+    }
+  }
+
+  function handlePenaltyEdit(productId: number, value: string) {
+    setEditingPenalties(prev => ({
+      ...prev,
+      [productId]: value
+    }));
+  }
+
+  function getProductPenalty(product: ProductPenalty): number {
+    const editedValue = editingPenalties[product.product_id];
+    if (editedValue !== undefined) {
+      // If user has edited the field (even if empty), use their value
+      // Empty string or invalid number = 0
+      if (editedValue === '') return 0;
+      return parseFloat(editedValue) || 0;
+    }
+    // No edit made - use default calculated penalty
+    return product.penalty_amount;
+  }
+
+  function getTotalPenalty(): number {
+    if (!preview) return 0;
+    // Only calculate penalty for SELECTED products
+    return preview.products_to_cancel
+      .filter(product => selectedProducts.includes(product.product_id))
+      .reduce((sum, product) => {
+        return sum + getProductPenalty(product);
+      }, 0);
+  }
+
+  function getExtraRefundAmount(): number {
+    const amount = parseFloat(extraRefund);
+    return isNaN(amount) ? 0 : amount;
+  }
+
+  function getTotalCancelledRent(): number {
+    if (!preview) return 0;
+    // Only sum rent for SELECTED products
+    return preview.all_products
+      .filter(product => selectedProducts.includes(product.product_id))
+      .reduce((sum, product) => sum + product.rent, 0);
+  }
+
+  function getTotalCancelledSecurity(): number {
+    if (!preview) return 0;
+    // Only sum security for SELECTED products
+    return preview.all_products
+      .filter(product => selectedProducts.includes(product.product_id))
+      .reduce((sum, product) => sum + product.security_deposit, 0);
+  }
+
+  function getFinalRefundAmount(): number {
+    if (!preview) return 0;
+    // Refund = (Rent + Security of SELECTED cancelled products) - Penalty + Extra Refund
+    const totalRent = getTotalCancelledRent();
+    const totalSecurity = getTotalCancelledSecurity();
+    const penalty = getTotalPenalty();
+    const extra = getExtraRefundAmount();
+    return totalRent + totalSecurity - penalty + extra;
+  }
+
+  // Removed - now auto-recalculates on product selection changes
+
+  function handleProceedToConfirmation() {
+    if (selectedProducts.length === 0) {
+      toast.error('Please select at least one product to cancel');
+      return;
+    }
+    
     if (!cancellationReason.trim()) {
       toast.error('Please provide a cancellation reason');
       return;
     }
 
+    setShowConfirmation(true);
+  }
+
+  async function handleConfirmCancellation() {
     try {
       setLoading(true);
       
+      // Prepare per-product penalties (only for manually edited ones)
+      const perProductPenalties = preview?.products_to_cancel
+        .filter(p => editingPenalties[p.product_id] !== undefined)
+        .map(p => ({
+          product_id: p.product_id,
+          penalty_amount: getProductPenalty(p),
+          notes: `Manual penalty for ${p.name} (${p.code}) | Reason: ${cancellationReason}`
+        })) || [];
+      
+      const extraRefundAmount = getExtraRefundAmount();
+      
       await bookingCancellationApi.cancel({
         booking_id: bookingId,
+        product_ids: selectedProducts,
+        per_product_penalties: perProductPenalties.length > 0 ? perProductPenalties : undefined,
         cancellation_reason: cancellationReason,
         cancelled_by: userName || 'system',
+        extra_refund: extraRefundAmount > 0 ? extraRefundAmount : undefined,
+        extra_refund_note: extraRefundNote.trim() || undefined,
       });
 
-      toast.success('Booking cancelled successfully');
+      const isPartial = preview && selectedProducts.length < preview.all_products.length;
+      toast.success(isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully');
+      
       setShowCancelModal(false);
+      setShowConfirmation(false);
       setCancellationReason('');
+      setExtraRefund('');
+      setExtraRefundNote('');
       setPreview(null);
+      setSelectedProducts([]);
+      setEditingPenalties({});
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
@@ -101,173 +251,332 @@ export function BookingCancellation({
     }
   }
 
-  function handleCloseModal() {
-    setShowCancelModal(false);
-    setCancellationReason('');
-    setPreview(null);
-  }
-
-  // Don't show button if user doesn't have permission
   if (!canCancel) {
     return null;
   }
 
   return (
     <>
-      {/* Cancel Booking Button */}
-      <button
-        onClick={handleOpenCancelModal}
-        disabled={!canBeCancelled}
-        className={`px-6 py-2 rounded-lg font-medium transition-colors ${
-          canBeCancelled
-            ? 'bg-red-600 hover:bg-red-700 text-white'
-            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-        }`}
-      >
-        {bookingStatus === 'cancelled' ? 'Already Cancelled' : 'Cancel Booking'}
-      </button>
+      {!autoOpen && (
+        <button
+          onClick={handleOpenCancelModal}
+          disabled={!canBeCancelled}
+          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+            canBeCancelled
+              ? 'bg-red-600 text-white hover:bg-red-700'
+              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+          }`}
+        >
+          Cancel Booking
+        </button>
+      )}
 
-      {/* Cancellation Modal */}
-      {showCancelModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            {/* Modal Header */}
-            <div className="sticky top-0 bg-gradient-to-r from-red-600 to-red-700 text-white p-6 rounded-t-lg">
-              <div className="flex justify-between items-center">
-                <h2 className="text-2xl font-bold">⚠️ Cancel Booking</h2>
+      {/* Main Cancellation Modal */}
+      {showCancelModal && !showConfirmation && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-900">Cancel Booking</h2>
                 <button
-                  onClick={handleCloseModal}
-                  className="text-white hover:text-gray-200 text-3xl font-bold transition-colors"
+                  onClick={() => {
+                    setShowCancelModal(false);
+                    setPreview(null);
+                    setSelectedProducts([]);
+                    setEditingPenalties({});
+                    setExtraRefund('');
+                    setExtraRefundNote('');
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
                 >
-                  ×
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
                 </button>
               </div>
-            </div>
 
-            {/* Modal Content */}
-            <div className="p-6 space-y-6">
-              {/* Warning Message */}
-              <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded">
-                <div className="flex items-start">
-                  <div className="flex-shrink-0">
-                    <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                  </div>
-                  <div className="ml-3">
-                    <p className="text-sm font-medium text-yellow-800">
-                      Booking ID: <span className="font-bold">#{bookingId}</span>
-                    </p>
-                    <p className="text-sm text-yellow-700 mt-1">
-                      This action cannot be undone. Cancellation penalties may apply based on the timing of cancellation.
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Cancellation Preview */}
               {fetchingPreview ? (
                 <div className="text-center py-8">
-                  <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-red-600"></div>
-                  <p className="mt-4 text-gray-600">Calculating cancellation details...</p>
+                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                  <p className="mt-4 text-gray-600">Loading cancellation details...</p>
                 </div>
               ) : preview ? (
-                <div className="space-y-4">
-                  {/* Cancellation Details */}
-                  <div className="bg-gray-50 p-4 rounded-lg space-y-3">
-                    <h3 className="font-semibold text-gray-800 text-lg mb-3">Cancellation Summary</h3>
-                    
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm text-gray-600">Booking Date</p>
-                        <p className="font-semibold text-gray-900">
-                          {new Date(preview.booking_date).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-600">Days from Booking</p>
-                        <p className="font-semibold text-gray-900">{preview.days_from_booking} days</p>
-                      </div>
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-3 space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-700">Total Booking Amount:</span>
-                        <span className="font-semibold text-gray-900">₹{preview.total_amount.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-700">Total Paid:</span>
-                        <span className="font-semibold text-gray-900">₹{preview.total_paid.toFixed(2)}</span>
-                      </div>
-                      <div className="flex justify-between text-red-600">
-                        <span>Cancellation Penalty ({preview.penalty_percentage}%):</span>
-                        <span className="font-semibold">-₹{preview.penalty_amount.toFixed(2)}</span>
-                      </div>
-                      <div className="border-t border-gray-300 pt-2 flex justify-between text-lg">
-                        <span className="font-bold text-gray-900">Refund Amount:</span>
-                        <span className="font-bold text-green-600">₹{preview.refund_amount.toFixed(2)}</span>
-                      </div>
+                <div className="space-y-6">
+                  {/* Policy Information */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-blue-900 mb-2">Cancellation Policy</h3>
+                    <div className="text-sm text-blue-800">
+                      <p>Booking Date: <span className="font-medium">{new Date(preview.booking_date).toLocaleDateString('en-GB')}</span></p>
+                      <p>Days from booking: <span className="font-medium">{preview.days_from_booking} days</span></p>
+                      <p>Penalty Rate: <span className="font-medium">{preview.penalty_percentage}%</span> of rental amount</p>
                     </div>
                   </div>
 
-                  {/* Policy Info */}
-                  {preview.policy && (
-                    <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg">
-                      <h4 className="font-semibold text-blue-900 text-sm mb-2">📋 Cancellation Policy Applied</h4>
-                      <div className="grid grid-cols-4 gap-2 text-xs text-blue-800">
-                        <div>
-                          <p className="font-medium">Within {preview.policy.days?.[0] || 3} days</p>
-                          <p>{preview.policy.before_7_days || 0}% penalty</p>
+                  {/* Product Selection */}
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center">
+                      <h3 className="font-semibold text-gray-900">Select Products to Cancel</h3>
+                      <label className="flex items-center space-x-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedProducts.length === preview.all_products.length}
+                          onChange={(e) => handleSelectAll(e.target.checked)}
+                          className="w-4 h-4 text-blue-600 rounded"
+                        />
+                        <span className="text-sm text-gray-700">Select All</span>
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      {preview.all_products.map((product) => {
+                        const isSelected = selectedProducts.includes(product.product_id);
+                        const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
+                        const calculatedPenalty = penaltyProduct ? (product.rent * preview.penalty_percentage / 100) : 0;
+                        const currentPenalty = penaltyProduct ? getProductPenalty(penaltyProduct) : calculatedPenalty;
+                        
+                        return (
+                          <div
+                            key={product.product_id}
+                            className={`border rounded-lg p-4 ${
+                              isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                            }`}
+                          >
+                            <div className="flex items-start space-x-3">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={(e) => handleProductSelection(product.product_id, e.target.checked)}
+                                className="mt-1 w-5 h-5 text-blue-600 rounded"
+                              />
+                              <div className="flex-1">
+                                <div className="flex justify-between">
+                                  <div>
+                                    <h4 className="font-medium text-gray-900">{product.name}</h4>
+                                    <p className="text-sm text-gray-600">Code: {product.code}</p>
+                                  </div>
+                                  <div className="text-right">
+                                    <p className="text-sm text-gray-600">Rent: ₹{product.rent.toLocaleString('en-IN')}</p>
+                                    <p className="text-sm text-gray-600">Security: ₹{product.security_deposit.toLocaleString('en-IN')}</p>
+                                  </div>
+                                </div>
+                                
+                                {isSelected && (
+                                  <div className="mt-3 bg-white rounded p-3 border border-gray-200">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-sm font-medium text-gray-700">
+                                        Cancellation Penalty:
+                                      </label>
+                                      <div className="flex items-center space-x-2">
+                                        <span className="text-xs text-gray-500">₹</span>
+                                        <input
+                                          type="number"
+                                          value={editingPenalties[product.product_id] ?? currentPenalty}
+                                          onChange={(e) => handlePenaltyEdit(product.product_id, e.target.value)}
+                                          className="w-32 px-3 py-1 border border-gray-300 rounded-md text-sm"
+                                          step="0.01"
+                                          min="0"
+                                        />
+                                      </div>
+                                    </div>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                      Auto-calculated: ₹{calculatedPenalty.toFixed(2)} ({preview.penalty_percentage}% of rent)
+                                    </p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Summary */}
+                  {selectedProducts.length > 0 && (
+                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                      <h3 className="font-semibold text-yellow-900 mb-3">Cancellation Summary (Live Preview)</h3>
+                      <div className="space-y-2 text-sm">
+                        <div className="flex justify-between">
+                          <span className="text-yellow-800">Products to Cancel:</span>
+                          <span className="font-medium text-yellow-900">{selectedProducts.length} of {preview.all_products.length}</span>
                         </div>
-                        <div>
-                          <p className="font-medium">Within {preview.policy.days?.[1] || 5} days</p>
-                          <p>{preview.policy.before_3_days || 0}% penalty</p>
+                        <div className="flex justify-between">
+                          <span className="text-yellow-800">Total Rent (Cancelled):</span>
+                          <span className="font-medium text-yellow-900">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
                         </div>
-                        <div>
-                          <p className="font-medium">Within {preview.policy.days?.[2] || 7} days</p>
-                          <p>{preview.policy.before_1_day || 0}% penalty</p>
+                        <div className="flex justify-between">
+                          <span className="text-yellow-800">Total Security (Cancelled):</span>
+                          <span className="font-medium text-yellow-900">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
                         </div>
-                        <div>
-                          <p className="font-medium">After {preview.policy.days?.[2] || 7} days</p>
-                          <p>{preview.policy.on_booking_date || 0}% penalty</p>
+                        <div className="flex justify-between">
+                          <span className="text-yellow-800">Cancellation Penalty:</span>
+                          <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>
+                        </div>
+                        {getExtraRefundAmount() > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-yellow-800">Extra Refund:</span>
+                            <span className="font-medium text-green-600">+₹{getExtraRefundAmount().toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        <div className="border-t border-yellow-300 pt-2 mt-2">
+                          <div className="flex justify-between items-center">
+                            <span className="font-semibold text-yellow-900">Final Refund Amount:</span>
+                            <span className="font-bold text-green-600 text-lg">
+                              ₹{getFinalRefundAmount().toLocaleString('en-IN')}
+                            </span>
+                          </div>
                         </div>
                       </div>
                     </div>
                   )}
+
+                  {/* Extra Refund Section */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <h3 className="font-semibold text-blue-900 mb-3">Additional Refund (Optional)</h3>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-blue-800 mb-2">
+                          Extra Refund Amount
+                        </label>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-blue-800">₹</span>
+                          <input
+                            type="number"
+                            value={extraRefund}
+                            onChange={(e) => setExtraRefund(e.target.value)}
+                            className="flex-1 px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            placeholder="0.00"
+                            step="0.01"
+                            min="0"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-blue-800 mb-2">
+                          Note/Reason for Extra Refund
+                        </label>
+                        <textarea
+                          value={extraRefundNote}
+                          onChange={(e) => setExtraRefundNote(e.target.value)}
+                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          rows={2}
+                          placeholder="e.g., Goodwill gesture, damaged product compensation..."
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cancellation Reason */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Cancellation Reason <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      value={cancellationReason}
+                      onChange={(e) => setCancellationReason(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      rows={3}
+                      placeholder="Enter reason for cancellation..."
+                    />
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div className="flex space-x-3">
+                    <button
+                      onClick={() => {
+                        setShowCancelModal(false);
+                        setPreview(null);
+                        setSelectedProducts([]);
+                        setEditingPenalties([]);
+                        setExtraRefund('');
+                        setExtraRefundNote('');
+                      }}
+                      className="flex-1 py-3 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleProceedToConfirmation}
+                      disabled={selectedProducts.length === 0 || !cancellationReason.trim()}
+                      className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
+                    >
+                      Proceed to Confirm
+                    </button>
+                  </div>
                 </div>
               ) : null}
-
-              {/* Cancellation Reason */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Cancellation Reason <span className="text-red-600">*</span>
-                </label>
-                <textarea
-                  value={cancellationReason}
-                  onChange={(e) => setCancellationReason(e.target.value)}
-                  placeholder="Please provide a reason for cancellation (e.g., customer request, schedule conflict, etc.)"
-                  rows={4}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 resize-none"
-                />
-              </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Modal Footer */}
-            <div className="bg-gray-50 px-6 py-4 flex justify-end space-x-3 rounded-b-lg border-t border-gray-200">
-              <button
-                onClick={handleCloseModal}
-                disabled={loading}
-                className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-100 font-medium transition-colors disabled:opacity-50"
-              >
-                Keep Booking
-              </button>
-              <button
-                onClick={handleConfirmCancellation}
-                disabled={loading || !cancellationReason.trim()}
-                className="px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? 'Cancelling...' : 'Confirm Cancellation'}
-              </button>
+      {/* Confirmation Modal */}
+      {showConfirmation && preview && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[60]">
+          <div className="bg-white rounded-lg max-w-md w-full">
+            <div className="p-6">
+              <div className="text-center mb-6">
+                <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 mb-4">
+                  <svg className="h-6 w-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-2">Confirm Cancellation</h3>
+                <p className="text-sm text-gray-600">
+                  Are you sure you want to cancel {selectedProducts.length} product(s)?
+                  This action cannot be undone.
+                </p>
+              </div>
+
+              <div className="bg-gray-50 rounded-lg p-4 mb-6">
+                <div className="text-sm space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Products:</span>
+                    <span className="font-medium">{selectedProducts.length}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Total Rent:</span>
+                    <span className="font-medium">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Total Security:</span>
+                    <span className="font-medium">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Cancellation Penalty:</span>
+                    <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>
+                  </div>
+                  {getExtraRefundAmount() > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Extra Refund:</span>
+                      <span className="font-medium text-green-600">+₹{getExtraRefundAmount().toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between pt-2 border-t border-gray-200">
+                    <span className="font-semibold">Final Refund:</span>
+                    <span className="font-bold text-green-600">
+                      ₹{getFinalRefundAmount().toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={() => setShowConfirmation(false)}
+                  disabled={loading}
+                  className="flex-1 py-3 px-4 bg-gray-200 hover:bg-gray-300 disabled:opacity-50 text-gray-800 rounded-lg font-medium transition-colors"
+                >
+                  Go Back
+                </button>
+                <button
+                  onClick={handleConfirmCancellation}
+                  disabled={loading}
+                  className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-lg font-medium transition-colors"
+                >
+                  {loading ? 'Processing...' : 'Confirm Cancellation'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -275,4 +584,3 @@ export function BookingCancellation({
     </>
   );
 }
-

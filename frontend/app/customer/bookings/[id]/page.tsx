@@ -430,6 +430,18 @@ export default function CustomerOrderDetailsPage() {
                               })}
                             </span>
                           </div>
+                          {/* Transaction Type */}
+                          <p className="text-sm text-gray-600 mb-1">
+                            <span className="font-medium">Type:</span> {
+                              transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                              transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                              transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                              transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                              transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                              'Booking'
+                            }
+                          </p>
+                          {/* Payment Method */}
                           <p className="text-sm text-gray-600 mb-1">
                             <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
                           </p>

@@ -127,11 +127,11 @@ export default function AdminBookings() {
                   Products: {productCount} {productCount === 1 ? 'item' : 'items'}
                 </Text>
                 <Text style={styles.infoText}>
-                  Booking Date: {new Date(item.booking_date).toLocaleDateString()}
+                  Booking Date: {new Date(item.booking_date).toLocaleDateString("en-GB")}
                 </Text>
                 <Text style={styles.infoText}>
-                  Period: {new Date(item.booked_from).toLocaleDateString()} -{' '}
-                  {new Date(item.booked_to).toLocaleDateString()}
+                  Period: {new Date(item.booked_from).toLocaleDateString("en-GB")} -{' '}
+                  {new Date(item.booked_to).toLocaleDateString("en-GB")}
                 </Text>
                 {item.total_amount && (
                   <Text style={styles.amountText}>Amount: ₹{item.total_amount}</Text>

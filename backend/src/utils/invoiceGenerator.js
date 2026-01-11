@@ -228,9 +228,9 @@ class InvoiceGenerator {
         doc.fontSize(9).font('Helvetica-Bold');
         doc.text('Date', 50, currentY)
           .text('Type', 120, currentY)
-          .text('Method', 180, currentY)
-          .text('Amount', 250, currentY)
-          .text('Notes', 320, currentY);
+          .text('Method', 220, currentY)
+          .text('Amount', 290, currentY)
+          .text('Notes', 360, currentY);
 
         currentY += 15;
         doc.moveTo(50, currentY - 5)
@@ -240,22 +240,34 @@ class InvoiceGenerator {
         doc.fontSize(9).font('Helvetica');
         transactions.forEach((transaction) => {
           const transDate = new Date(transaction.created_at).toLocaleDateString('en-GB');
-          const transType = transaction.type === 'payment' ? 'Payment' : 
-                           transaction.type === 'refund' ? 'Refund' : 
-                           'Adjustment';
+          
+          // Determine transaction type display
+          let transType = 'Payment';
+          if (transaction.type === 'refund') {
+            transType = 'Refund';
+          } else if (transaction.type === 'adjustment') {
+            transType = 'Adjustment';
+          } else if (transaction.transaction_type === 'exchange_upgrade') {
+            transType = 'Exchange Upgrade';
+          } else if (transaction.transaction_type === 'exchange_penalty') {
+            transType = 'Exchange Penalty';
+          } else if (transaction.transaction_type === 'cancellation_penalty') {
+            transType = 'Cancellation';
+          }
+          
           const transMethod = transaction.method || 'N/A';
           const transAmount = parseFloat(transaction.amount || 0);
           const transNotes = transaction.notes || '-';
           
           // Wrap long notes
-          const maxNotesWidth = 200;
+          const maxNotesWidth = 180;
           const notesLines = doc.heightOfString(transNotes, { width: maxNotesWidth });
           
           doc.text(transDate, 50, currentY)
             .text(transType, 120, currentY)
-            .text(transMethod, 180, currentY)
-            .text(`₹${transAmount.toFixed(2)}`, 250, currentY)
-            .text(transNotes.substring(0, 30) + (transNotes.length > 30 ? '...' : ''), 320, currentY, { width: maxNotesWidth });
+            .text(transMethod, 220, currentY)
+            .text(`₹${transAmount.toFixed(2)}`, 290, currentY)
+            .text(transNotes.substring(0, 30) + (transNotes.length > 30 ? '...' : ''), 360, currentY, { width: maxNotesWidth });
 
           currentY += Math.max(20, notesLines * 15);
           

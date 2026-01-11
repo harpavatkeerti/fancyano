@@ -43,6 +43,7 @@ export function PaymentManagement({
   });
   // Product-wise refund state (for enhanced refund modal)
   const [itemRefunds, setItemRefunds] = useState<{[key: number]: { selected: boolean; amount: string; notes: string }}>({});
+  const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
   
   // Overpayment warning modal state
   const [showOverpaymentWarning, setShowOverpaymentWarning] = useState(false);
@@ -156,13 +157,11 @@ export function PaymentManagement({
       
       // Refund process is complete if:
       // - All products have refunds, OR
-      // - Fully paid AND has at least one refund transaction, OR
-      // - Products are freed (already completed) AND has refund transactions
+      // - Fully paid AND has at least one refund transaction
       // Once a refund is recorded, it means the admin has settled with the customer
       // The amount deducted (for damage/loss) is the admin's decision - booking is complete
       const refundProcessComplete = allProductsHaveRefunds || 
-                                    (isFullyPaid && hasRefundTransaction) ||
-                                    (hasRefundTransaction && products.length === 0);
+                                    (isFullyPaid && hasRefundTransaction);
       
       // Debug logging for PaymentManagement status calculation
       console.log('📊 PaymentManagement Status Calculation:', {
@@ -492,7 +491,29 @@ export function PaymentManagement({
       // Validate selections
       const selectedItems = Object.entries(itemRefunds).filter(([_, data]) => data.selected);
       
-      if (selectedItems.length === 0) {
+      // Calculate overpayment
+      const totalRequired = totalAmount + securityDeposit;
+      const paidAmount = transactions.reduce((sum: number, t: any) => {
+        if (t.type === 'date_change_charge') return sum;
+        
+        const method = String(t.method || '').toLowerCase().trim();
+        if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+          return sum;
+        }
+        
+        const notes = (t.notes || '').toLowerCase();
+        if (notes.includes('date change charge') || notes.includes('exchange penalty')) {
+          return sum;
+        }
+        
+        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+        return sum + (t.type === 'refund' ? -amount : amount);
+      }, 0);
+      
+      const overpaymentAmount = Math.max(0, paidAmount - totalRequired);
+      
+      // Need at least one selected item OR overpayment
+      if (selectedItems.length === 0 && overpaymentAmount <= 0) {
         toast.warning('Please select at least one product to refund');
         return;
       }
@@ -550,6 +571,11 @@ export function PaymentManagement({
         if (refundData.notes.trim()) {
           notes += `: ${refundData.notes.trim()}`;
         }
+        
+        // Append general narration if provided
+        if (refundNarration.trim()) {
+          notes += ` | ${refundNarration.trim()}`;
+        }
 
         await paymentTransactionsApi.create({
           booking_id: bookingId,
@@ -561,10 +587,31 @@ export function PaymentManagement({
         });
       }
 
-      toast.success(`Refund recorded successfully for ${selectedItems.length} product(s)!`);
+      // Automatically add overpayment refund if it exists
+      if (overpaymentAmount > 0) {
+        let overpaymentNotes = `Overpayment Refund - ${formatCurrency(overpaymentAmount)}`;
+        
+        // Append general narration if provided
+        if (refundNarration.trim()) {
+          overpaymentNotes += ` | ${refundNarration.trim()}`;
+        }
+        
+        await paymentTransactionsApi.create({
+          booking_id: bookingId,
+          amount: overpaymentAmount,
+          type: 'refund',
+          method: formData.method,
+          recorded_by: 'Admin',
+          notes: overpaymentNotes,
+        });
+      }
+
+      const totalItems = selectedItems.length + (overpaymentAmount > 0 ? 1 : 0);
+      toast.success(`Refund recorded successfully for ${totalItems} item(s)!`);
       setShowRecordModal(false);
       setFormData({ amount: '', method: '', notes: '' });
       setItemRefunds({});
+      setRefundNarration('');
       
       // Refresh transactions and summary
       await fetchTransactions();
@@ -758,6 +805,17 @@ export function PaymentManagement({
             return sum + amount;
           }, 0);
           
+          // Calculate security deposit refunds only (exclude overpayment refunds for remaining calculation)
+          const securityDepositRefunds = refundTransactions.reduce((sum: number, t: any) => {
+            const notes = String(t.notes || '').toLowerCase();
+            // Only count security deposit refunds, not overpayment refunds
+            if (notes.includes('overpayment refund')) {
+              return sum;
+            }
+            const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+            return sum + amount;
+          }, 0);
+          
           const productsWithRefunds = new Set<number>();
           refundTransactions.forEach((transaction: any) => {
             const notes = transaction.notes || '';
@@ -769,8 +827,8 @@ export function PaymentManagement({
           });
           
           // Calculate remaining security to refund
-          // Remaining = Total Security - Total Refunds
-          const remainingSecurityToRefund = Math.max(0, securityDepositNum - totalRefunds);
+          // Remaining = Total Security - Security Deposit Refunds Only (not including overpayment refunds)
+          const remainingSecurityToRefund = Math.max(0, securityDepositNum - securityDepositRefunds);
           
           // Check if refund process is complete for UI display:
           // 1. If no products exist (already freed) AND has refunds = completed
@@ -785,8 +843,9 @@ export function PaymentManagement({
           
           console.log('🔍 REMAINING SECURITY TO REFUND CALCULATION:');
           console.log('  Security Deposit (from products):', securityDepositNum);
-          console.log('  Total Refunds (already processed):', totalRefunds);
-          console.log('  Remaining to Refund:', remainingSecurityToRefund);
+          console.log('  Total Refunds (all refunds):', totalRefunds);
+          console.log('  Security Deposit Refunds Only:', securityDepositRefunds);
+          console.log('  Remaining Security to Refund:', remainingSecurityToRefund);
           console.log('  Refund Transactions:', refundTransactions.map((t: any) => ({
             id: t.id,
             amount: t.amount,
@@ -1031,16 +1090,16 @@ export function PaymentManagement({
                           <span className="text-gray-700">{hasAnyRefund ? 'Refunded:' : 'Paid:'}</span>
                           <span className="font-bold text-green-600">
                             {hasAnyRefund 
-                              ? formatCurrency(totalRefundsAmount) // If refunds exist, show refunded amount
+                              ? formatCurrency(securityDepositRefunds) // If refunds exist, show security deposit refunds only (not overpayment)
                               : formatCurrency(Math.max(0, Math.min(securityDepositNum, netAmount - totalAmountNum))) // Security paid = excess after rent
                             }
                           </span>
                         </div>
                         <div className="flex justify-between text-sm pt-1 border-t border-gray-200">
                           <span className="text-gray-700 font-semibold">{hasAnyRefund ? 'Deducted/Due:' : 'Security Due:'}</span>
-                          <span className={`font-bold ${(hasAnyRefund ? (totalRefundsAmount >= securityDepositNum) : (netAmount >= totalAmountNum + securityDepositNum)) ? 'text-green-600' : 'text-red-600'}`}>
+                          <span className={`font-bold ${(hasAnyRefund ? (securityDepositRefunds >= securityDepositNum) : (netAmount >= totalAmountNum + securityDepositNum)) ? 'text-green-600' : 'text-red-600'}`}>
                             {hasAnyRefund
-                              ? formatCurrency(Math.max(0, securityDepositNum - totalRefundsAmount)) // Amount deducted/remaining
+                              ? formatCurrency(Math.max(0, securityDepositNum - securityDepositRefunds)) // Amount deducted/remaining (using security refunds only)
                               : formatCurrency(Math.max(0, securityDepositNum - Math.max(0, netAmount - totalAmountNum))) // Security remaining
                             }
                           </span>
@@ -1283,10 +1342,10 @@ export function PaymentManagement({
                         <div>
                           <p className="font-bold text-yellow-800 mb-1">⏳ Refunds In Progress</p>
                           <p className="text-yellow-700">
-                            Refunded so far: <span className="font-bold">{formatCurrency(totalRefunds)}</span>
+                            Security refunded so far: <span className="font-bold">{formatCurrency(securityDepositRefunds)}</span>
                           </p>
                           <p className="text-sm text-yellow-700 mt-1">
-                            Remaining to refund: <span className="font-bold">{formatCurrency(remainingSecurityToRefund)}</span>
+                            Remaining security to refund: <span className="font-bold">{formatCurrency(remainingSecurityToRefund)}</span>
                           </p>
                           <p className="text-xs text-gray-600 mt-1">
                             ({products.length - productsWithRefunds.size} item{products.length - productsWithRefunds.size !== 1 ? 's' : ''} pending)
@@ -1485,15 +1544,28 @@ export function PaymentManagement({
                         {formatDate(transaction.created_at)}
                       </span>
                     </div>
+                    {/* Transaction Type */}
                     <div className="flex items-center gap-4 mb-2">
-                      <span className="text-lg font-bold text-gray-900">
-                        {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
+                      <span className="text-sm text-gray-600">
+                        <span className="font-medium">Type:</span> {
+                          transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                          transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                          transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                          'Booking'
+                        }
                       </span>
                       {transaction.method && (
                         <span className="text-sm text-gray-600">
-                          via {transaction.method}
+                          <span className="font-medium">Method:</span> {transaction.method}
                         </span>
                       )}
+                    </div>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-lg font-bold text-gray-900">
+                        {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
+                      </span>
                     </div>
                     {transaction.notes && (
                       <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
@@ -1575,6 +1647,7 @@ export function PaymentManagement({
                     setShowRecordModal(false);
                     setItemRefunds({});
                     setFormData({ amount: '', method: '', notes: '' });
+                    setRefundNarration('');
                   }}
                   className="mr-4 text-gray-600 hover:text-gray-900"
                 >
@@ -1602,6 +1675,23 @@ export function PaymentManagement({
                 <option value="Card">Card</option>
                 <option value="Other">Other</option>
               </select>
+            </div>
+
+            {/* General Narration Field */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Narration / Notes (Optional)
+              </label>
+              <textarea
+                value={refundNarration}
+                onChange={(e) => setRefundNarration(e.target.value)}
+                placeholder="Enter transaction details, UPI ID, reference number, etc."
+                rows={3}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Add any additional details about this refund (e.g., UPI ID, reference number, bank details)
+              </p>
             </div>
 
             <div className="mb-6">
@@ -1805,6 +1895,79 @@ export function PaymentManagement({
               )}
             </div>
 
+            {/* Overpayment Refund Section */}
+            {(() => {
+              // Calculate overpayment - similar logic to salesman page
+              const rentFromProducts = products.reduce((sum: number, product: any) => {
+                const rent = typeof product.security_deposit === 'number'
+                  ? 0  // Not rent, but we need total amount calculation
+                  : 0;
+                return sum + rent;
+              }, 0);
+              
+              // Use provided totalAmount and securityDeposit from props
+              const totalRequired = totalAmount + securityDeposit;
+              
+              // Calculate paid amount from transactions
+              const paidAmount = transactions.reduce((sum: number, t: any) => {
+                // Exclude specific transaction types
+                if (t.type === 'date_change_charge') return sum;
+                
+                const method = String(t.method || '').toLowerCase().trim();
+                if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                  return sum;
+                }
+                
+                const notes = (t.notes || '').toLowerCase();
+                if (notes.includes('date change charge') || 
+                    notes.includes('exchange penalty')) {
+                  return sum;
+                }
+                
+                const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                return sum + (t.type === 'refund' ? -amount : amount);
+              }, 0);
+              
+              const overpayment = paidAmount - totalRequired;
+              
+              // Only show overpayment section if there's an overpayment
+              if (overpayment <= 0) return null;
+              
+              return (
+                <div className="mb-6">
+                  <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
+                    <div className="flex items-start mb-4">
+                      <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <div className="flex-1">
+                        <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
+                        <p className="text-yellow-800 text-sm mb-3">
+                          Customer has paid <span className="font-bold">{formatCurrency(overpayment)}</span> extra. 
+                          This full overpayment amount will be automatically refunded along with product security deposits.
+                        </p>
+                        
+                        <div className="bg-white rounded-lg p-4">
+                          {/* Overpayment Refund Amount Display (Read-only) */}
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">
+                              Overpayment Refund Amount
+                            </label>
+                            <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
+                              {formatCurrency(overpayment)}
+                            </div>
+                            <p className="text-gray-600 text-xs mt-2 text-center">
+                              ✓ Full overpayment will be refunded and noted in payment history
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Summary of selected refunds */}
             {products.length > 0 && Object.values(itemRefunds).some(r => r.selected) && (
               <div className="mt-6 bg-blue-50 border border-blue-300 rounded-lg p-4">
@@ -1850,6 +2013,7 @@ export function PaymentManagement({
                   setShowRecordModal(false);
                   setItemRefunds({});
                   setFormData({ amount: '', method: '', notes: '' });
+                  setRefundNarration('');
                 }}
                 className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800"
               >

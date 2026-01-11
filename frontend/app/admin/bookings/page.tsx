@@ -97,7 +97,7 @@ export default function BookingsPage() {
   // Payment collection modal state for new booking
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('Cash/UPI');
+  const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [paymentNotes, setPaymentNotes] = useState('');
   const [pendingBookingData, setPendingBookingData] = useState<any>(null);
   const [customTransportationCharge, setCustomTransportationCharge] = useState('0'); // Default to '0'
@@ -934,7 +934,7 @@ export default function BookingsPage() {
       other_charges: addFormData.transportation_opted ? transportationCharge : 0,
     });
     setPaymentAmount(''); // Reset payment amount
-    setPaymentMethod('Cash/UPI');
+    setPaymentMethod('Cash');
     setPaymentNotes(''); // Empty notes field
     setShowPaymentModal(true);
   }
@@ -1070,7 +1070,7 @@ export default function BookingsPage() {
       setShowPaymentModal(false);
       setPendingBookingData(null);
       setPaymentAmount('');
-      setPaymentMethod('Cash/UPI');
+      setPaymentMethod('Cash');
       setPaymentNotes('');
       setProductSearchCode('');
       
@@ -2834,7 +2834,7 @@ export default function BookingsPage() {
                     other_charges: addFormData.transportation_opted ? transportationCharge : 0,
                   });
                   setPaymentAmount('');
-                  setPaymentMethod('Cash/UPI');
+                  setPaymentMethod('Cash');
                   setPaymentNotes(''); // Empty notes field
                   setShowPaymentModal(true);
                 }}
@@ -2915,12 +2915,12 @@ export default function BookingsPage() {
                       onChange={(e) => setPaymentMethod(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                     >
-                      <option value="Cash/UPI">Cash/UPI</option>
                       <option value="Cash">Cash</option>
                       <option value="UPI">UPI</option>
                       <option value="Card">Card</option>
                       <option value="Bank Transfer">Bank Transfer</option>
                       <option value="Cheque">Cheque</option>
+                      <option value="Other">Other</option>
                     </select>
                   </div>
 
@@ -2946,7 +2946,7 @@ export default function BookingsPage() {
                   setShowPaymentModal(false);
                   setPendingBookingData(null);
                   setPaymentAmount('');
-                  setPaymentMethod('Cash/UPI');
+                  setPaymentMethod('Cash');
                   setPaymentNotes('');
                 }}
                 className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 font-medium transition-colors"

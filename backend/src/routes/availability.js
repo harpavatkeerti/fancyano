@@ -14,19 +14,22 @@ router.post('/check', async (req, res) => {
     console.log(`🔍 Checking availability for product ${product_id} from ${date_from} to ${date_to}`);
 
     // Query bookings for this product that overlap with the requested dates
-    // Exclude cancelled bookings
+    // Exclude cancelled and completed bookings
+    // Exclude cancelled products (status != 'active')
     const query = `
       SELECT 
         b.id,
         b.customer_name,
         b.status,
         bp.booked_from,
-        bp.booked_to
+        bp.booked_to,
+        bp.status as product_status
       FROM bookings b
       JOIN booking_products bp ON b.id = bp.booking_id
       WHERE 
         bp.product_id = $1
-        AND b.status != 'cancelled'
+        AND b.status NOT IN ('cancelled', 'completed')
+        AND bp.status = 'active'
         AND (
           (bp.booked_from <= $2 AND bp.booked_to >= $2) OR
           (bp.booked_from <= $3 AND bp.booked_to >= $3) OR
@@ -99,12 +102,14 @@ router.post('/check-bulk', async (req, res) => {
           b.customer_name,
           b.status,
           bp.booked_from,
-          bp.booked_to
+          bp.booked_to,
+          bp.status as product_status
         FROM bookings b
         JOIN booking_products bp ON b.id = bp.booking_id
         WHERE 
           bp.product_id = $1
-          AND b.status != 'cancelled'
+          AND b.status NOT IN ('cancelled', 'completed')
+          AND bp.status = 'active'
           AND (
             (bp.booked_from <= $2 AND bp.booked_to >= $2) OR
             (bp.booked_from <= $3 AND bp.booked_to >= $3) OR

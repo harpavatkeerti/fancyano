@@ -68,6 +68,7 @@ export interface PaymentTransaction {
   booking_id: number;
   amount: number;
   type: 'payment' | 'refund' | 'adjustment' | 'date_change_charge';
+  transaction_type?: 'booking' | 'exchange_upgrade' | 'exchange_penalty' | 'exchange_downgrade' | 'exchange_lapsed' | 'cancellation_penalty';
   method?: string;
   recorded_by: string;
   notes?: string;

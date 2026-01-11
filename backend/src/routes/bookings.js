@@ -340,22 +340,10 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
 
-    // If status is being changed to 'completed', free all products from booking_products
-    // This makes all products available for other bookings
+    // If status is being changed to 'completed', just log it (products remain in booking_products)
     if (status === 'completed') {
-      const freedProducts = await pool.query(
-        `DELETE FROM booking_products 
-         WHERE booking_id = $1
-         RETURNING product_id, booked_from, booked_to`,
-        [id]
-      );
-      
-      if (freedProducts.rows.length > 0) {
-        console.log(`✅ Booking ${id} completed - Freed ${freedProducts.rows.length} product(s):`);
-        freedProducts.rows.forEach((p, idx) => {
-          console.log(`   ${idx + 1}. Product ID: ${p.product_id} (${p.booked_from} to ${p.booked_to})`);
-        });
-      }
+      console.log(`✅ Booking ${id} marked as completed`);
+      console.log('ℹ️  Product details preserved in booking_products (not deleted)');
     }
 
     // Update product dates if provided
@@ -501,11 +489,13 @@ router.post('/:id/products', async (req, res) => {
       [id, product_id, booked_from || booking.booked_from, booked_to || booking.booked_to]
     );
     
-    // Recalculate booking totals
+    // Recalculate booking totals and dates
     const recalcResult = await client.query(
       `SELECT 
         COALESCE(SUM(p.rent_per_day), 0) as total_rent,
-        COALESCE(SUM(p.security_deposit), 0) as total_security
+        COALESCE(SUM(p.security_deposit), 0) as total_security,
+        MIN(bp.booked_from) as min_booked_from,
+        MAX(bp.booked_to) as max_booked_to
        FROM booking_products bp
        JOIN products p ON bp.product_id = p.id
        WHERE bp.booking_id = $1`,
@@ -514,15 +504,29 @@ router.post('/:id/products', async (req, res) => {
     
     const newTotalRent = parseFloat(recalcResult.rows[0].total_rent) || 0;
     const newTotalSecurity = parseFloat(recalcResult.rows[0].total_security) || 0;
+    const minBookedFrom = recalcResult.rows[0].min_booked_from;
+    const maxBookedTo = recalcResult.rows[0].max_booked_to;
     
-    // Update booking with recalculated totals
+    // Get current other_charges (transportation, etc.) - these should NOT be reset
+    const bookingChargesResult = await client.query(
+      `SELECT COALESCE(other_charges, 0) as other_charges FROM bookings WHERE id = $1`,
+      [id]
+    );
+    const otherCharges = parseFloat(bookingChargesResult.rows[0].other_charges) || 0;
+    
+    // total_amount = sum of products' rent + other_charges
+    const newTotalAmount = newTotalRent + otherCharges;
+    
+    // Update booking with recalculated totals and dates (min start date and max end date)
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
+           booked_from = $3,
+           booked_to = $4,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $3`,
-      [newTotalRent, newTotalSecurity, id]
+       WHERE id = $5`,
+      [newTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, id]
     );
     
     await client.query('COMMIT');
