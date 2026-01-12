@@ -1797,25 +1797,56 @@ export function ProductExchange({
             <p className="text-center text-gray-700 mb-4">
               Amount to collect: ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
             </p>
-            <div className="flex justify-center mb-4">
-              <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                <img 
-                  src="/upi-qr.png" 
-                  alt="UPI QR Code" 
-                  className="rounded-lg"
-                  style={{ 
-                    maxWidth: '280px', 
-                    maxHeight: '310px', 
-                    width: 'auto', 
-                    height: 'auto'
-                  }}
-                />
+            
+            {/* Show QR based on booking ID (alternate between them) */}
+            {bookingId % 2 === 0 ? (
+              // Even booking ID - Show Ayushi Babel QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr-ayushi.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">ayushibabel22@oksbi</span>
+                </p>
               </div>
-            </div>
-            <p className="text-center text-gray-600 mb-4">OR</p>
-            <p className="text-center text-sm text-gray-700 mb-6">
-              Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
-            </p>
+            ) : (
+              // Odd booking ID - Show Shubham Sahlot QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
+                </p>
+              </div>
+            )}
+            
             <div className="space-y-3">
               <button
                 onClick={() => setShowQRScanner(true)}

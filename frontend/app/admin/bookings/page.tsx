@@ -100,6 +100,8 @@ export default function BookingsPage() {
   const [paymentMethod, setPaymentMethod] = useState('Cash');
   const [paymentNotes, setPaymentNotes] = useState('');
   const [pendingBookingData, setPendingBookingData] = useState<any>(null);
+  const [showUPIModal, setShowUPIModal] = useState(false);
+  const [paymentScanned, setPaymentScanned] = useState(false);
   const [customTransportationCharge, setCustomTransportationCharge] = useState('0'); // Default to '0'
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
@@ -1217,29 +1219,29 @@ export default function BookingsPage() {
       </div>
 
       {/* Bookings Table */}
-      <div className="bg-white rounded-lg shadow overflow-hidden">
+      <div className="bg-white rounded-lg shadow overflow-x-auto">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Booking ID
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">
+                ID
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Customer Name
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Customer
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Products
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-20">
+                Items
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-28">
                 Booking Date
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Booked For
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider w-24">
                 Status
               </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
             </tr>
@@ -1253,30 +1255,33 @@ export default function BookingsPage() {
               
               return (
                 <tr key={booking.id} className="hover:bg-gray-50 relative">
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                  <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
                     <span className="font-semibold text-blue-600">#{booking.id}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    <div className="flex items-center gap-2">
-                    {booking.customer_name}
+                  <td className="px-3 py-3 text-sm font-medium text-gray-900">
+                    <div className="flex items-center gap-1 max-w-[200px]">
+                      <span className="truncate">{booking.customer_name}</span>
+                      {isUrgent && (
+                        <button
+                          onClick={() => toast.info(urgentReason)}
+                          className="flex-shrink-0 px-1.5 py-0.5 bg-red-100 text-red-600 text-xs font-bold rounded hover:bg-red-200 transition-colors"
+                          title={urgentReason}
+                        >
+                          ⚠️
+                        </button>
+                      )}
                     </div>
-                    {isUrgent && urgentReason && (
-                      <div className="text-xs text-red-600 font-medium mt-1">
-                        {urgentReason}
-                      </div>
-                    )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">
                     {productCount} {productCount === 1 ? 'item' : 'items'}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">
                     {new Date(booking.booking_date).toLocaleDateString('en-GB')}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(booking.booked_from).toLocaleDateString('en-GB')} -{' '}
-                    {new Date(booking.booked_to).toLocaleDateString('en-GB')}
+                  <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">
+                    {new Date(booking.booked_from).toLocaleDateString('en-GB')} - {new Date(booking.booked_to).toLocaleDateString('en-GB')}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-3 py-3 whitespace-nowrap">
                     <span
                       className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
                         booking.status === 'confirmed'
@@ -1291,21 +1296,21 @@ export default function BookingsPage() {
                       {booking.status}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <div className="flex items-center gap-3">
+                  <td className="px-3 py-3 text-sm font-medium">
+                    <div className="flex items-center gap-2">
                       {/* View Order Button */}
                       <button
                         onClick={() => window.location.href = `/admin/bookings/${booking.id}`}
-                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors"
+                        className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded transition-colors whitespace-nowrap"
                         title="View Order Details"
                       >
-                        📋 View Order
+                        📋 View
                       </button>
 
-                      {/* Watch Button */}
+                      {/* Quick View Icon Button */}
                       <button
                         onClick={() => setViewingBooking(booking)}
-                        className="relative text-gray-600 hover:text-blue-600 transition-colors p-2 rounded-lg hover:bg-blue-50"
+                        className="relative text-gray-600 hover:text-blue-600 transition-colors p-1.5 rounded hover:bg-blue-50"
                         title="Quick View"
                       >
                         <svg
@@ -1314,7 +1319,7 @@ export default function BookingsPage() {
                           viewBox="0 0 24 24"
                           strokeWidth={2}
                           stroke="currentColor"
-                          className="w-5 h-5"
+                          className="w-4 h-4"
                         >
                           <path
                             strokeLinecap="round"
@@ -1327,24 +1332,29 @@ export default function BookingsPage() {
                             d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
                           />
                         </svg>
-                        <span className="absolute top-0 right-0 block h-2 w-2 rounded-full bg-blue-400 animate-pulse"></span>
                       </button>
 
-                      {/* Modify Button */}
+                      {/* Modify Icon Button */}
                       <button
                         onClick={() => handleModify(booking)}
-                        className="text-blue-600 hover:text-blue-900 hover:underline transition-colors"
+                        className="text-blue-600 hover:text-blue-900 transition-colors p-1.5 rounded hover:bg-blue-50"
+                        title="Modify Booking"
                       >
-                        Modify
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
                       </button>
 
-                      {/* Cancel Button */}
+                      {/* Cancel Icon Button */}
                       {booking.status !== 'cancelled' && (
                         <button
                           onClick={() => handleCancelClick(booking.id, booking.customer_name)}
-                          className="text-red-600 hover:text-red-900 hover:underline transition-colors"
+                          className="text-red-600 hover:text-red-900 transition-colors p-1.5 rounded hover:bg-red-50"
+                          title="Cancel Booking"
                         >
-                          Cancel
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
                         </button>
                       )}
                       
@@ -2924,6 +2934,28 @@ export default function BookingsPage() {
                     </select>
                   </div>
 
+                  {/* Show UPI QR Button if UPI is selected */}
+                  {paymentMethod === 'UPI' && (
+                    <div className="mb-4">
+                      <button
+                        onClick={() => setShowUPIModal(true)}
+                        className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
+                      >
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                        </svg>
+                        Show UPI QR Code
+                      </button>
+                      {paymentScanned && (
+                        <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3">
+                          <p className="text-sm text-green-800 text-center">
+                            ✅ Payment QR scanned successfully!
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Notes/Transaction Details
@@ -3056,6 +3088,112 @@ export default function BookingsPage() {
           userName="Admin"
           canCancel={true}
           autoOpen={true}
+        />
+      )}
+
+      {/* UPI Payment QR Modal */}
+      {showUPIModal && pendingBookingData && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-md p-6 relative">
+            <button
+              onClick={() => {
+                setShowUPIModal(false);
+                setPaymentScanned(false);
+              }}
+              className="absolute top-4 right-4 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+            >
+              ×
+            </button>
+            
+            <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
+            <p className="text-center text-gray-700 mb-4">
+              Amount to collect: ₹{parseFloat(paymentAmount || '0').toLocaleString('en-IN')}
+            </p>
+            
+            {/* Show QR based on next booking ID (use bookings.length to determine) */}
+            {bookings.length % 2 === 0 ? (
+              // Next booking will be odd - Show Shubham Sahlot QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
+                </p>
+              </div>
+            ) : (
+              // Next booking will be even - Show Ayushi Babel QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr-ayushi.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">ayushibabel22@oksbi</span>
+                </p>
+              </div>
+            )}
+            
+            <div className="space-y-3">
+              <button
+                onClick={() => {
+                  setShowQRScanner(true);
+                  setShowUPIModal(false);
+                }}
+                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                </svg>
+                Scan Payment QR
+              </button>
+              <button
+                onClick={() => setShowUPIModal(false)}
+                className="w-full px-6 py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
+              >
+                Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          title="📷 Scan Payment QR Code"
+          onScan={(code: string) => {
+            console.log('Payment QR scanned:', code);
+            setPaymentScanned(true);
+            setShowQRScanner(false);
+            toast.success('Payment QR scanned successfully!');
+          }}
+          onClose={() => setShowQRScanner(false)}
         />
       )}
     </div>

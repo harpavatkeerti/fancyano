@@ -23,13 +23,17 @@ interface CancellationPreview {
   policy: any;
   all_products: Product[];
   products_to_cancel: ProductPenalty[];
-  total_cancelled_rent: number;
-  total_cancelled_security: number;
+  total_cancelled_rent: number; // Amount of rent that will be refunded (paid only)
+  total_cancelled_rent_required?: number; // Amount of rent required (for display)
+  total_cancelled_security: number; // Amount of security that will be refunded (paid only)
+  total_cancelled_security_required?: number; // Amount of security required (for display)
   total_penalty_amount: number;
   base_refund: number;
   total_paid: number;
   total_refunded: number;
   net_paid: number;
+  paid_rent?: number; // How much rent was actually paid
+  paid_security_deposit?: number; // How much security was actually paid
   payment_action: 'collect' | 'refund' | 'none';
   payment_difference: number;
   is_partial: boolean;
@@ -166,18 +170,60 @@ export function BookingCancellation({
 
   function getTotalCancelledRent(): number {
     if (!preview) return 0;
-    // Only sum rent for SELECTED products
-    return preview.all_products
-      .filter(product => selectedProducts.includes(product.product_id))
-      .reduce((sum, product) => sum + product.rent, 0);
+    // Use the backend-calculated rent amount (which accounts for what was actually paid)
+    // If we're cancelling all products, use the preview's total_cancelled_rent directly
+    // If partial cancellation, calculate proportionally
+    if (selectedProducts.length === 0) return 0;
+    
+    const allProductIds = preview.all_products.map(p => p.product_id);
+    const allSelected = allProductIds.every(id => selectedProducts.includes(id));
+    
+    if (allSelected) {
+      // All products selected - use backend's calculated value
+      return preview.total_cancelled_rent || 0;
+    } else {
+      // Partial selection - calculate proportionally based on what backend said is available
+      const totalRentRequired = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
+      const selectedRentRequired = preview.all_products
+        .filter(p => selectedProducts.includes(p.product_id))
+        .reduce((sum, p) => sum + p.rent, 0);
+      
+      if (totalRentRequired === 0) return 0;
+      
+      // Calculate ratio and apply to paid rent
+      const ratio = selectedRentRequired / totalRentRequired;
+      const paidRent = preview.paid_rent || 0;
+      return paidRent * ratio;
+    }
   }
 
   function getTotalCancelledSecurity(): number {
     if (!preview) return 0;
-    // Only sum security for SELECTED products
-    return preview.all_products
-      .filter(product => selectedProducts.includes(product.product_id))
-      .reduce((sum, product) => sum + product.security_deposit, 0);
+    // Use the backend-calculated security amount (which accounts for what was actually paid)
+    // If we're cancelling all products, use the preview's total_cancelled_security directly
+    // If partial cancellation, calculate proportionally
+    if (selectedProducts.length === 0) return 0;
+    
+    const allProductIds = preview.all_products.map(p => p.product_id);
+    const allSelected = allProductIds.every(id => selectedProducts.includes(id));
+    
+    if (allSelected) {
+      // All products selected - use backend's calculated value
+      return preview.total_cancelled_security || 0;
+    } else {
+      // Partial selection - calculate proportionally based on what backend said is available
+      const totalSecurityRequired = preview.all_products.reduce((sum, p) => sum + p.security_deposit, 0);
+      const selectedSecurityRequired = preview.all_products
+        .filter(p => selectedProducts.includes(p.product_id))
+        .reduce((sum, p) => sum + p.security_deposit, 0);
+      
+      if (totalSecurityRequired === 0) return 0;
+      
+      // Calculate ratio and apply to paid security
+      const ratio = selectedSecurityRequired / totalSecurityRequired;
+      const paidSecurity = preview.paid_security_deposit || 0;
+      return paidSecurity * ratio;
+    }
   }
 
   function getFinalRefundAmount(): number {
@@ -404,10 +450,20 @@ export function BookingCancellation({
                           <span className="text-yellow-800">Total Rent (Cancelled):</span>
                           <span className="font-medium text-yellow-900">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
                         </div>
+                        {preview && preview.paid_rent !== undefined && preview.paid_rent < (preview.total_cancelled_rent_required || 0) && (
+                          <div className="text-xs text-gray-600 italic ml-4">
+                            Note: Only ₹{(preview.paid_rent || 0).toLocaleString('en-IN')} rent was paid
+                          </div>
+                        )}
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Total Security (Cancelled):</span>
                           <span className="font-medium text-yellow-900">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
                         </div>
+                        {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit < (preview.total_cancelled_security_required || 0) && (
+                          <div className="text-xs text-gray-600 italic ml-4">
+                            Note: Only ₹{(preview.paid_security_deposit || 0).toLocaleString('en-IN')} security was paid
+                          </div>
+                        )}
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Cancellation Penalty:</span>
                           <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>
@@ -538,10 +594,20 @@ export function BookingCancellation({
                     <span className="text-gray-600">Total Rent:</span>
                     <span className="font-medium">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
                   </div>
+                  {preview && preview.paid_rent !== undefined && preview.paid_rent < (preview.total_cancelled_rent_required || 0) && (
+                    <div className="text-xs text-gray-500 italic ml-4 -mt-1">
+                      (Only ₹{(preview.paid_rent || 0).toLocaleString('en-IN')} was paid)
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-600">Total Security:</span>
                     <span className="font-medium">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
                   </div>
+                  {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit < (preview.total_cancelled_security_required || 0) && (
+                    <div className="text-xs text-gray-500 italic ml-4 -mt-1">
+                      (Only ₹{(preview.paid_security_deposit || 0).toLocaleString('en-IN')} was paid)
+                    </div>
+                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-600">Cancellation Penalty:</span>
                     <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>

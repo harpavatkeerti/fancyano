@@ -184,7 +184,43 @@ export default function CustomerOrderDetailsPage() {
             </svg>
             Back to Bookings
           </button>
-          <h1 className="text-3xl font-bold text-gray-900">Order #{booking.id}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">Order #{booking.id}</h1>
+            {(() => {
+              const status = booking.status;
+              let bgColor = 'bg-gray-100';
+              let textColor = 'text-gray-800';
+              let label = status.charAt(0).toUpperCase() + status.slice(1);
+              
+              if (status === 'pending') {
+                bgColor = 'bg-yellow-100';
+                textColor = 'text-yellow-800';
+                label = 'Pending';
+              } else if (status === 'confirmed') {
+                bgColor = 'bg-green-100';
+                textColor = 'text-green-800';
+                label = 'Confirmed';
+              } else if (status === 'cancelled') {
+                bgColor = 'bg-red-100';
+                textColor = 'text-red-800';
+                label = 'Cancelled';
+              } else if (status === 'completed') {
+                bgColor = 'bg-blue-100';
+                textColor = 'text-blue-800';
+                label = 'Completed';
+              } else if (status === 'in_progress') {
+                bgColor = 'bg-purple-100';
+                textColor = 'text-purple-800';
+                label = 'In Progress';
+              }
+              
+              return (
+                <span className={`px-3 py-1 rounded-lg text-sm font-semibold ${bgColor} ${textColor}`}>
+                  {label}
+                </span>
+              );
+            })()}
+          </div>
         </div>
         <div className="text-right">
           {getStatusIcon(booking.status)}

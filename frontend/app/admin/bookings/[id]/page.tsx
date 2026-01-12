@@ -132,6 +132,11 @@ export default function OrderDetailsPage() {
   function calculateBookingStatus(): string {
     if (!booking) return 'pending';
 
+    // If booking is explicitly cancelled, return cancelled
+    if (booking.status === 'cancelled') {
+      return 'cancelled';
+    }
+
     const totalAmount = typeof booking.total_amount === 'number'
       ? booking.total_amount
       : parseFloat(booking.total_amount || '0') || 0;
@@ -686,6 +691,79 @@ export default function OrderDetailsPage() {
             </div>
           </div>
         </div>
+
+        {/* Cancellation Summary - Only show for cancelled bookings */}
+        {booking.status === 'cancelled' && (
+          <div className="mb-8 bg-red-50 border-2 border-red-200 rounded-lg p-6">
+            <h3 className="text-lg font-bold text-red-900 mb-4 flex items-center gap-2">
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+              </svg>
+              Cancellation Summary
+            </h3>
+            
+            {(() => {
+              // Get cancellation transactions
+              const cancellationTransactions = transactions.filter((t: any) => 
+                t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
+              );
+              
+              const penaltyTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_penalty');
+              const refundTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_refund');
+              
+              // Calculate amounts
+              const totalPaid = parseFloat(booking.paid_amount || '0');
+              const penaltyAmount = penaltyTransaction ? parseFloat(penaltyTransaction.amount || '0') : 0;
+              const refundAmount = refundTransaction ? parseFloat(refundTransaction.amount || '0') : 0;
+              const extraRefund = refundAmount > (totalPaid - penaltyAmount) ? refundAmount - (totalPaid - penaltyAmount) : 0;
+              
+              return (
+                <div className="bg-white rounded-lg p-4 space-y-3">
+                  <div className="flex justify-between items-center pb-2">
+                    <span className="text-gray-700 font-medium">Customer Paid (before cancellation)</span>
+                    <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
+                  </div>
+                  
+                  {penaltyAmount > 0 && (
+                    <div className="flex justify-between items-center pb-2 border-t pt-2">
+                      <span className="text-gray-700 font-medium">
+                        <span className="mr-2">−</span>
+                        Cancellation Penalty
+                      </span>
+                      <span className="text-lg font-bold text-red-600">₹{Math.floor(penaltyAmount).toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
+                  
+                  {extraRefund > 0 && (
+                    <div className="flex justify-between items-center pb-2 border-t pt-2">
+                      <span className="text-gray-700 font-medium">
+                        <span className="mr-2">+</span>
+                        Extra Compensation
+                      </span>
+                      <span className="text-lg font-bold text-blue-600">₹{Math.floor(extraRefund).toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
+                  
+                  <div className="flex justify-between items-center border-t-2 border-green-600 pt-3 mt-3">
+                    <span className="text-gray-900 font-bold text-lg">
+                      <span className="mr-2">=</span>
+                      Refunded to Customer
+                    </span>
+                    <span className="text-2xl font-bold text-green-600">₹{Math.floor(refundAmount).toLocaleString('en-IN')}</span>
+                  </div>
+                  
+                  {/* Show transaction notes if available */}
+                  {refundTransaction && refundTransaction.notes && (
+                    <div className="mt-4 pt-4 border-t">
+                      <p className="text-xs text-gray-500 font-semibold mb-1">Cancellation Details:</p>
+                      <p className="text-xs text-gray-600">{refundTransaction.notes}</p>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+        )}
 
         {/* Products List */}
         <div className="mb-8">

@@ -1746,9 +1746,45 @@ export default function OrderDetailsPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
           {booking && (
-            <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg text-sm font-semibold">
-              Order ID: #{booking.id}
-            </span>
+            <>
+              <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg text-sm font-semibold">
+                Order ID: #{booking.id}
+              </span>
+              {(() => {
+                const status = booking.status;
+                let bgColor = 'bg-gray-100';
+                let textColor = 'text-gray-800';
+                let label = status.charAt(0).toUpperCase() + status.slice(1);
+                
+                if (status === 'pending') {
+                  bgColor = 'bg-yellow-100';
+                  textColor = 'text-yellow-800';
+                  label = 'Pending';
+                } else if (status === 'confirmed') {
+                  bgColor = 'bg-green-100';
+                  textColor = 'text-green-800';
+                  label = 'Confirmed';
+                } else if (status === 'cancelled') {
+                  bgColor = 'bg-red-100';
+                  textColor = 'text-red-800';
+                  label = 'Cancelled';
+                } else if (status === 'completed') {
+                  bgColor = 'bg-blue-100';
+                  textColor = 'text-blue-800';
+                  label = 'Completed';
+                } else if (status === 'in_progress') {
+                  bgColor = 'bg-purple-100';
+                  textColor = 'text-purple-800';
+                  label = 'In Progress';
+                }
+                
+                return (
+                  <span className={`px-3 py-1 rounded-lg text-sm font-semibold ${bgColor} ${textColor}`}>
+                    {label}
+                  </span>
+                );
+              })()}
+            </>
           )}
         </div>
       </div>
@@ -2106,6 +2142,79 @@ export default function OrderDetailsPage() {
               </p>
             </div>
           </div>
+
+          {/* Cancellation Summary - Only show for cancelled bookings */}
+          {booking.status === 'cancelled' && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6">
+              <h3 className="text-lg font-bold text-red-900 mb-4 flex items-center gap-2">
+                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+                Cancellation Summary
+              </h3>
+              
+              {(() => {
+                // Get cancellation transactions
+                const cancellationTransactions = transactions.filter((t: any) => 
+                  t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
+                );
+                
+                const penaltyTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_penalty');
+                const refundTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_refund');
+                
+                // Calculate amounts
+                const totalPaid = parseFloat(booking.paid_amount || '0');
+                const penaltyAmount = penaltyTransaction ? parseFloat(penaltyTransaction.amount || '0') : 0;
+                const refundAmount = refundTransaction ? parseFloat(refundTransaction.amount || '0') : 0;
+                const extraRefund = refundAmount > (totalPaid - penaltyAmount) ? refundAmount - (totalPaid - penaltyAmount) : 0;
+                
+                return (
+                  <div className="bg-white rounded-lg p-4 space-y-3">
+                    <div className="flex justify-between items-center pb-2">
+                      <span className="text-gray-700 font-medium">Customer Paid (before cancellation)</span>
+                      <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
+                    </div>
+                    
+                    {penaltyAmount > 0 && (
+                      <div className="flex justify-between items-center pb-2 border-t pt-2">
+                        <span className="text-gray-700 font-medium">
+                          <span className="mr-2">−</span>
+                          Cancellation Penalty
+                        </span>
+                        <span className="text-lg font-bold text-red-600">₹{Math.floor(penaltyAmount).toLocaleString('en-IN')}</span>
+                      </div>
+                    )}
+                    
+                    {extraRefund > 0 && (
+                      <div className="flex justify-between items-center pb-2 border-t pt-2">
+                        <span className="text-gray-700 font-medium">
+                          <span className="mr-2">+</span>
+                          Extra Compensation
+                        </span>
+                        <span className="text-lg font-bold text-blue-600">₹{Math.floor(extraRefund).toLocaleString('en-IN')}</span>
+                      </div>
+                    )}
+                    
+                    <div className="flex justify-between items-center border-t-2 border-green-600 pt-3 mt-3">
+                      <span className="text-gray-900 font-bold text-lg">
+                        <span className="mr-2">=</span>
+                        Refunded to Customer
+                      </span>
+                      <span className="text-2xl font-bold text-green-600">₹{Math.floor(refundAmount).toLocaleString('en-IN')}</span>
+                    </div>
+                    
+                    {/* Show transaction notes if available */}
+                    {refundTransaction && refundTransaction.notes && (
+                      <div className="mt-4 pt-4 border-t">
+                        <p className="text-xs text-gray-500 font-semibold mb-1">Cancellation Details:</p>
+                        <p className="text-xs text-gray-600">{refundTransaction.notes}</p>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          )}
 
           {/* Order Summary */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -5728,7 +5837,7 @@ export default function OrderDetailsPage() {
       )}
 
       {/* UPI Payment QR Modal */}
-      {showUPIModal && (
+      {showUPIModal && booking && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg w-full max-w-md p-6 relative">
             <button
@@ -5745,25 +5854,56 @@ export default function OrderDetailsPage() {
             <p className="text-center text-gray-700 mb-4">
               Amount to collect: ₹{parseFloat(paymentAmount || '0').toLocaleString('en-IN')}
             </p>
-            <div className="flex justify-center mb-4">
-              <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                <img 
-                  src="/upi-qr.png" 
-                  alt="UPI QR Code" 
-                  className="rounded-lg"
-                  style={{ 
-                    maxWidth: '280px', 
-                    maxHeight: '310px', 
-                    width: 'auto', 
-                    height: 'auto'
-                  }}
-                />
+            
+            {/* Show QR based on booking ID (alternate between them) */}
+            {booking.id % 2 === 0 ? (
+              // Even booking ID - Show Ayushi Babel QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr-ayushi.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">ayushibabel22@oksbi</span>
+                </p>
               </div>
-            </div>
-            <p className="text-center text-gray-600 mb-4">OR</p>
-            <p className="text-center text-sm text-gray-700 mb-6">
-              Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
-            </p>
+            ) : (
+              // Odd booking ID - Show Shubham Sahlot QR
+              <div>
+                <div className="flex justify-center mb-4">
+                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
+                    <img 
+                      src="/upi-qr.png" 
+                      alt="UPI QR Code" 
+                      className="rounded-lg"
+                      style={{ 
+                        maxWidth: '280px', 
+                        maxHeight: '310px', 
+                        width: 'auto', 
+                        height: 'auto'
+                      }}
+                    />
+                  </div>
+                </div>
+                <p className="text-center text-gray-600 mb-4">OR</p>
+                <p className="text-center text-sm text-gray-700 mb-6">
+                  Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
+                </p>
+              </div>
+            )}
+            
             <div className="space-y-3">
               <button
                 onClick={() => setShowQRScanner(true)}
