@@ -28,6 +28,10 @@ export default function CartPage() {
   const [alternatePhone, setAlternatePhone] = useState('');
   const [alternatePhoneCountry, setAlternatePhoneCountry] = useState('IN');
   
+  // Discount state
+  const [discountType, setDiscountType] = useState<'percentage' | 'amount' | null>(null);
+  const [discountValue, setDiscountValue] = useState(0);
+  
   // Measurements
   const [measurements, setMeasurements] = useState<{[key: number]: any}>({});
   const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
@@ -161,7 +165,29 @@ export default function CartPage() {
   function calculateTotal() {
     const subtotal = calculateSubtotal();
     const deliveryFee = calculateDeliveryFee();
-    return subtotal + deliveryFee;
+    
+    // Calculate discount on subtotal only (not including delivery fee)
+    let discount = 0;
+    if (discountType === 'percentage' && discountValue > 0) {
+      discount = Math.floor((subtotal * discountValue) / 100);
+    } else if (discountType === 'amount' && discountValue > 0) {
+      discount = Math.floor(discountValue);
+    }
+    
+    // Final Total = Subtotal - Discount + Delivery Fee
+    return Math.floor(subtotal - discount + deliveryFee);
+  }
+
+  function calculateDiscount() {
+    const subtotal = calculateSubtotal();
+    
+    // Discount applies only on product rent (subtotal), not delivery fee
+    if (discountType === 'percentage' && discountValue > 0) {
+      return Math.floor((subtotal * discountValue) / 100);
+    } else if (discountType === 'amount' && discountValue > 0) {
+      return Math.floor(discountValue);
+    }
+    return 0;
   }
 
   // Check availability for all cart items before checkout
@@ -400,6 +426,7 @@ export default function CartPage() {
       console.log('📝 Creating booking with created_by:', salesmanName);
 
       // Create one booking with all products
+      const discountAmount = calculateDiscount();
       const bookingResponse = await bookingsApi.create({
         customer_name: customerName,
         customer_phone: `${country1?.callingCode}${customerPhone}`,
@@ -417,6 +444,9 @@ export default function CartPage() {
         security_deposit: totalSecurityDeposit,
         transportation_opted: transportationRequired === 'yes',
         other_charges: transportationRequired === 'yes' ? transportationCharge : 0,
+        discount_type: discountType,
+        discount_value: discountValue,
+        discount_amount: discountAmount,
         status: 'pending', // Will be updated to 'confirmed' when payment is recorded
         special_requirements: '',
         created_by: salesmanName, // Store salesman name who created the booking
@@ -642,6 +672,99 @@ export default function CartPage() {
             )}
           </div>
 
+          {/* Discount Section */}
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              💰 Apply Discount (Optional)
+            </label>
+            <p className="text-xs text-gray-600 mb-2">
+              Note: Discount applies only on product rent, not on transportation charges
+            </p>
+            <div className="flex gap-4 mb-3">
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  checked={!discountType}
+                  onChange={() => {
+                    setDiscountType(null);
+                    setDiscountValue(0);
+                  }}
+                  className="mr-2"
+                />
+                No Discount
+              </label>
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  checked={discountType === 'percentage'}
+                  onChange={() => {
+                    setDiscountType('percentage');
+                    setDiscountValue(0);
+                  }}
+                  className="mr-2"
+                />
+                Percentage (%)
+              </label>
+              <label className="flex items-center">
+                <input
+                  type="radio"
+                  checked={discountType === 'amount'}
+                  onChange={() => {
+                    setDiscountType('amount');
+                    setDiscountValue(0);
+                  }}
+                  className="mr-2"
+                />
+                Fixed Amount (₹)
+              </label>
+            </div>
+            
+            {/* Discount Input - Shows when discount type is selected */}
+            {discountType && (
+              <div className="mt-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  {discountType === 'percentage' ? 'Enter Discount Percentage*' : 'Enter Discount Amount*'}
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="text-gray-700 font-medium">
+                    {discountType === 'amount' ? '₹' : ''}
+                  </span>
+                  <input
+                    type="number"
+                    value={discountValue || ''}
+                    onChange={(e) => {
+                      const value = parseFloat(e.target.value) || 0;
+                      // Validate percentage (0-100) or amount
+                      if (discountType === 'percentage') {
+                        if (value >= 0 && value <= 100) {
+                          setDiscountValue(value);
+                        }
+                      } else {
+                        if (value >= 0) {
+                          setDiscountValue(value);
+                        }
+                      }
+                    }}
+                    placeholder={discountType === 'percentage' ? 'Enter percentage (0-100)' : 'Enter amount'}
+                    min="0"
+                    max={discountType === 'percentage' ? 100 : undefined}
+                    step={discountType === 'percentage' ? '0.1' : '1'}
+                    className="w-48 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    required
+                  />
+                  {discountType === 'percentage' && (
+                    <span className="text-gray-700 font-medium">%</span>
+                  )}
+                </div>
+                {calculateDiscount() > 0 && (
+                  <p className="text-sm text-green-600 mt-2 font-medium">
+                    💵 Discount Amount: ₹{calculateDiscount()}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* Customer Contact Details */}
           <div className="mt-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Add Customer Contact Details</h3>
@@ -716,6 +839,12 @@ export default function CartPage() {
                  <span className="text-gray-600">Delivery Fee</span>
                  <span className="font-medium">₹{isNaN(calculateDeliveryFee()) ? '0' : Math.floor(calculateDeliveryFee()).toLocaleString('en-IN')}</span>
                </div>
+               {calculateDiscount() > 0 && (
+                 <div className="flex justify-between text-green-600">
+                   <span className="font-medium">Discount {discountType === 'percentage' ? `(${discountValue}%)` : ''}</span>
+                   <span className="font-medium">-₹{Math.floor(calculateDiscount()).toLocaleString('en-IN')}</span>
+                 </div>
+               )}
                <div className="flex justify-between text-lg font-bold border-t pt-3">
                  <span>Total Payable Now:</span>
                  <span>₹{isNaN(calculateTotal()) ? '0' : Math.floor(calculateTotal()).toLocaleString('en-IN')}</span>

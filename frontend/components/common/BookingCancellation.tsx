@@ -23,17 +23,18 @@ interface CancellationPreview {
   policy: any;
   all_products: Product[];
   products_to_cancel: ProductPenalty[];
-  total_cancelled_rent: number; // Amount of rent that will be refunded (paid only)
-  total_cancelled_rent_required?: number; // Amount of rent required (for display)
-  total_cancelled_security: number; // Amount of security that will be refunded (paid only)
-  total_cancelled_security_required?: number; // Amount of security required (for display)
+  total_cancelled_rent_required?: number;
+  total_cancelled_security_required?: number;
   total_penalty_amount: number;
+  difference_of_amount_paid?: number;
+  remaining_rent_required?: number;
+  advance_paid?: number;
   base_refund: number;
   total_paid: number;
   total_refunded: number;
   net_paid: number;
-  paid_rent?: number; // How much rent was actually paid
-  paid_security_deposit?: number; // How much security was actually paid
+  paid_rent?: number;
+  paid_security_deposit?: number;
   payment_action: 'collect' | 'refund' | 'none';
   payment_difference: number;
   is_partial: boolean;
@@ -226,14 +227,34 @@ export function BookingCancellation({
     }
   }
 
+  function getTotalCancelledRentRequired(): number {
+    if (!preview) return 0;
+    // Get the required rent for selected products
+    return preview.all_products
+      .filter(p => selectedProducts.includes(p.product_id))
+      .reduce((sum, p) => sum + p.rent, 0);
+  }
+
+  function getRemainingProductRent(): number {
+    if (!preview) return 0;
+    // Calculate remaining product rent (products NOT being cancelled)
+    const totalRent = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
+    const cancelledRent = getTotalCancelledRentRequired();
+    return totalRent - cancelledRent;
+  }
+
   function getFinalRefundAmount(): number {
     if (!preview) return 0;
-    // Refund = (Rent + Security of SELECTED cancelled products) - Penalty + Extra Refund
-    const totalRent = getTotalCancelledRent();
-    const totalSecurity = getTotalCancelledSecurity();
+    
+    // CORRECT FORMULA: Refund = Total Booking Rent - (Remaining Due + Penalty + Remaining Product Rent)
+    const totalBookingRent = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
+    const advancePaid = preview.net_paid || 0;
+    const remainingDue = Math.max(0, totalBookingRent - advancePaid);
     const penalty = getTotalPenalty();
+    const remainingProductRent = getRemainingProductRent();
     const extra = getExtraRefundAmount();
-    return totalRent + totalSecurity - penalty + extra;
+    
+    return Math.floor(totalBookingRent - (remainingDue + penalty + remainingProductRent) + extra);
   }
 
   // Removed - now auto-recalculates on product selection changes
@@ -448,37 +469,38 @@ export function BookingCancellation({
                         </div>
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Total Rent (Cancelled):</span>
-                          <span className="font-medium text-yellow-900">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
+                          <span className="font-medium text-yellow-900">₹{Math.floor(getTotalCancelledRentRequired()).toLocaleString('en-IN')}</span>
                         </div>
-                        {preview && preview.paid_rent !== undefined && preview.paid_rent < (preview.total_cancelled_rent_required || 0) && (
-                          <div className="text-xs text-gray-600 italic ml-4">
-                            Note: Only ₹{(preview.paid_rent || 0).toLocaleString('en-IN')} rent was paid
-                          </div>
-                        )}
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Total Security (Cancelled):</span>
-                          <span className="font-medium text-yellow-900">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
+                          <span className="font-medium text-yellow-900">₹{Math.floor(getTotalCancelledSecurity()).toLocaleString('en-IN')}</span>
                         </div>
-                        {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit < (preview.total_cancelled_security_required || 0) && (
+                        {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit === 0 && (
                           <div className="text-xs text-gray-600 italic ml-4">
-                            Note: Only ₹{(preview.paid_security_deposit || 0).toLocaleString('en-IN')} security was paid
+                            Note: Only ₹{Math.floor(preview.paid_security_deposit || 0).toLocaleString('en-IN')} security was paid
                           </div>
                         )}
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Cancellation Penalty:</span>
-                          <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>
+                          <span className="font-medium text-red-600">-₹{Math.floor(getTotalPenalty()).toLocaleString('en-IN')}</span>
                         </div>
+                        {getRemainingProductRent() > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-yellow-800">Remaining Product Rent:</span>
+                            <span className="font-medium text-blue-600">-₹{Math.floor(getRemainingProductRent()).toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
                         {getExtraRefundAmount() > 0 && (
                           <div className="flex justify-between">
                             <span className="text-yellow-800">Extra Refund:</span>
-                            <span className="font-medium text-green-600">+₹{getExtraRefundAmount().toLocaleString('en-IN')}</span>
+                            <span className="font-medium text-green-600">+₹{Math.floor(getExtraRefundAmount()).toLocaleString('en-IN')}</span>
                           </div>
                         )}
                         <div className="border-t border-yellow-300 pt-2 mt-2">
                           <div className="flex justify-between items-center">
                             <span className="font-semibold text-yellow-900">Final Refund Amount:</span>
                             <span className="font-bold text-green-600 text-lg">
-                              ₹{getFinalRefundAmount().toLocaleString('en-IN')}
+                              ₹{Math.floor(getFinalRefundAmount()).toLocaleString('en-IN')}
                             </span>
                           </div>
                         </div>
@@ -591,37 +613,33 @@ export function BookingCancellation({
                     <span className="font-medium">{selectedProducts.length}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Total Rent:</span>
-                    <span className="font-medium">₹{getTotalCancelledRent().toLocaleString('en-IN')}</span>
+                    <span className="text-gray-600">Total Rent (Cancelled):</span>
+                    <span className="font-medium">₹{Math.floor(getTotalCancelledRentRequired()).toLocaleString('en-IN')}</span>
                   </div>
-                  {preview && preview.paid_rent !== undefined && preview.paid_rent < (preview.total_cancelled_rent_required || 0) && (
-                    <div className="text-xs text-gray-500 italic ml-4 -mt-1">
-                      (Only ₹{(preview.paid_rent || 0).toLocaleString('en-IN')} was paid)
-                    </div>
-                  )}
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Total Security:</span>
-                    <span className="font-medium">₹{getTotalCancelledSecurity().toLocaleString('en-IN')}</span>
+                    <span className="text-gray-600">Total Security (Cancelled):</span>
+                    <span className="font-medium">₹{Math.floor(getTotalCancelledSecurity()).toLocaleString('en-IN')}</span>
                   </div>
-                  {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit < (preview.total_cancelled_security_required || 0) && (
-                    <div className="text-xs text-gray-500 italic ml-4 -mt-1">
-                      (Only ₹{(preview.paid_security_deposit || 0).toLocaleString('en-IN')} was paid)
-                    </div>
-                  )}
                   <div className="flex justify-between">
                     <span className="text-gray-600">Cancellation Penalty:</span>
-                    <span className="font-medium text-red-600">-₹{getTotalPenalty().toLocaleString('en-IN')}</span>
+                    <span className="font-medium text-red-600">-₹{Math.floor(getTotalPenalty()).toLocaleString('en-IN')}</span>
                   </div>
+                  {getRemainingProductRent() > 0 && (
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Remaining Product Rent:</span>
+                      <span className="font-medium text-blue-600">-₹{Math.floor(getRemainingProductRent()).toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
                   {getExtraRefundAmount() > 0 && (
                     <div className="flex justify-between">
                       <span className="text-gray-600">Extra Refund:</span>
-                      <span className="font-medium text-green-600">+₹{getExtraRefundAmount().toLocaleString('en-IN')}</span>
+                      <span className="font-medium text-green-600">+₹{Math.floor(getExtraRefundAmount()).toLocaleString('en-IN')}</span>
                     </div>
                   )}
                   <div className="flex justify-between pt-2 border-t border-gray-200">
                     <span className="font-semibold">Final Refund:</span>
                     <span className="font-bold text-green-600">
-                      ₹{getFinalRefundAmount().toLocaleString('en-IN')}
+                      ₹{Math.floor(getFinalRefundAmount()).toLocaleString('en-IN')}
                     </span>
                   </div>
                 </div>

@@ -1,0 +1,82 @@
+## DISCOUNT FEATURE - QUICK START
+
+### 1. Run Database Migration
+
+**On Windows (WSL):**
+```bash
+./run_discount_migration.cmd
+```
+
+**On Linux/Mac:**
+```bash
+chmod +x run_discount_migration.sh
+./run_discount_migration.sh
+```
+
+### 2. What's New?
+
+**For Admin & Salesman:**
+- When creating a new booking, you'll see a "Discount" section
+- Three options available:
+  1. **No Discount** (default)
+  2. **Percentage (%)** - Enter 0-100% discount
+  3. **Fixed Amount (₹)** - Enter discount amount in rupees
+
+**How it works:**
+- Discount is calculated ONLY on Product Rent (subtotal)
+- Transportation charges are NOT included in discount calculation
+- Final Total = (Subtotal - Discount) + Transportation
+- The discount amount is automatically calculated and stored in the database
+- All discount information is saved with the booking
+
+### 3. Example:
+- Product Rent: ₹1000
+- Apply 10% discount = ₹100 discount (on product rent only)
+- After Discount: ₹900
+- Transportation: ₹200 (added separately, no discount)
+- Final Total: ₹1100
+
+OR
+
+- Product Rent: ₹1000
+- Apply ₹150 fixed discount (on product rent only)
+- After Discount: ₹850
+- Transportation: ₹200 (added separately, no discount)
+- Final Total: ₹1050
+
+### 4. Database Fields Added:
+- `discount_type` - 'percentage' or 'amount'
+- `discount_value` - The percentage or amount entered
+- `discount_amount` - Calculated discount in rupees
+
+### 5. Discount Handling in Cancellation & Exchange:
+
+**Full Cancellation:**
+- Discount is preserved in booking record (for history)
+- Refund calculated based on the final total amount customer paid (after discount)
+
+**Partial Cancellation:**
+- ⚠️ **Discount is REMOVED entirely** from the booking
+- Remaining products are charged at FULL PRICE (no discount)
+- Example:
+  * Original: Product A (₹3,000) + Product B (₹2,000) = ₹5,000
+  * With 10% discount: ₹4,500
+  * Cancel Product A → Remaining: Product B at ₹2,000 (NO discount)
+  * New Total: ₹2,000 + Transportation
+
+**Product Exchange:**
+- Exchange calculations use **BEFORE-DISCOUNT** product rent values
+- Exchange penalty calculated on original product rent (not discounted price)
+- ⚠️ **Discount is REMOVED** during exchange
+- New total calculated without any discount
+- Example:
+  * Original Product: ₹3,000 rent (before discount)
+  * Exchange Penalty: 20% × ₹3,000 = ₹600
+  * New Product: ₹2,500 rent
+  * New Total: ₹2,500 + Transportation (no discount applied)
+
+**Why this approach?**
+- Simple and clear for staff and customers
+- Prevents complex pro-rata calculations
+- Discounts are promotional - modifications forfeit the discount
+- Easier to track and explain in transactions

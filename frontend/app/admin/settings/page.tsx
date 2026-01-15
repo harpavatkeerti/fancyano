@@ -69,6 +69,11 @@ export default function SettingsPage() {
   
   const [lateCharges, setLateCharges] = useState<string>('');
   const [exchangeCharges, setExchangeCharges] = useState<string>('');
+  
+  // Delayed charges settings
+  const [delayedChargesEnabled, setDelayedChargesEnabled] = useState<boolean>(false);
+  const [delayedChargesType, setDelayedChargesType] = useState<'fixed' | 'percentage'>('fixed');
+  const [delayedChargesValue, setDelayedChargesValue] = useState<string>('');
 
   useEffect(() => {
     fetchSettings();
@@ -161,6 +166,19 @@ export default function SettingsPage() {
       } catch (error) {
         console.log('Exchange charges not found');
       }
+
+      // Fetch delayed charges settings
+      try {
+        const delayedData = await settingsApi.getByKey('delayed_charges_settings');
+        if (delayedData.data?.setting_value) {
+          const parsed = JSON.parse(delayedData.data.setting_value);
+          setDelayedChargesEnabled(parsed.enabled || false);
+          setDelayedChargesType(parsed.type || 'fixed');
+          setDelayedChargesValue(parsed.value?.toString() || '');
+        }
+      } catch (error) {
+        console.log('Delayed charges settings not found');
+      }
     } catch (error) {
       console.error('Error fetching settings:', error);
     } finally {
@@ -208,6 +226,17 @@ export default function SettingsPage() {
           type: 'number',
           category: 'charges',
           description: 'Exchange charges',
+        },
+        {
+          key: 'delayed_charges_settings',
+          value: JSON.stringify({
+            enabled: delayedChargesEnabled,
+            type: delayedChargesType,
+            value: delayedChargesValue ? parseFloat(delayedChargesValue) : 0,
+          }),
+          type: 'json',
+          category: 'charges',
+          description: 'Delayed return charges configuration (fixed amount or percentage of product rent)',
         },
       ];
 
@@ -604,6 +633,7 @@ export default function SettingsPage() {
 
       {/* Charges Section */}
       <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <h2 className="text-xl font-semibold text-gray-800 mb-5">Charges</h2>
         <div className="space-y-5">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -640,6 +670,87 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* Delayed Charges Section */}
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <div className="flex justify-between items-center mb-5">
+          <h2 className="text-xl font-semibold text-gray-800">Delayed Return Charges</h2>
+          <button
+            onClick={() => setDelayedChargesEnabled(!delayedChargesEnabled)}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
+              delayedChargesEnabled ? 'bg-red-600' : 'bg-gray-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                delayedChargesEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+        
+        {delayedChargesEnabled && (
+          <div className="space-y-5 mt-5">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-3">
+                Charge Type*
+              </label>
+              <div className="flex gap-6">
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="delayedChargesType"
+                    value="fixed"
+                    checked={delayedChargesType === 'fixed'}
+                    onChange={(e) => setDelayedChargesType(e.target.value as 'fixed' | 'percentage')}
+                    className="mr-2 text-red-600 focus:ring-red-500"
+                  />
+                  <span className="text-sm text-gray-700">Fixed Amount (per day)</span>
+                </label>
+                <label className="flex items-center">
+                  <input
+                    type="radio"
+                    name="delayedChargesType"
+                    value="percentage"
+                    checked={delayedChargesType === 'percentage'}
+                    onChange={(e) => setDelayedChargesType(e.target.value as 'fixed' | 'percentage')}
+                    className="mr-2 text-red-600 focus:ring-red-500"
+                  />
+                  <span className="text-sm text-gray-700">Percentage of Product Rent (per day)</span>
+                </label>
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                {delayedChargesType === 'fixed' ? 'Fixed Amount per Day (₹)*' : 'Percentage per Day (%)*'}
+              </label>
+              <div className="relative">
+                {delayedChargesType === 'fixed' && (
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">₹</span>
+                )}
+                {delayedChargesType === 'percentage' && (
+                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">%</span>
+                )}
+                <input
+                  type="number"
+                  min="0"
+                  step={delayedChargesType === 'fixed' ? '0.01' : '0.1'}
+                  value={delayedChargesValue}
+                  onChange={(e) => setDelayedChargesValue(e.target.value)}
+                  placeholder={delayedChargesType === 'fixed' ? 'Enter amount' : 'Enter percentage'}
+                  className={`w-full ${delayedChargesType === 'fixed' ? 'pl-8 pr-4' : 'pl-4 pr-8'} py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500`}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                {delayedChargesType === 'fixed' 
+                  ? 'Fixed amount charged per day for delayed returns (e.g., ₹100/day)'
+                  : 'Percentage of product rental amount charged per day for delayed returns (e.g., 10% of rent per day)'}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Save Button */}

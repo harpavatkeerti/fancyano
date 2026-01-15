@@ -221,24 +221,47 @@ router.post('/', async (req, res) => {
     const maxBookedTo = recalcResult.rows[0].max_booked_to;
     
     // Get current other_charges (transportation, etc.) - these should NOT be reset
+    // ALSO get current total_amount BEFORE exchange (for downgrade detection)
     const bookingChargesResult = await client.query(
-      `SELECT COALESCE(other_charges, 0) as other_charges FROM bookings WHERE id = $1`,
+      `SELECT COALESCE(other_charges, 0) as other_charges, 
+              COALESCE(total_amount, 0) as old_total_amount, 
+              COALESCE(paid_amount, 0) as paid_amount,
+              discount_type, discount_value, discount_amount 
+       FROM bookings WHERE id = $1`,
       [booking_id]
     );
     const otherCharges = parseFloat(bookingChargesResult.rows[0].other_charges) || 0;
+    const oldTotalAmount = parseFloat(bookingChargesResult.rows[0].old_total_amount) || 0;
+    const currentPaidAmount = parseFloat(bookingChargesResult.rows[0].paid_amount) || 0;
+    const hasDiscount = bookingChargesResult.rows[0].discount_type && parseFloat(bookingChargesResult.rows[0].discount_value) > 0;
     
     // total_amount = sum of products' rent + other_charges (transportation, etc.)
     // security_deposit = sum of products' security deposits ONLY (not affected by transportation)
+    // NOTE: Exchange uses BEFORE-DISCOUNT product rents for calculation
+    // Any existing discount is REMOVED during exchange (similar to partial cancellation)
     const newTotalAmount = newTotalRent + otherCharges;
+    
+    if (hasDiscount) {
+      console.log(`🔄 DISCOUNT REMOVAL (Product Exchange):`);
+      console.log(`  Original Discount: ${bookingChargesResult.rows[0].discount_type} ${bookingChargesResult.rows[0].discount_value}${bookingChargesResult.rows[0].discount_type === 'percentage' ? '%' : ''} = ₹${bookingChargesResult.rows[0].discount_amount}`);
+      console.log(`  New Products Rent: ₹${newTotalRent}`);
+      console.log(`  Transportation: ₹${otherCharges}`);
+      console.log(`  New Total (without discount): ₹${newTotalAmount}`);
+      console.log(`  Note: Discount removed due to product exchange`);
+    }
     
     // Update booking with recalculated totals AND booking dates (min start date and max end date)
     // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
+    // Remove discount during exchange
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
            booked_from = $3,
            booked_to = $4,
+           discount_type = NULL,
+           discount_value = 0,
+           discount_amount = 0,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $5`,
       [newTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, booking_id]
@@ -247,11 +270,72 @@ router.post('/', async (req, res) => {
     const originalProductName = originalProduct.name || `Product ${original_product_id}`;
     const exchangedProductName = exchangedProduct.name || `Product ${exchanged_product_id}`;
     
-    // Note: Exchange penalty payment will be collected separately via payment endpoint
-    // We don't create the payment transaction here - it will be created when payment is collected
+    // AUTOMATIC PENALTY RECORDING FOR DOWNGRADES
+    // When user has already paid and exchanges to a cheaper product:
+    // The "overpayment" should be allocated to penalties, not security deposit
     
-    // Note: Rent difference payment will be collected separately via payment endpoint
-    // We don't create the adjustment transaction here - it will be created when payment is collected
+    // Calculate if this is a downgrade (new total rent < old total rent)
+    // Note: oldTotalAmount includes other_charges, so we need to subtract it for fair comparison
+    const oldTotalRent = oldTotalAmount - otherCharges;
+    const isDowngrade = newTotalRent < oldTotalRent;
+    
+    // Calculate the ACTUAL rent difference for downgrade penalty (not the settings value)
+    const actualRentDifference = oldTotalRent - newTotalRent;
+    // Downgrade penalty = rent difference minus exchange penalty
+    const actualDowngradePenalty = Math.max(0, actualRentDifference - penaltyCharge);
+    
+    // If user has paid more than the new rent, AND this is a downgrade, record penalties automatically
+    if (isDowngrade && currentPaidAmount >= oldTotalRent) {
+      console.log('🔄 AUTOMATIC PENALTY RECORDING (Downgrade with overpayment):');
+      console.log(`  Old Total Rent: ₹${oldTotalRent}`);
+      console.log(`  New Total Rent: ₹${newTotalRent}`);
+      console.log(`  Actual Rent Difference: ₹${actualRentDifference}`);
+      console.log(`  Current Paid: ₹${currentPaidAmount}`);
+      console.log(`  Penalty Percentage: ${penaltyPercentage}%`);
+      console.log(`  Exchange Penalty Charge: ₹${penaltyCharge}`);
+      console.log(`  Downgrade Penalty (Difference - Exchange): ₹${actualDowngradePenalty}`);
+      
+      // Create exchange penalty transaction (already paid from original payment)
+      if (penaltyCharge > 0) {
+        const penaltyNotes = `Exchange Penalty: ${originalProductName} → ${exchangedProductName} (${penaltyPercentage}% penalty) [Auto-recorded from overpayment]`;
+        
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+           VALUES ($1, $2, 'payment', 'exchange_penalty', $3, $4, $5)`,
+          [
+            booking_id,
+            penaltyCharge,
+            'Adjustment', // Method is "Adjustment" since it's from existing payment
+            penaltyNotes,
+            exchanged_by || 'system'
+          ]
+        );
+        console.log(`  ✅ Created exchange_penalty transaction: ₹${penaltyCharge}`);
+      }
+      
+      // Create downgrade penalty transaction (already paid from original payment)
+      if (actualDowngradePenalty > 0) {
+        const downgradePenaltyNotes = `Downgrade Penalty: ${originalProductName} → ${exchangedProductName} (Rent difference charge) [Auto-recorded from overpayment]`;
+        
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+           VALUES ($1, $2, 'payment', 'downgrade_penalty', $3, $4, $5)`,
+          [
+            booking_id,
+            actualDowngradePenalty,
+            'Adjustment', // Method is "Adjustment" since it's from existing payment
+            downgradePenaltyNotes,
+            exchanged_by || 'system'
+          ]
+        );
+        console.log(`  ✅ Created downgrade_penalty transaction: ₹${actualDowngradePenalty}`);
+      }
+      
+      console.log('  Note: These penalties are allocated from the original payment');
+      console.log('  The overpayment does NOT go toward security deposit');
+    }
     
     // IMPORTANT: We do NOT create automatic refunds during exchange because:
     // 1. The frontend validates that total new rent (including additional products) >= old rent before allowing exchange
@@ -334,9 +418,18 @@ router.post('/:id/payment', async (req, res) => {
       return res.status(400).json({ error: 'Payment already recorded for this exchange' });
     }
     
-    // Create payment transaction for exchange penalty
+    // Calculate the penalty charge (excluding rent_diff)
+    const rentPerDayResult = await client.query(
+      'SELECT rent_per_day FROM products WHERE id = $1',
+      [exchange.original_product_id]
+    );
+    const rentPerDay = parseFloat(rentPerDayResult.rows[0].rent_per_day) || 0;
+    const penaltyCharge = (rentPerDay * exchange.penalty_percentage) / 100;
+    const rentDiffAmount = parseFloat(exchange.rent_diff) || 0;
+    
+    // Create payment transaction for exchange penalty (percentage-based penalty only)
     // Store actual payment method and use transaction_type for categorization
-    const notesText = `Exchange Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (${exchange.penalty_percentage}% penalty + ₹${exchange.rent_diff} rent diff)${narration ? ` | Narration: ${narration}` : ''}`;
+    const notesText = `Exchange Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (${exchange.penalty_percentage}% penalty)${narration ? ` | Narration: ${narration}` : ''}`;
     
     await client.query(
       `INSERT INTO payment_transactions 
@@ -344,12 +437,30 @@ router.post('/:id/payment', async (req, res) => {
        VALUES ($1, $2, 'payment', 'exchange_penalty', $3, $4, $5)`,
       [
         exchange.booking_id,
-        parseFloat(amount),
+        penaltyCharge,
         payment_method,
         notesText,
         recorded_by || 'system'
       ]
     );
+    
+    // Create separate transaction for rent_diff (downgrade penalty) if it exists
+    if (rentDiffAmount > 0) {
+      const rentDiffNotes = `Downgrade Penalty: ${exchange.original_product_name} → ${exchange.exchanged_product_name} (Rent difference charge)${narration ? ` | Narration: ${narration}` : ''}`;
+      
+      await client.query(
+        `INSERT INTO payment_transactions 
+         (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+         VALUES ($1, $2, 'payment', 'downgrade_penalty', $3, $4, $5)`,
+        [
+          exchange.booking_id,
+          rentDiffAmount,
+          payment_method,
+          rentDiffNotes,
+          recorded_by || 'system'
+        ]
+      );
+    }
     
     await client.query('COMMIT');
     
@@ -743,26 +854,36 @@ router.delete('/:id', async (req, res) => {
     
     // Get current other_charges (transportation, etc.) - these should NOT be reset
     const bookingChargesResult = await client.query(
-      `SELECT COALESCE(other_charges, 0) as other_charges FROM bookings WHERE id = $1`,
+      `SELECT COALESCE(other_charges, 0) as other_charges, discount_type, discount_value, discount_amount FROM bookings WHERE id = $1`,
       [exchange.booking_id]
     );
     const otherCharges = parseFloat(bookingChargesResult.rows[0].other_charges) || 0;
+    const hasDiscount = bookingChargesResult.rows[0].discount_type && parseFloat(bookingChargesResult.rows[0].discount_value) > 0;
     console.log('  Other Charges (preserved):', `₹${otherCharges}`);
     
     // total_amount = sum of products' rent + other_charges (transportation, etc.)
     // security_deposit = sum of products' security deposits ONLY (not affected by transportation)
+    // NOTE: When reverting exchange, discount remains REMOVED (not restored)
     const newTotalAmount = newTotalRent + otherCharges;
     console.log('  New Total Amount (rent + other charges):', `₹${newTotalAmount}`);
     console.log('');
     
+    if (hasDiscount) {
+      console.log(`⚠️  Note: Original discount was removed during exchange and will NOT be restored`);
+    }
+    
     // Update booking with recalculated totals AND booking dates (min start date and max end date)
     // IMPORTANT: total_amount includes other_charges, but security_deposit does NOT
+    // Discount remains removed (not restored when reverting exchange)
     await client.query(
       `UPDATE bookings 
        SET total_amount = $1,
            security_deposit = $2,
            booked_from = $3,
            booked_to = $4,
+           discount_type = NULL,
+           discount_value = 0,
+           discount_amount = 0,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $5`,
       [newTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, exchange.booking_id]

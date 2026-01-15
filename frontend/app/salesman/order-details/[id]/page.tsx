@@ -32,6 +32,7 @@ export default function OrderDetailsPage() {
   const [showChangeDateModal, setShowChangeDateModal] = useState(false);
   const [showRecordPayment, setShowRecordPayment] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const [userName, setUserName] = useState('Salesman'); // Default fallback
 
   // Change date form
   const [changeDateFrom, setChangeDateFrom] = useState('');
@@ -131,11 +132,13 @@ export default function OrderDetailsPage() {
         console.log('✅ Including REFUND transaction:', t.id, 'method:', method, 'amount:', t.amount);
       }
       
-      // Exclude exchange_penalty transactions (collected separately at exchange time)
+      // Exclude exchange_penalty and downgrade_penalty transactions (collected separately at exchange time)
       // These should NEVER be counted in rent or security calculations
-      if (method === 'exchange_penalty' || method === 'exchange') {
-        excluded.push({ ...t, reason: 'method_is_exchange_penalty' });
-        console.log('❌ EXCLUDING exchange_penalty:', t.id, 'amount:', t.amount);
+      const txnType = String(t.transaction_type || '').toLowerCase().trim();
+      if (method === 'exchange_penalty' || method === 'exchange' || 
+          txnType === 'exchange_penalty' || txnType === 'downgrade_penalty') {
+        excluded.push({ ...t, reason: 'exchange_or_downgrade_penalty' });
+        console.log('❌ EXCLUDING exchange/downgrade penalty:', t.id, 'transaction_type:', txnType, 'amount:', t.amount);
         return sum;
       }
       
@@ -195,6 +198,20 @@ export default function OrderDetailsPage() {
           !isAdditionalRent) {
         excluded.push({ ...t, reason: 'null_method_but_exchange_penalty_in_notes' });
         console.log('❌ EXCLUDING null method with penalty notes:', t.id);
+        return sum;
+      }
+      
+      // Exclude cancellation_penalty transactions - these are penalties kept by shop, not payments for rent/security
+      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+      console.log('🔍 Checking transaction_type for transaction', t.id, ':', {
+        raw: t.transaction_type,
+        normalized: transactionType,
+        isCancellationPenalty: transactionType === 'cancellation_penalty'
+      });
+      
+      if (transactionType === 'cancellation_penalty') {
+        excluded.push({ ...t, reason: 'cancellation_penalty_transaction' });
+        console.log('❌ EXCLUDING cancellation_penalty transaction:', t.id, 'amount:', t.amount);
         return sum;
       }
       
@@ -271,6 +288,30 @@ export default function OrderDetailsPage() {
     cancellation_allowed: false,
   });
 
+  // Helper function to extract username from recorded_by field
+  function getRecordedByName(recordedBy: any): string {
+    if (!recordedBy) return 'N/A';
+    
+    // If it's a string
+    if (typeof recordedBy === 'string') {
+      try {
+        // Try to parse it as JSON
+        const parsed = JSON.parse(recordedBy);
+        return parsed.userName || parsed.name || recordedBy;
+      } catch {
+        // If parsing fails, return as is
+        return recordedBy;
+      }
+    }
+    
+    // If it's already an object
+    if (typeof recordedBy === 'object') {
+      return recordedBy.userName || recordedBy.name || 'N/A';
+    }
+    
+    return String(recordedBy);
+  }
+
   // Auto-recalculate when payment amount changes and breakdown is visible
   useEffect(() => {
     if (showPaymentBreakdown && paymentAmount) {
@@ -283,6 +324,14 @@ export default function OrderDetailsPage() {
       fetchBooking();
       fetchDateChangeChargeSettings();
       fetchSalesmanPermissions();
+    }
+    
+    // Initialize userName from localStorage (client-side only)
+    if (typeof window !== 'undefined') {
+      const storedUserName = localStorage.getItem('userName') || 
+                             localStorage.getItem('salesman_user') || 
+                             'Salesman';
+      setUserName(storedUserName);
     }
   }, [params.id]);
   
@@ -438,7 +487,7 @@ export default function OrderDetailsPage() {
       const exchangeTransactions = (transactionsResponse.data || []).filter((t: any) => {
         const method = (t.method || '').toLowerCase();
         const notes = (t.notes || '').toLowerCase();
-        return method === 'exchange_penalty' || method === 'exchange' || method === 'exchange_upgrade' || notes.includes('exchange');
+        return method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange' || method === 'exchange_upgrade' || notes.includes('exchange');
       });
       if (exchangeTransactions.length > 0) {
         console.log('🚫 Found exchange transactions:', exchangeTransactions.map((t: any) => ({
@@ -477,7 +526,18 @@ export default function OrderDetailsPage() {
         ? bookingResponse.data.security_deposit
         : parseFloat(bookingResponse.data.security_deposit || '0') || 0;
       const paidAmount = calculatePaidAmountExcludingExchangePenalties(allTransactions);
-      const totalRequired = totalAmount + securityDeposit;
+      
+      // Calculate total penalties for accurate status determination
+      const totalPenalties = allTransactions.reduce((sum: number, t: any) => {
+        const txnType = String(t.transaction_type || '').toLowerCase().trim();
+        if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+          const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+          return sum + amount;
+        }
+        return sum;
+      }, 0);
+      
+      const totalRequired = totalAmount + securityDeposit + totalPenalties;
       const isFullyPaid = paidAmount >= totalRequired;
       const hasRentalPayment = paidAmount > 0;
       
@@ -1002,7 +1062,11 @@ export default function OrderDetailsPage() {
       ? booking.security_deposit
       : parseFloat(booking?.security_deposit || '0') || 0;
     
+    // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
+    // So we don't need to subtract totalCancellationPenalties again (it would be double-counting)
     const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
+    console.log('💰 Payment Breakdown Calculation:');
+    console.log('  Paid Amount (cancellation penalties already excluded):', paidAmount);
 
     // Calculate remaining rental amount due
     const rentalDue = totalAmount - paidAmount;
@@ -1152,9 +1216,19 @@ export default function OrderDetailsPage() {
   function calculateBookingStatus(): string {
     if (!booking) return 'pending';
 
-    // If booking is cancelled, return cancelled status immediately
-    if (booking.status === 'cancelled') {
+    // CRITICAL: Check if ALL products are cancelled - if so, booking should show as cancelled
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+    
+    // If all products are cancelled, show booking as cancelled
+    if (products.length > 0 && activeProducts.length === 0) {
       return 'cancelled';
+    }
+
+    // If booking is cancelled, return that status immediately
+    // Note: 'partially_cancelled' status no longer exists - bookings with some cancelled products show as 'confirmed'
+    if (booking.status === 'cancelled') {
+      return booking.status;
     }
 
     const totalAmount = typeof booking.total_amount === 'number'
@@ -1165,8 +1239,17 @@ export default function OrderDetailsPage() {
       : parseFloat(booking.security_deposit || '0') || 0;
     const paidAmount = calculatePaidAmountExcludingExchangePenalties(transactions);
 
+    // Calculate total penalties for accurate status determination
+    const totalPenalties = transactions.reduce((sum: number, t: any) => {
+      const txnType = String(t.transaction_type || '').toLowerCase().trim();
+      if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+        return sum + amount;
+      }
+      return sum;
+    }, 0);
+
     // Check if all products have refunds
-    const products = Array.isArray(booking.products) ? booking.products : [];
     const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
     
     // Create set of products with refunds
@@ -1200,8 +1283,8 @@ export default function OrderDetailsPage() {
       return 'completed';
     }
 
-    // Check if Rent + Deposit is fully received
-    const totalRequired = totalAmount + securityDeposit;
+    // Check if Rent + Deposit + Penalties is fully received
+    const totalRequired = totalAmount + securityDeposit + totalPenalties;
     const isFullyPaid = paidAmount >= totalRequired;
     
     // Debug logging for status calculation
@@ -1272,6 +1355,16 @@ export default function OrderDetailsPage() {
       // Use helper function to exclude exchange penalties from paid amount
       const paidAmount = calculatePaidAmountExcludingExchangePenalties(currentTransactions || []);
 
+      // Calculate total penalties for accurate status determination
+      const totalPenalties = currentTransactions.reduce((sum: number, t: any) => {
+        const txnType = String(t.transaction_type || '').toLowerCase().trim();
+        if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+          const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+          return sum + amount;
+        }
+        return sum;
+      }, 0);
+
       // Check if all products have refunds
       const currentProducts = Array.isArray(currentBooking.products) ? currentBooking.products : [];
       const refundTransactions = currentTransactions.filter((t: any) => t.type === 'refund');
@@ -1313,7 +1406,7 @@ export default function OrderDetailsPage() {
       console.log('Has any refund?', hasAnyRefund);
       console.log('Current status:', currentBooking.status);
       
-      const totalRequired = totalAmount + securityDeposit;
+      const totalRequired = totalAmount + securityDeposit + totalPenalties;
       const isFullyPaid = paidAmount >= totalRequired;
       const hasRentalPayment = paidAmount > 0;
       
@@ -1331,8 +1424,9 @@ export default function OrderDetailsPage() {
 
       let newStatus = currentBooking.status;
 
-      // Don't update status if booking is cancelled
-      if (currentBooking.status === 'cancelled') {
+      // Don't update status if booking is cancelled or partially cancelled
+      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_cancelled') {
+        console.log('⚠️ Booking is cancelled or partially cancelled - skipping status update');
         return;
       }
 
@@ -1448,15 +1542,14 @@ export default function OrderDetailsPage() {
       }
     }
     
-    let totalAmount = 0;
-    if (products.length > 0) {
-      totalAmount = rentFromProducts + transportationCharges;
-    } else {
-      totalAmount = typeof booking.total_amount === 'number'
-        ? booking.total_amount
-        : parseFloat(String(booking.total_amount || '0')) || 0;
-    }
+    // Use booking.total_amount which already has discount applied (if any)
+    // CRITICAL: Discount is only applied to rent, NOT to security deposit
+    let totalAmount = typeof booking.total_amount === 'number'
+      ? booking.total_amount
+      : parseFloat(String(booking.total_amount || '0')) || 0;
     
+    // ALWAYS calculate security deposit from products - NEVER affected by discount
+    // CRITICAL: Security deposit is the sum of product security deposits, discount does NOT apply
     let securityDeposit = 0;
     if (products.length > 0) {
       securityDeposit = products.reduce((sum: number, product: any) => {
@@ -1475,7 +1568,14 @@ export default function OrderDetailsPage() {
       if (t.type === 'date_change_charge') return sum;
       
       const method = String(t.method || '').toLowerCase().trim();
-      if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+      if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+        return sum;
+      }
+      
+      // Exclude cancellation penalty transactions - these are kept by shop, not available for payment
+      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+      if (transactionType === 'cancellation_penalty') {
+        console.log('🚫 [REFUND MODAL] EXCLUDING cancellation_penalty:', t.id, 'amount:', t.amount);
         return sum;
       }
       
@@ -1495,8 +1595,21 @@ export default function OrderDetailsPage() {
       return sum + (t.type === 'refund' ? -amount : amount);
     }, 0);
     
+    // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
+    // So paidAmountFromTransactions already has penalties excluded
     const paidAmount = paidAmountFromTransactions;
-    const totalRequired = totalAmount + securityDeposit;
+    
+    // Calculate total penalties
+    const totalPenalties = transactions.reduce((sum: number, t: any) => {
+      const txnType = String(t.transaction_type || '').toLowerCase().trim();
+      if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+        return sum + amount;
+      }
+      return sum;
+    }, 0);
+    
+    const totalRequired = totalAmount + securityDeposit + totalPenalties;
     const overpaymentAmount = Math.max(0, paidAmount - totalRequired);
     
     // Need at least one selected item OR overpayment
@@ -1512,7 +1625,7 @@ export default function OrderDetailsPage() {
 
       const amount = parseFloat(refundData.amount);
     
-    if (isNaN(amount) || amount <= 0) {
+    if (isNaN(amount) || amount < 0) {
         toast.warning(`Please enter a valid refund amount for ${product.name}`);
       return;
     }
@@ -1627,14 +1740,18 @@ export default function OrderDetailsPage() {
 
   const products = Array.isArray(booking.products) ? booking.products : [];
   
-  // Helper function to determine which products have refunds
+  // Helper function to determine which products have SECURITY refunds (NOT cancellation refunds)
   function getProductsWithRefunds(): Set<number> {
     const productsWithRefunds = new Set<number>();
-    const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
+    // CRITICAL: Only check for security refunds, NOT cancellation refunds!
+    const refundTransactions = transactions.filter((t: any) => {
+      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+      return t.type === 'refund' && transactionType !== 'cancellation_refund';
+    });
     
     console.log('=== getProductsWithRefunds called ===');
     console.log('Total transactions:', transactions.length);
-    console.log('Refund transactions:', refundTransactions.length);
+    console.log('Security refund transactions (excluding cancellation):', refundTransactions.length);
     console.log('Products to check:', products.length);
     
     // Debug: log refund transactions
@@ -1689,23 +1806,38 @@ export default function OrderDetailsPage() {
   // Get set of product IDs that have refunds
   const productsWithRefunds = getProductsWithRefunds();
   
-  // Check if all products have refunds (order is completed)
-  const isOrderCompleted = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
+  // Filter only active (non-cancelled) products for refund status check
+  const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+  
+  // Check if all ACTIVE products have refunds (order is completed)
+  const isOrderCompleted = activeProducts.length > 0 && activeProducts.every((p: any) => productsWithRefunds.has(p.id));
   const hasAnyRefund = productsWithRefunds.size > 0;
-  const isPartiallyCompleted = hasAnyRefund && !isOrderCompleted;
+  
+  // Partially completed = some ACTIVE products have SECURITY refunds but not all
+  // NOTE: This is for security deposit refunds, NOT cancellation refunds!
+  const isPartiallyCompleted = hasAnyRefund && !isOrderCompleted && activeProducts.length > 0;
   
   console.log('=== Order Completion Check ===');
   console.log('Total products:', products.length);
-  console.log('Products with refunds:', productsWithRefunds.size);
+  console.log('Active products (non-cancelled):', activeProducts.length);
+  console.log('Cancelled products:', products.length - activeProducts.length);
+  console.log('Products with security refunds:', productsWithRefunds.size);
   console.log('Product IDs:', products.map((p: any) => p.id));
+  console.log('Active Product IDs:', activeProducts.map((p: any) => p.id));
   console.log('Products with refund IDs:', Array.from(productsWithRefunds));
-  console.log('Is order completed?', isOrderCompleted);
+  console.log('Is order completed? (all active products refunded):', isOrderCompleted);
+  console.log('Is partially completed? (some active products refunded):', isPartiallyCompleted);
   console.log('Is partially completed?', isPartiallyCompleted);
   console.log('=== End Order Completion Check ===');
   
   // Helper to check if a specific product has refund
   function hasProductRefund(productId: number): boolean {
     return productsWithRefunds.has(productId);
+  }
+  
+  // Helper to check if a product is cancelled
+  function isProductCancelled(product: any): boolean {
+    return product.status === 'cancelled';
   }
   
   // Helper function to check if product's drop date has passed
@@ -1768,6 +1900,10 @@ export default function OrderDetailsPage() {
                   bgColor = 'bg-red-100';
                   textColor = 'text-red-800';
                   label = 'Cancelled';
+                } else if (status === 'partially_cancelled') {
+                  bgColor = 'bg-orange-100';
+                  textColor = 'text-orange-800';
+                  label = 'Partially Cancelled';
                 } else if (status === 'completed') {
                   bgColor = 'bg-blue-100';
                   textColor = 'text-blue-800';
@@ -1863,10 +1999,14 @@ export default function OrderDetailsPage() {
       <div className="grid grid-cols-3 gap-8">
         {/* Left Side - Product Cards */}
         <div className="col-span-2 space-y-4">
-          {products.map((product: any, index: number) => (
+          {products.map((product: any, index: number) => {
+            const isCancelled = isProductCancelled(product);
+            return (
             <div
               key={index}
-              className="bg-white border border-gray-200 rounded-lg p-6 flex gap-6"
+              className={`bg-white border rounded-lg p-6 flex gap-6 ${
+                isCancelled ? 'opacity-60 border-red-300 bg-red-50' : 'border-gray-200'
+              }`}
             >
               <div className="w-32 h-40 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
                 {(() => {
@@ -1919,9 +2059,16 @@ export default function OrderDetailsPage() {
                 })()}
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-semibold text-gray-900 mb-1">
-                  {product.name}
-                </h3>
+                <div className="flex items-center justify-between mb-1">
+                  <h3 className="text-xl font-semibold text-gray-900">
+                    {product.name}
+                  </h3>
+                  {isCancelled && (
+                    <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-semibold">
+                      ❌ Cancelled
+                    </span>
+                  )}
+                </div>
                 {product.code && (
                   <div className="flex items-center gap-2 mb-1">
                     {(() => {
@@ -1959,8 +2106,8 @@ export default function OrderDetailsPage() {
                       ).toLocaleDateString('en-GB')}
                     </p>
                   </div>
-                  {/* Hide edit button if product refund is completed */}
-                  {!hasProductRefund(product.id) && (
+                  {/* Hide edit button if product refund is completed or product is cancelled */}
+                  {!hasProductRefund(product.id) && !isCancelled && (
                     <button
                       onClick={() => handleEditDate(product)}
                       className="ml-2 text-red-600 hover:text-red-700"
@@ -1983,9 +2130,11 @@ export default function OrderDetailsPage() {
                 </div>
                 {/* Measurements Button */}
                 <div className="mt-4">
-                  {hasProductRefund(product.id) || isProductDropDatePassed(product) ? (
+                  {hasProductRefund(product.id) || isProductDropDatePassed(product) || isCancelled ? (
                     <div className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-300 text-gray-600 cursor-not-allowed">
-                      {hasProductRefund(product.id)
+                      {isCancelled
+                        ? '📏 Measurements (Product Cancelled)'
+                        : hasProductRefund(product.id)
                         ? '📏 Measurements (Locked - Refund Completed)'
                         : '📏 Measurements (Locked)'}
                     </div>
@@ -2042,7 +2191,8 @@ export default function OrderDetailsPage() {
                 </div>
               </div>
             </div>
-          ))}
+          );
+          })}
         </div>
 
         {/* Right Side - Actions and Details */}
@@ -2075,10 +2225,11 @@ export default function OrderDetailsPage() {
               <ProductExchange
                 bookingId={booking.id}
                 bookingDate={booking.booking_date}
-                currentProducts={Array.isArray(booking.products) ? booking.products : []}
+                currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []}
                 onExchangeComplete={fetchBooking}
                 userRole="salesman"
                 bookingStatus={booking.status}
+                userName={userName}
               />
             </div>
           )}
@@ -2097,7 +2248,7 @@ export default function OrderDetailsPage() {
                 bookingStatus={booking.status}
                 onCancellationComplete={fetchBooking}
                 userRole="salesman"
-                userName={localStorage.getItem('userName') || 'Salesman'}
+                userName={userName}
                 canCancel={salesmanPermissions.cancellation_allowed}
               />
             </div>
@@ -2143,79 +2294,6 @@ export default function OrderDetailsPage() {
             </div>
           </div>
 
-          {/* Cancellation Summary - Only show for cancelled bookings */}
-          {booking.status === 'cancelled' && (
-            <div className="bg-red-50 border-2 border-red-200 rounded-lg p-6">
-              <h3 className="text-lg font-bold text-red-900 mb-4 flex items-center gap-2">
-                <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                </svg>
-                Cancellation Summary
-              </h3>
-              
-              {(() => {
-                // Get cancellation transactions
-                const cancellationTransactions = transactions.filter((t: any) => 
-                  t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
-                );
-                
-                const penaltyTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_penalty');
-                const refundTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_refund');
-                
-                // Calculate amounts
-                const totalPaid = parseFloat(booking.paid_amount || '0');
-                const penaltyAmount = penaltyTransaction ? parseFloat(penaltyTransaction.amount || '0') : 0;
-                const refundAmount = refundTransaction ? parseFloat(refundTransaction.amount || '0') : 0;
-                const extraRefund = refundAmount > (totalPaid - penaltyAmount) ? refundAmount - (totalPaid - penaltyAmount) : 0;
-                
-                return (
-                  <div className="bg-white rounded-lg p-4 space-y-3">
-                    <div className="flex justify-between items-center pb-2">
-                      <span className="text-gray-700 font-medium">Customer Paid (before cancellation)</span>
-                      <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
-                    </div>
-                    
-                    {penaltyAmount > 0 && (
-                      <div className="flex justify-between items-center pb-2 border-t pt-2">
-                        <span className="text-gray-700 font-medium">
-                          <span className="mr-2">−</span>
-                          Cancellation Penalty
-                        </span>
-                        <span className="text-lg font-bold text-red-600">₹{Math.floor(penaltyAmount).toLocaleString('en-IN')}</span>
-                      </div>
-                    )}
-                    
-                    {extraRefund > 0 && (
-                      <div className="flex justify-between items-center pb-2 border-t pt-2">
-                        <span className="text-gray-700 font-medium">
-                          <span className="mr-2">+</span>
-                          Extra Compensation
-                        </span>
-                        <span className="text-lg font-bold text-blue-600">₹{Math.floor(extraRefund).toLocaleString('en-IN')}</span>
-                      </div>
-                    )}
-                    
-                    <div className="flex justify-between items-center border-t-2 border-green-600 pt-3 mt-3">
-                      <span className="text-gray-900 font-bold text-lg">
-                        <span className="mr-2">=</span>
-                        Refunded to Customer
-                      </span>
-                      <span className="text-2xl font-bold text-green-600">₹{Math.floor(refundAmount).toLocaleString('en-IN')}</span>
-                    </div>
-                    
-                    {/* Show transaction notes if available */}
-                    {refundTransaction && refundTransaction.notes && (
-                      <div className="mt-4 pt-4 border-t">
-                        <p className="text-xs text-gray-500 font-semibold mb-1">Cancellation Details:</p>
-                        <p className="text-xs text-gray-600">{refundTransaction.notes}</p>
-                      </div>
-                    )}
-                  </div>
-                );
-              })()}
-            </div>
-          )}
-
           {/* Order Summary */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <div className="mb-4">
@@ -2228,7 +2306,8 @@ export default function OrderDetailsPage() {
                 // Calculate Subtotal (Rent) from products instead of booking.total_amount
                 // This ensures accuracy even if booking.total_amount includes wrong values
                 const products = Array.isArray(booking.products) ? booking.products : [];
-                const rentalSubtotalFromProducts = products.reduce((sum: number, product: any) => {
+                const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+                const rentalSubtotalFromProducts = activeProducts.reduce((sum: number, product: any) => {
                   const rent = typeof product.rent_per_day === 'number'
                     ? product.rent_per_day
                     : parseFloat(String(product.rent_per_day || '0')) || 0;
@@ -2236,8 +2315,9 @@ export default function OrderDetailsPage() {
                 }, 0);
                 
                 console.log('💰 SUBTOTAL CALCULATION (SALESMAN):');
-                console.log('  Products count:', products.length);
-                console.log('  Calculated from products:', rentalSubtotalFromProducts);
+                console.log('  Total products:', products.length);
+                console.log('  Active products (excluding cancelled):', activeProducts.length);
+                console.log('  Calculated from active products:', rentalSubtotalFromProducts);
                 console.log('  Booking total_amount (reference):', booking.total_amount);
                 
                 return (
@@ -2373,14 +2453,158 @@ export default function OrderDetailsPage() {
               Payment Status
             </h3>
             
-            {/* Detailed Payment Breakdown - Show before refunds start */}
-            {!hasAnyRefund && (() => {
+            {/* Show Financial Summary for Fully Cancelled Bookings */}
+            {(() => {
+              const calculatedStatus = calculateBookingStatus();
+              const isFullyCancelled = calculatedStatus === 'cancelled';
+              
+              if (isFullyCancelled) {
+                // Calculate financial summary
+                const totalPaid = transactions
+                  .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
+                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+                
+                const penalties = transactions
+                  .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
+                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+                
+                const refunded = transactions
+                  .filter((t: any) => t.type === 'refund')
+                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+                
+                // Get individual cancellation details from cancellation_refund transactions
+                const cancellationTransactions = transactions.filter((t: any) => 
+                  t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
+                );
+                
+                // Group by cancellation (each cancellation has both penalty and refund)
+                const cancellationsByProduct: { [key: string]: { penalty: number; refund: number; rentPaid: number; notes: string } } = {};
+                
+                cancellationTransactions.forEach((t: any) => {
+                  // Extract product code from notes if available
+                  const notes = t.notes || '';
+                  const productMatch = notes.match(/\(([^)]+)\)/); // Extract product code in parentheses
+                  const productKey = productMatch ? productMatch[1] : 'Unknown';
+                  
+                  if (!cancellationsByProduct[productKey]) {
+                    cancellationsByProduct[productKey] = { penalty: 0, refund: 0, rentPaid: 0, notes: '' };
+                  }
+                  
+                  if (t.transaction_type === 'cancellation_penalty') {
+                    cancellationsByProduct[productKey].penalty = parseFloat(t.amount) || 0;
+                  } else if (t.transaction_type === 'cancellation_refund') {
+                    cancellationsByProduct[productKey].refund = parseFloat(t.amount) || 0;
+                    cancellationsByProduct[productKey].notes = notes;
+                    // Extract rent paid from notes (e.g., "Rent ₹9200.00")
+                    const rentMatch = notes.match(/Rent\s*₹?(\d+\.?\d*)/i);
+                    if (rentMatch) {
+                      cancellationsByProduct[productKey].rentPaid = parseFloat(rentMatch[1]) || 0;
+                    }
+                  }
+                });
+                
+                return (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2 mb-3">
+                      <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                      </svg>
+                      <h4 className="text-sm font-semibold text-red-900">Booking Fully Cancelled</h4>
+                    </div>
+                    
+                    {/* Financial Summary */}
+                    <div className="bg-white rounded-lg p-3 space-y-3">
+                      <h5 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h5>
+                      
+                      {/* Total Paid */}
+                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                        <span className="text-xs text-gray-600">Total Rent Paid by Customer:</span>
+                        <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
+                      </div>
+                      
+                      {/* Individual Cancellation Breakdown */}
+                      {Object.keys(cancellationsByProduct).length > 0 && (
+                        <div className="space-y-2 py-2">
+                          <p className="text-xs font-semibold text-gray-700">Cancellation Breakdown:</p>
+                          {Object.entries(cancellationsByProduct).map(([productCode, details], index) => (
+                            <div key={index} className="bg-gray-50 rounded-lg p-2 space-y-1 text-xs">
+                              <p className="font-semibold text-gray-800">Product {productCode}:</p>
+                              <div className="grid grid-cols-2 gap-2 pl-2">
+                                {details.rentPaid > 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-600">• Rent:</span>
+                                    <span className="font-semibold text-green-600">+₹{Math.floor(details.rentPaid).toLocaleString('en-IN')}</span>
+                                  </div>
+                                )}
+                                {details.penalty > 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-600">• Penalty:</span>
+                                    <span className="font-semibold text-red-600">-₹{Math.floor(details.penalty).toLocaleString('en-IN')}</span>
+                                  </div>
+                                )}
+                                {details.refund > 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-gray-600">• Refunded:</span>
+                                    <span className="font-semibold text-blue-600">-₹{Math.floor(details.refund).toLocaleString('en-IN')}</span>
+                                  </div>
+                                )}
+                                <div className="flex justify-between col-span-2 pt-1 border-t border-gray-300">
+                                  <span className="text-gray-700 font-medium">• Net for {productCode}:</span>
+                                  <span className="font-bold text-gray-900">₹{Math.floor(details.rentPaid - details.penalty - details.refund).toLocaleString('en-IN')}</span>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      
+                      {/* Totals */}
+                      {penalties > 0 && (
+                        <div className="flex justify-between items-center py-1.5 border-t border-gray-200">
+                          <span className="text-xs text-gray-600">Total Charges + Penalties:</span>
+                          <span className="text-sm font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                        <span className="text-xs text-gray-600">Total Refunded to Customer:</span>
+                        <span className="text-sm font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
+                      </div>
+                      
+                      {/* Net Amount */}
+                      <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-2 border border-gray-300">
+                        <span className="text-xs font-bold text-gray-800">Net Amount Left (Customer):</span>
+                        <span className="text-base font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
+                      </div>
+                      
+                      {/* Explanation */}
+                      <div className="bg-blue-50 border-l-4 border-blue-400 p-2 mt-2">
+                        <p className="text-xs text-blue-800">
+                          <strong>Formula:</strong> Customer Paid (₹{Math.floor(totalPaid).toLocaleString('en-IN')}) - (Remaining Due ₹{Math.floor(Math.max(0, booking.total_amount - totalPaid)).toLocaleString('en-IN')} + Penalties ₹{Math.floor(penalties).toLocaleString('en-IN')} + Refunded ₹{Math.floor(refunded).toLocaleString('en-IN')}).
+                          {Math.floor(totalPaid - refunded) === 0 && ' Net = ₹0 (Fully settled).'}
+                          {Math.floor(totalPaid - refunded) > 0 && ` Net = ₹${Math.floor(totalPaid - refunded).toLocaleString('en-IN')} (covers penalties & remaining product charges).`}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <p className="text-xs text-red-700 mt-3">
+                      All products cancelled. Transaction history available in Payment History sections below.
+                    </p>
+                  </div>
+                );
+              }
+              
+              return null;
+            })()}
+            
+            {/* Detailed Payment Breakdown - Show before refunds start and if not fully cancelled */}
+            {!hasAnyRefund && calculateBookingStatus() !== 'cancelled' && (() => {
               console.log('🔍 Payment Breakdown Rendering - hasAnyRefund:', hasAnyRefund);
               console.log('🔍 Transactions array length:', transactions.length);
               
               // ALWAYS calculate rent from products + transportation charges separately
               // This ensures accuracy even if booking.total_amount has wrong values
-              const products = Array.isArray(booking.products) ? booking.products : [];
+              // Filter out cancelled products from calculations
+              const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
               
               let totalAmountNum = 0;
               if (products.length > 0) {
@@ -2401,13 +2625,18 @@ export default function OrderDetailsPage() {
                   }
                 }
                 
-                // Total Amount = Products Rent + Transportation
-                totalAmountNum = rentFromProducts + transportationCharges;
+                // Use booking.total_amount which already has discount applied (if any)
+                // CRITICAL: Discount is only applied to rent, NOT to security deposit
+                // booking.total_amount = (sum of product rents + transportation) - discount
+                totalAmountNum = typeof booking.total_amount === 'number'
+                  ? booking.total_amount
+                  : parseFloat(String(booking.total_amount || '0')) || 0;
                 
                 console.log('💰 TOTAL AMOUNT CALCULATION (SALESMAN):');
-                console.log('  Rent from products:', rentFromProducts);
+                console.log('  Rent from products (before discount):', rentFromProducts);
                 console.log('  Transportation charges:', transportationCharges);
-                console.log('  Total Amount (rent + transport):', totalAmountNum);
+                console.log('  Booking total_amount (with discount applied):', totalAmountNum);
+                console.log('  Note: Discount (if any) is already applied to booking.total_amount');
               } else {
                 // Fallback to booking.total_amount if products not loaded
                 totalAmountNum = typeof booking.total_amount === 'number'
@@ -2417,27 +2646,30 @@ export default function OrderDetailsPage() {
               }
               console.log('  Booking total_amount (reference):', booking.total_amount);
               
-              // ALWAYS calculate security deposit from products (source of truth)
+              // ALWAYS calculate security deposit from ACTIVE products (source of truth, excluding cancelled)
               // This prevents issues where booking.security_deposit might include transportation or other incorrect values
+              const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
               let securityDepositNum = 0;
-              if (products.length > 0) {
-                securityDepositNum = products.reduce((sum: number, product: any) => {
+              if (activeProducts.length > 0) {
+                securityDepositNum = activeProducts.reduce((sum: number, product: any) => {
                   const productSecurity = typeof product.security_deposit === 'number'
                     ? product.security_deposit
                     : parseFloat(String(product.security_deposit || '0')) || 0;
                   return sum + productSecurity;
                 }, 0);
               } else {
-                // Fallback to booking value only if no products
+                // Fallback to booking value only if no active products
                 securityDepositNum = typeof booking.security_deposit === 'number'
                   ? booking.security_deposit
                   : parseFloat(booking.security_deposit) || 0;
               }
               
-              console.log('🔐 SECURITY DEPOSIT CALCULATION (SALESMAN):');
-              console.log('  Products count:', products.length);
-              console.log('  Calculated from products:', securityDepositNum);
+              console.log('🔐 SECURITY DEPOSIT CALCULATION (SALESMAN - Discount NOT applied):');
+              console.log('  Total products:', products.length);
+              console.log('  Active products (excluding cancelled):', activeProducts.length);
+              console.log('  Calculated from active products (no discount):', securityDepositNum);
               console.log('  Booking value (reference):', booking.security_deposit);
+              console.log('  Note: Security deposit is NEVER affected by discount');
               
               // CRITICAL: Filter out exchange penalties BEFORE any calculation
               // Exchange penalties should NEVER affect rent or security calculations
@@ -2473,7 +2705,7 @@ export default function OrderDetailsPage() {
                 
                 // CRITICAL: Exclude exchange_penalty method - this is the primary check
                 // Transaction 177 has method="exchange_penalty" and should be excluded
-                if (method === 'exchange_penalty' || method === 'exchange') {
+                if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange') {
                   console.log('❌ Filtered out exchange_penalty by method:', t.id, 'method:', method);
                   return false;
                 }
@@ -2529,6 +2761,44 @@ export default function OrderDetailsPage() {
                 return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
               }, 0);
               
+              // Calculate total penalties (exchange_penalty + downgrade_penalty + cancellation_penalty)
+              const totalPenalties = transactions.reduce((sum: number, t: any) => {
+                const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                  return sum + amount;
+                }
+                return sum;
+              }, 0);
+
+              // Calculate penalty breakdown
+              const exchangePenalties = transactions.reduce((sum: number, t: any) => {
+                const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                if (txnType === 'exchange_penalty') {
+                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                  return sum + amount;
+                }
+                return sum;
+              }, 0);
+
+              const downgradePenalties = transactions.reduce((sum: number, t: any) => {
+                const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                if (txnType === 'downgrade_penalty') {
+                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                  return sum + amount;
+                }
+                return sum;
+              }, 0);
+
+              const cancellationPenalties = transactions.reduce((sum: number, t: any) => {
+                const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                if (txnType === 'cancellation_penalty') {
+                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                  return sum + amount;
+                }
+                return sum;
+              }, 0);
+              
               console.log('========================================');
               console.log('💰 PAYMENT BREAKDOWN CALCULATION');
               console.log('========================================');
@@ -2536,18 +2806,27 @@ export default function OrderDetailsPage() {
               console.log('Total Paid Amount: ₹' + paidAmountNum.toLocaleString('en-IN'));
               console.log('  - Including rent difference payment: ₹' + rentDiffTotal.toLocaleString('en-IN'));
               console.log('  - Excluding exchange penalty: ₹' + exchangePenaltyTotal.toLocaleString('en-IN'));
+              console.log('Total Penalties (all types): ₹' + totalPenalties.toLocaleString('en-IN'));
               console.log('Rent Due: ₹' + Math.max(0, rentDue).toLocaleString('en-IN'));
               console.log('========================================');
               
-              console.log('💰 Final paidAmountNum (exchange penalties excluded):', paidAmountNum);
+              console.log('💰 Final paidAmountNum (penalties already excluded from transactions):', paidAmountNum);
               console.log('💰 Total Rent:', totalAmountNum);
               console.log('💰 Security Deposit:', securityDepositNum);
+              console.log('💰 Total Penalties:', totalPenalties);
               
-              // Security paid = min(security_deposit, max(0, paid_amount - total_rent))
+              // NOTE: paidAmountNum already has cancellation penalties excluded by calculatePaidAmountExcludingExchangePenalties
+              // BUT we need to subtract ALL penalties (exchange + downgrade) from available amount
+              // because penalties are non-refundable charges that reduce available funds
+              const availableAmount = paidAmountNum - totalPenalties;
+              console.log('💰 Amount AVAILABLE for rent/security (after penalties):', availableAmount);
+              console.log('💰 Calculation: paidAmountNum - totalPenalties =', paidAmountNum, '-', totalPenalties, '=', availableAmount);
+              
+              // Security paid = min(security_deposit, max(0, available_amount - total_rent))
               // This ensures security is only counted AFTER rent is fully paid
-              const securityPaidCalc = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+              const securityPaidCalc = Math.max(0, Math.min(securityDepositNum, Math.max(0, availableAmount - totalAmountNum)));
               console.log('💰 Security Paid calculation:', securityPaidCalc);
-              console.log('💰 Formula: min(security, max(0, paid - rent)) = min(', securityDepositNum, ', max(0,', paidAmountNum, '-', totalAmountNum, ')) =', securityPaidCalc);
+              console.log('💰 Formula: min(security, max(0, available - rent)) = min(', securityDepositNum, ', max(0,', availableAmount, '-', totalAmountNum, ')) =', securityPaidCalc);
               
               // Check if refunds exist
               const refundTransactions = transactions.filter((t: any) => 
@@ -2557,25 +2836,18 @@ export default function OrderDetailsPage() {
               const hasRefunds = refundTransactions.length > 0;
               
               // Calculate total required for display
-              const totalRequired = totalAmountNum + securityDepositNum;
+              // CRITICAL: Total Required = Rent + Security + Penalties
+              const totalRequired = totalAmountNum + securityDepositNum + totalPenalties;
               
               // Balance Due calculation
-              // If refunds exist, the customer already paid and we refunded - so Balance Due = 0
-              // If no refunds, calculate normally: (Rent Due + Security Due)
-              let amountDue = 0;
-              if (hasRefunds) {
-                // Refund process is active - no more money due from customer
-                amountDue = 0;
-              } else {
-                // Normal flow - calculate due amount
-                const rentDue = Math.max(0, totalAmountNum - paidAmountNum);
-                const securityDue = Math.max(0, securityDepositNum - securityPaidCalc);
-                amountDue = rentDue + securityDue;
-              }
+              // CRITICAL: Balance Due = Total Required - Net Amount Paid
+              // This automatically accounts for rent, security, and penalties
+              // Refunds are already factored into paidAmountNum, so no special handling needed
+              const amountDue = Math.max(0, totalRequired - paidAmountNum);
               
               console.log('💰 Balance Due calculation:');
               console.log('  Has Refunds:', hasRefunds);
-              console.log('  Total Required (Rent + Security): ₹' + (totalAmountNum + securityDepositNum).toLocaleString('en-IN'));
+              console.log('  Total Required (Rent + Security + Penalties): ₹' + totalRequired.toLocaleString('en-IN'));
               console.log('  Total Paid: ₹' + paidAmountNum.toLocaleString('en-IN'));
               console.log('  Balance Due: ₹' + amountDue.toLocaleString('en-IN'));
               
@@ -2651,7 +2923,8 @@ export default function OrderDetailsPage() {
                             );
                           } else {
                             // No refunds - show Security Paid and Security Due
-                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, paidAmountNum - totalAmountNum)));
+                            // Use availableAmount (which already has penalties subtracted) instead of paidAmountNum
+                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, availableAmount - totalAmountNum)));
                             const securityDue = securityDepositNum - securityPaid;
                             
                             return (
@@ -2674,6 +2947,40 @@ export default function OrderDetailsPage() {
                         })()}
                       </div>
                     </div>
+
+                    {/* Penalties Section - Show if penalties exist */}
+                    {totalPenalties > 0 && (
+                      <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
+                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties Applied</p>
+                        <div className="space-y-2">
+                          {exchangePenalties > 0 && (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-gray-500 mb-0.5">Exchange Penalty</span>
+                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(exchangePenalties).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                          {downgradePenalties > 0 && (
+                            <div className="flex flex-col pt-1 border-t border-gray-200">
+                              <span className="text-xs text-gray-500 mb-0.5">Downgrade Penalty</span>
+                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(downgradePenalties).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                          {cancellationPenalties > 0 && (
+                            <div className="flex flex-col pt-1 border-t border-gray-200">
+                              <span className="text-xs text-gray-500 mb-0.5">Cancellation Penalty</span>
+                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(cancellationPenalties).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                          <div className="flex flex-col pt-1 border-t border-red-200">
+                            <span className="text-xs text-gray-500 mb-0.5 font-semibold">Total Penalties</span>
+                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(totalPenalties).toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="text-xs text-gray-400 mt-1 leading-tight">
+                            Non-refundable charges that reduce available funds
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Total Summary */}
                     <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
@@ -2720,21 +3027,19 @@ export default function OrderDetailsPage() {
                   }
                 }
                 
-                // Use fallback if products are empty (already freed)
-                let totalAmount = 0;
-                if (products.length > 0) {
-                  totalAmount = rentFromProducts + transportationCharges;
-                } else {
-                  // Fallback to booking.total_amount
-                  totalAmount = typeof booking.total_amount === 'number'
-                    ? booking.total_amount
-                    : parseFloat(String(booking.total_amount || '0')) || 0;
-                }
+                // Use booking.total_amount which already has discount applied (if any)
+                // CRITICAL: Discount is only applied to rent, NOT to security deposit
+                // IMPORTANT: Only count ACTIVE products (exclude cancelled ones)
+                const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+                let totalAmount = typeof booking.total_amount === 'number'
+                  ? booking.total_amount
+                  : parseFloat(String(booking.total_amount || '0')) || 0;
                 
-                // Calculate security from products, with fallback
+                // ALWAYS calculate security deposit from ACTIVE products - NEVER affected by discount
+                // CRITICAL: Security deposit is the sum of product security deposits, discount does NOT apply
                 let securityDeposit = 0;
-                if (products.length > 0) {
-                  securityDeposit = products.reduce((sum: number, product: any) => {
+                if (activeProducts.length > 0) {
+                  securityDeposit = activeProducts.reduce((sum: number, product: any) => {
                     const security = typeof product.security_deposit === 'number'
                       ? product.security_deposit
                       : parseFloat(String(product.security_deposit || '0')) || 0;
@@ -2754,7 +3059,14 @@ export default function OrderDetailsPage() {
                   
                   // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
                   const method = String(t.method || '').toLowerCase().trim();
-                  if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                  if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                    return sum;
+                  }
+                  
+                  // Exclude cancellation penalty transactions - these are kept by shop, not available for payment
+                  const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                  if (transactionType === 'cancellation_penalty') {
+                    console.log('🚫 [MAIN DISPLAY] EXCLUDING cancellation_penalty:', t.id, 'amount:', t.amount);
                     return sum;
                   }
                   
@@ -2776,8 +3088,22 @@ export default function OrderDetailsPage() {
                   return sum + (t.type === 'refund' ? -amount : amount);
                 }, 0);
                 
+                // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
+                // So paidAmountFromTransactions already has penalties excluded
                 const paidAmount = paidAmountFromTransactions;
-                const totalRequired = totalAmount + securityDeposit;
+                
+                // Calculate total penalties (exchange_penalty + downgrade_penalty + cancellation_penalty)
+                const totalPenalties = transactions.reduce((sum: number, t: any) => {
+                  const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                  if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+                    const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                    return sum + amount;
+                  }
+                  return sum;
+                }, 0);
+                
+                // CRITICAL: Total Required = Rent + Security + Penalties
+                const totalRequired = totalAmount + securityDeposit + totalPenalties;
                 const overpayment = paidAmount - totalRequired;
                 
                 console.log('⚠️ OVERPAYMENT CHECK (SALESMAN):');
@@ -2785,8 +3111,9 @@ export default function OrderDetailsPage() {
                 console.log('  Transportation:', transportationCharges);
                 console.log('  Total Amount:', totalAmount);
                 console.log('  Security Deposit:', securityDeposit);
+                console.log('  Total Penalties:', totalPenalties);
                 console.log('  Total Required:', totalRequired);
-                console.log('  Paid Amount:', paidAmount);
+                console.log('  Paid Amount (penalties already excluded):', paidAmount);
                 console.log('  Overpayment:', overpayment);
                 console.log('  Transactions:', transactions.map((t: any) => ({
                   id: t.id,
@@ -2886,14 +3213,26 @@ export default function OrderDetailsPage() {
                           const notes = refund.notes || '';
                           let matchedProduct = null;
                           let chargesDeducted = 0;
+                          let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
+                          const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
                           
                           for (const product of products) {
                             if (notes.includes(`(${product.code})`)) {
                               matchedProduct = product;
-                              const productSecurity = typeof product.security_deposit === 'number'
-                                ? product.security_deposit
-                                : parseFloat(String(product.security_deposit || '0')) || 0;
-                              chargesDeducted = productSecurity - refundAmount;
+                              
+                              if (isCancellationRefund) {
+                                // For cancellation refunds, base amount is the product RENT (not security)
+                                baseAmount = typeof product.rent_per_day === 'number'
+                                  ? product.rent_per_day
+                                  : parseFloat(String(product.rent_per_day || '0')) || 0;
+                              } else {
+                                // For normal security refunds, base amount is the security deposit
+                                baseAmount = typeof product.security_deposit === 'number'
+                                  ? product.security_deposit
+                                  : parseFloat(String(product.security_deposit || '0')) || 0;
+                              }
+                              
+                              chargesDeducted = baseAmount - refundAmount;
                               break;
                             }
                           }
@@ -2907,9 +3246,9 @@ export default function OrderDetailsPage() {
                                   </p>
                                   <div className="grid grid-cols-3 gap-2 text-xs mb-3">
                                     <div className="bg-blue-50 p-2 rounded">
-                                      <p className="text-gray-600">Security Deposit</p>
+                                      <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
                                       <p className="font-bold text-blue-600">
-                                        ₹{Math.floor(matchedProduct.security_deposit).toLocaleString('en-IN')}
+                                        ₹{Math.floor(baseAmount).toLocaleString('en-IN')}
                                       </p>
                                     </div>
                                     <div className="bg-green-50 p-2 rounded">
@@ -2934,7 +3273,7 @@ export default function OrderDetailsPage() {
                                       day: 'numeric',
                                       hour: '2-digit',
                                       minute: '2-digit',
-                                    })} • {refund.method || refund.payment_method || 'N/A'} • by {refund.recorded_by}
+                                    })} • {refund.method || refund.payment_method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
                                   </p>
                                   {refund.notes && (
                                     <div className="bg-white border-l-3 border-l-green-500 pl-3 py-2 mt-2">
@@ -2995,7 +3334,7 @@ export default function OrderDetailsPage() {
                                         day: 'numeric',
                                         hour: '2-digit',
                                         minute: '2-digit',
-                                      })} • {refund.method || refund.payment_method || 'N/A'} • by {refund.recorded_by}
+                                      })} • {refund.method || refund.payment_method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
                                     </p>
                                     {refund.notes && (
                                       <div className="bg-white border-l-3 border-l-yellow-500 pl-3 py-2 mt-2">
@@ -3021,19 +3360,43 @@ export default function OrderDetailsPage() {
                       <p className="text-gray-500 text-center py-4">No transactions recorded</p>
                     ) : (
                       <div className="space-y-4">
-                        {/* Regular Transactions (payments, refunds, adjustments) */}
-                        {transactions.filter((t: any) => t.type !== 'date_change_charge').length > 0 && (
+                        {/* Regular Transactions (payments, refunds, adjustments) - exclude auto-adjustment penalties only */}
+                        {transactions.filter((t: any) => {
+                          const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                          const method = String(t.method || '').toLowerCase().trim();
+                          // Exclude penalties that are automatic adjustments (from overpayment)
+                          // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                          const isAutoAdjustmentPenalty = (
+                            (transactionType === 'exchange_penalty' || 
+                             transactionType === 'downgrade_penalty' || 
+                             transactionType === 'cancellation_penalty') && 
+                            method === 'adjustment'
+                          );
+                          return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                        }).length > 0 && (
                           <div className="space-y-3">
                             {transactions
-                              .filter((t: any) => t.type !== 'date_change_charge')
+                              .filter((t: any) => {
+                                const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                                const method = String(t.method || '').toLowerCase().trim();
+                                // Exclude penalties that are automatic adjustments (from overpayment)
+                                // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                                const isAutoAdjustmentPenalty = (
+                                  (transactionType === 'exchange_penalty' || 
+                                   transactionType === 'downgrade_penalty' || 
+                                   transactionType === 'cancellation_penalty') && 
+                                  method === 'adjustment'
+                                );
+                                return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                              })
                               .map((transaction: any) => (
                                 <div
                                   key={transaction.id}
                                   className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
                                 >
-                                  <div className="flex items-start justify-between">
-                                    <div className="flex-1">
-                                      <div className="flex items-center gap-2 mb-2">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                                         <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
                                           transaction.type === 'payment'
                                             ? 'text-green-600 bg-green-50'
@@ -3058,6 +3421,7 @@ export default function OrderDetailsPage() {
                                         <span className="font-medium">Type:</span> {
                                           transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
                                           transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                                          transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
                                           transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
                                           transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
                                           transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
@@ -3069,16 +3433,16 @@ export default function OrderDetailsPage() {
                                         <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
                                       </p>
                                       {transaction.notes && (
-                                        <p className="text-sm text-gray-600">
+                                        <p className="text-sm text-gray-600 break-words">
                                           <span className="font-medium">Notes:</span> {transaction.notes}
                                         </p>
                                       )}
                                       <p className="text-xs text-gray-500 mt-2">
-                                        Recorded by: {transaction.recorded_by || 'N/A'}
+                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
                                       </p>
                                     </div>
-                                    <div className="text-right ml-4">
-                                      <p className={`text-lg font-bold ${
+                                    <div className="flex-shrink-0 text-right min-w-[100px]">
+                                      <p className={`text-lg font-bold break-words ${
                                         transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
                                       }`}>
                                         {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
@@ -3133,7 +3497,7 @@ export default function OrderDetailsPage() {
                                           </p>
                                         )}
                                         <p className="text-xs text-gray-500">
-                                          Recorded by: {transaction.recorded_by || 'N/A'}
+                                          Recorded by: {getRecordedByName(transaction.recorded_by)}
                                         </p>
                                       </div>
                                       <div className="text-right ml-4">
@@ -3217,14 +3581,26 @@ export default function OrderDetailsPage() {
                           const notes = refund.notes || '';
                           let matchedProduct = null;
                           let chargesDeducted = 0;
+                          let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
+                          const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
                           
                           for (const product of products) {
                             if (notes.includes(`(${product.code})`)) {
                               matchedProduct = product;
-                              const productSecurity = typeof product.security_deposit === 'number'
-                                ? product.security_deposit
-                                : parseFloat(String(product.security_deposit || '0')) || 0;
-                              chargesDeducted = productSecurity - refundAmount;
+                              
+                              if (isCancellationRefund) {
+                                // For cancellation refunds, base amount is the product RENT (not security)
+                                baseAmount = typeof product.rent_per_day === 'number'
+                                  ? product.rent_per_day
+                                  : parseFloat(String(product.rent_per_day || '0')) || 0;
+                              } else {
+                                // For normal security refunds, base amount is the security deposit
+                                baseAmount = typeof product.security_deposit === 'number'
+                                  ? product.security_deposit
+                                  : parseFloat(String(product.security_deposit || '0')) || 0;
+                              }
+                              
+                              chargesDeducted = baseAmount - refundAmount;
                               break;
                             }
                           }
@@ -3238,9 +3614,9 @@ export default function OrderDetailsPage() {
                                   </p>
                                   <div className="grid grid-cols-3 gap-2 text-xs mb-3">
                                     <div className="bg-blue-50 p-2 rounded">
-                                      <p className="text-gray-600">Security Deposit</p>
+                                      <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
                                       <p className="font-bold text-blue-600">
-                                        ₹{Math.floor(matchedProduct.security_deposit).toLocaleString('en-IN')}
+                                        ₹{Math.floor(baseAmount).toLocaleString('en-IN')}
                                       </p>
                                     </div>
                                     <div className="bg-green-50 p-2 rounded">
@@ -3265,7 +3641,7 @@ export default function OrderDetailsPage() {
                                       day: 'numeric',
                                       hour: '2-digit',
                                       minute: '2-digit',
-                                    })} • {refund.method || 'N/A'} • by {refund.recorded_by}
+                                    })} • {refund.method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
                                   </p>
                                   {refund.notes && (
                                     <div className="bg-white border-l-3 border-l-yellow-500 pl-3 py-2 mt-2">
@@ -3308,19 +3684,43 @@ export default function OrderDetailsPage() {
                       <p className="text-gray-500 text-center py-4">No transactions recorded</p>
                     ) : (
                       <div className="space-y-4">
-                        {/* Regular Transactions (payments, refunds, adjustments) */}
-                        {transactions.filter((t: any) => t.type !== 'date_change_charge').length > 0 && (
+                        {/* Regular Transactions (payments, refunds, adjustments) - exclude auto-adjustment penalties only */}
+                        {transactions.filter((t: any) => {
+                          const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                          const method = String(t.method || '').toLowerCase().trim();
+                          // Exclude penalties that are automatic adjustments (from overpayment)
+                          // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                          const isAutoAdjustmentPenalty = (
+                            (transactionType === 'exchange_penalty' || 
+                             transactionType === 'downgrade_penalty' || 
+                             transactionType === 'cancellation_penalty') && 
+                            method === 'adjustment'
+                          );
+                          return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                        }).length > 0 && (
                           <div className="space-y-3">
                             {transactions
-                              .filter((t: any) => t.type !== 'date_change_charge')
+                              .filter((t: any) => {
+                                const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                                const method = String(t.method || '').toLowerCase().trim();
+                                // Exclude penalties that are automatic adjustments (from overpayment)
+                                // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                                const isAutoAdjustmentPenalty = (
+                                  (transactionType === 'exchange_penalty' || 
+                                   transactionType === 'downgrade_penalty' || 
+                                   transactionType === 'cancellation_penalty') && 
+                                  method === 'adjustment'
+                                );
+                                return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                              })
                               .map((transaction: any) => (
                                 <div
                                   key={transaction.id}
                                   className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
                                 >
-                                  <div className="flex items-start justify-between">
-                                    <div className="flex-1">
-                                      <div className="flex items-center gap-2 mb-2">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-2 flex-wrap">
                                         <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
                                           transaction.type === 'payment'
                                             ? 'text-green-600 bg-green-50'
@@ -3340,28 +3740,28 @@ export default function OrderDetailsPage() {
                                           })}
                                         </span>
                                       </div>
-                                      <div className="flex items-center gap-4 mb-2">
-                                        <span className={`text-lg font-bold ${
-                                          transaction.type === 'payment' ? 'text-green-600' : 'text-red-600'
-                                        }`}>
-                                          {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(
-                                            typeof transaction.amount === 'number'
-                                              ? transaction.amount
-                                              : parseFloat(transaction.amount || '0')
-                                          ).toLocaleString('en-IN')}
-                                        </span>
-                                        {transaction.method && (
-                                          <span className="text-sm text-gray-600">
-                                            via {transaction.method}
-                                          </span>
-                                        )}
-                                      </div>
+                                      {transaction.method && (
+                                        <p className="text-sm text-gray-600 mb-2">
+                                          <span className="font-medium">Method:</span> {transaction.method}
+                                        </p>
+                                      )}
                                       {transaction.notes && (
-                                        <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
+                                        <p className="text-sm text-gray-700 mb-2 break-words">{transaction.notes}</p>
                                       )}
                                       <p className="text-xs text-gray-500">
-                                        Recorded by: {transaction.recorded_by}
+                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
                                       </p>
+                                    </div>
+                                    <div className="flex-shrink-0 text-right min-w-[100px]">
+                                      <span className={`text-lg font-bold break-words ${
+                                        transaction.type === 'payment' ? 'text-green-600' : 'text-red-600'
+                                      }`}>
+                                        {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(
+                                          typeof transaction.amount === 'number'
+                                            ? transaction.amount
+                                            : parseFloat(transaction.amount || '0')
+                                        ).toLocaleString('en-IN')}
+                                      </span>
                                     </div>
                                   </div>
                                 </div>
@@ -3421,7 +3821,7 @@ export default function OrderDetailsPage() {
                                           <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
                                         )}
                                         <p className="text-xs text-gray-500">
-                                          Recorded by: {transaction.recorded_by}
+                                          Recorded by: {getRecordedByName(transaction.recorded_by)}
                                         </p>
                                       </div>
                                     </div>
@@ -3468,19 +3868,43 @@ export default function OrderDetailsPage() {
                     <p className="text-gray-500 text-center py-4">No transactions recorded</p>
                   ) : (
                     <div className="space-y-4">
-                      {/* Regular Transactions (payments, refunds, adjustments) */}
-                      {transactions.filter((t: any) => t.type !== 'date_change_charge').length > 0 && (
+                      {/* Regular Transactions (payments, refunds, adjustments) - exclude auto-adjustment penalties only */}
+                      {transactions.filter((t: any) => {
+                        const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                        const method = String(t.method || '').toLowerCase().trim();
+                        // Exclude penalties that are automatic adjustments (from overpayment)
+                        // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                        const isAutoAdjustmentPenalty = (
+                          (transactionType === 'exchange_penalty' || 
+                           transactionType === 'downgrade_penalty' || 
+                           transactionType === 'cancellation_penalty') && 
+                          method === 'adjustment'
+                        );
+                        return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                      }).length > 0 && (
                         <div className="space-y-3">
                           {transactions
-                            .filter((t: any) => t.type !== 'date_change_charge')
+                            .filter((t: any) => {
+                              const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                              const method = String(t.method || '').toLowerCase().trim();
+                              // Exclude penalties that are automatic adjustments (from overpayment)
+                              // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                              const isAutoAdjustmentPenalty = (
+                                (transactionType === 'exchange_penalty' || 
+                                 transactionType === 'downgrade_penalty' || 
+                                 transactionType === 'cancellation_penalty') && 
+                                method === 'adjustment'
+                              );
+                              return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                            })
                             .map((transaction: any) => (
                               <div
                                 key={transaction.id}
                                 className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
                               >
-                                <div className="flex items-start justify-between">
-                                  <div className="flex-1">
-                                    <div className="flex items-center gap-2 mb-2">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-2 flex-wrap">
                                       <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
                                         transaction.type === 'payment'
                                           ? 'text-green-600 bg-green-50'
@@ -3504,16 +3928,16 @@ export default function OrderDetailsPage() {
                                       <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
                                     </p>
                                     {transaction.notes && (
-                                      <p className="text-sm text-gray-600">
+                                      <p className="text-sm text-gray-600 break-words">
                                         <span className="font-medium">Notes:</span> {transaction.notes}
                                       </p>
                                     )}
                                     <p className="text-xs text-gray-500 mt-2">
-                                      Recorded by: {transaction.recorded_by || 'N/A'}
+                                      Recorded by: {getRecordedByName(transaction.recorded_by)}
                                     </p>
                                   </div>
-                                  <div className="text-right ml-4">
-                                    <p className={`text-lg font-bold ${
+                                  <div className="flex-shrink-0 text-right min-w-[100px]">
+                                    <p className={`text-lg font-bold break-words ${
                                       transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
                                     }`}>
                                       {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
@@ -3568,7 +3992,7 @@ export default function OrderDetailsPage() {
                                         </p>
                                       )}
                                       <p className="text-xs text-gray-500">
-                                        Recorded by: {transaction.recorded_by || 'N/A'}
+                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
                                       </p>
                                     </div>
                                     <div className="text-right ml-4">
@@ -4205,7 +4629,7 @@ export default function OrderDetailsPage() {
                   <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Items for Refund</h3>
               <div className="space-y-4">
-                {(Array.isArray(booking?.products) ? booking.products : []).map((product: any) => {
+                {(Array.isArray(booking?.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []).map((product: any) => {
                   const productSecurityDeposit = typeof product.security_deposit === 'number'
                     ? product.security_deposit
                     : parseFloat(product.security_deposit || '0') || 0;
@@ -4378,21 +4802,19 @@ export default function OrderDetailsPage() {
                       }
                     }
                     
-                    // Use fallback if products are empty (already freed)
-                    let totalAmount = 0;
-                    if (products.length > 0) {
-                      totalAmount = rentFromProducts + transportationCharges;
-                    } else {
-                      // Fallback to booking.total_amount
-                      totalAmount = typeof booking?.total_amount === 'number'
-                        ? booking.total_amount
-                        : parseFloat(String(booking?.total_amount || '0')) || 0;
-                    }
+                    // Use booking.total_amount which already has discount applied (if any)
+                    // CRITICAL: Discount is only applied to rent, NOT to security deposit
+                    // IMPORTANT: Only count ACTIVE products (exclude cancelled ones)
+                    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+                    let totalAmount = typeof booking?.total_amount === 'number'
+                      ? booking.total_amount
+                      : parseFloat(String(booking?.total_amount || '0')) || 0;
                     
-                    // Calculate security from products, with fallback
+                    // ALWAYS calculate security deposit from ACTIVE products - NEVER affected by discount
+                    // CRITICAL: Security deposit is the sum of product security deposits, discount does NOT apply
                     let securityDeposit = 0;
-                    if (products.length > 0) {
-                      securityDeposit = products.reduce((sum: number, product: any) => {
+                    if (activeProducts.length > 0) {
+                      securityDeposit = activeProducts.reduce((sum: number, product: any) => {
                         const security = typeof product.security_deposit === 'number'
                           ? product.security_deposit
                           : parseFloat(String(product.security_deposit || '0')) || 0;
@@ -4412,7 +4834,14 @@ export default function OrderDetailsPage() {
                       
                       // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
                       const method = String(t.method || '').toLowerCase().trim();
-                      if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                      if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                        return sum;
+                      }
+                      
+                      // Exclude cancellation penalty transactions - these are kept by shop, not available for payment
+                      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                      if (transactionType === 'cancellation_penalty') {
+                        console.log('🚫 [SECURITY REFUND] EXCLUDING cancellation_penalty:', t.id, 'amount:', t.amount);
                         return sum;
                       }
                       
@@ -4433,10 +4862,23 @@ export default function OrderDetailsPage() {
                       const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
                       return sum + (t.type === 'refund' ? -amount : amount);
                     }, 0);
-                    
-                    const paidAmount = paidAmountFromTransactions;
-                    const totalRequired = totalAmount + securityDeposit;
-                    const overpayment = paidAmount - totalRequired;
+                  
+                  // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
+                  // So paidAmountFromTransactions already has penalties excluded
+                  const paidAmount = paidAmountFromTransactions;
+                  
+                  // Calculate total penalties
+                  const totalPenalties = transactions.reduce((sum: number, t: any) => {
+                    const txnType = String(t.transaction_type || '').toLowerCase().trim();
+                    if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
+                      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+                      return sum + amount;
+                    }
+                    return sum;
+                  }, 0);
+                  
+                  const totalRequired = totalAmount + securityDeposit + totalPenalties;
+                  const overpayment = paidAmount - totalRequired;
                     
                     // Only show overpayment section if there's an overpayment
                     if (overpayment <= 0) return null;
@@ -5819,7 +6261,7 @@ export default function OrderDetailsPage() {
           onSuccess={() => {
             setShowComplaintForm(false);
           }}
-          userName={localStorage.getItem('userName') || 'Salesman'}
+          userName={userName}
           bookingId={booking.id}
         />
       )}
@@ -5831,7 +6273,7 @@ export default function OrderDetailsPage() {
           onSuccess={() => {
             setShowFeedbackForm(false);
           }}
-          userName={localStorage.getItem('userName') || 'Salesman'}
+          userName={userName}
           bookingId={booking.id}
         />
       )}

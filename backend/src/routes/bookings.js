@@ -19,7 +19,8 @@ router.get('/', async (req, res) => {
               'security_deposit', p.security_deposit,
               'image', p.image,
               'booked_from', bp.booked_from,
-              'booked_to', bp.booked_to
+              'booked_to', bp.booked_to,
+              'status', COALESCE(bp.status, 'active')
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -71,7 +72,8 @@ router.get('/:id', async (req, res) => {
               'security_deposit', p.security_deposit,
               'image', p.image,
               'booked_from', bp.booked_from,
-              'booked_to', bp.booked_to
+              'booked_to', bp.booked_to,
+              'status', COALESCE(bp.status, 'active')
             )
           ) FILTER (WHERE p.id IS NOT NULL),
           '[]'
@@ -117,7 +119,7 @@ router.post('/', async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const { customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount, security_deposit, created_by, transportation_opted, other_charges } = req.body;
+    const { customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, products, total_amount, security_deposit, created_by, transportation_opted, other_charges, discount_type, discount_value, discount_amount } = req.body;
 
     if (!customer_name || !booking_date || !products || products.length === 0) {
       return res.status(400).json({ error: 'Required fields missing' });
@@ -158,8 +160,8 @@ router.post('/', async (req, res) => {
     const bookingStatus = req.body.status || 'pending';
     
     const bookingResult = await client.query(
-      'INSERT INTO bookings (customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, total_amount, security_deposit, status, created_by, transportation_opted, other_charges) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *',
-      [customer_name, customer_phone || null, alternate_phone || null, customer_address || null, booking_date, finalBookedFrom, finalBookedTo, total_amount || null, security_deposit || 0, bookingStatus, created_by || null, transportation_opted || false, other_charges || 0]
+      'INSERT INTO bookings (customer_name, customer_phone, alternate_phone, customer_address, booking_date, booked_from, booked_to, total_amount, security_deposit, status, created_by, transportation_opted, other_charges, discount_type, discount_value, discount_amount) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *',
+      [customer_name, customer_phone || null, alternate_phone || null, customer_address || null, booking_date, finalBookedFrom, finalBookedTo, total_amount || null, security_deposit || 0, bookingStatus, created_by || null, transportation_opted || false, other_charges || 0, discount_type || null, discount_value || 0, discount_amount || 0]
     );
 
     const booking = bookingResult.rows[0];
@@ -252,7 +254,10 @@ router.put('/:id', async (req, res) => {
       due_amount,
       payment_status,
       measurements,
-      products
+      products,
+      discount_type,
+      discount_value,
+      discount_amount
     } = req.body;
 
     // Build dynamic query based on provided fields
@@ -325,6 +330,21 @@ router.put('/:id', async (req, res) => {
         : JSON.stringify(req.body.special_requirements);
       updates.push(`special_requirements = $${paramCount++}::jsonb`);
       values.push(specialReqsValue);
+    }
+    if (discount_type !== undefined) {
+      console.log('Adding discount_type to update:', discount_type);
+      updates.push(`discount_type = $${paramCount++}`);
+      values.push(discount_type);
+    }
+    if (discount_value !== undefined) {
+      console.log('Adding discount_value to update:', discount_value);
+      updates.push(`discount_value = $${paramCount++}`);
+      values.push(discount_value);
+    }
+    if (discount_amount !== undefined) {
+      console.log('Adding discount_amount to update:', discount_amount);
+      updates.push(`discount_amount = $${paramCount++}`);
+      values.push(discount_amount);
     }
 
     updates.push(`updated_at = CURRENT_TIMESTAMP`);
@@ -546,6 +566,8 @@ router.get('/product/:productId', async (req, res) => {
   try {
     const { productId } = req.params;
     
+    // IMPORTANT: Filter out cancelled products (bp.status = 'active')
+    // This ensures cancelled products don't block dates for new bookings
     const query = `
       SELECT 
         b.id,
@@ -553,18 +575,20 @@ router.get('/product/:productId', async (req, res) => {
         b.customer_phone,
         bp.booked_from,
         bp.booked_to,
-        b.status
+        b.status,
+        bp.status as product_status
       FROM bookings b
       INNER JOIN booking_products bp ON b.id = bp.booking_id
       WHERE bp.product_id = $1
         AND b.status NOT IN ('cancelled', 'completed')
+        AND bp.status = 'active'
         AND bp.booked_from IS NOT NULL
         AND bp.booked_to IS NOT NULL
       ORDER BY bp.booked_from ASC
     `;
     
     const result = await pool.query(query, [productId]);
-    console.log(`📅 Fetching bookings for product ${productId}:`, result.rows);
+    console.log(`📅 Fetching active bookings for product ${productId}:`, result.rows.length, 'bookings found');
     res.json(result.rows);
   } catch (error) {
     console.error('Error fetching product bookings:', error);

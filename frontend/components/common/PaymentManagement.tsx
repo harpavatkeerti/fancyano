@@ -13,6 +13,7 @@ interface PaymentManagementProps {
   onPaymentUpdate: () => void;
   onStatusUpdate?: (status: string) => void; // Optional callback to update booking status
   userRole?: 'admin' | 'salesman'; // Role-based button visibility
+  isFullyCancelled?: boolean; // Show only transaction history for fully cancelled bookings
 }
 
 interface Product {
@@ -29,6 +30,7 @@ export function PaymentManagement({
   onPaymentUpdate,
   onStatusUpdate,
   userRole = 'admin', // Default to admin if not specified
+  isFullyCancelled = false
 }: PaymentManagementProps) {
   const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
@@ -63,11 +65,38 @@ export function PaymentManagement({
     calculateAndUpdateBookingStatus();
   }, [bookingId]);
 
+  // Helper function to extract username from recorded_by field
+  function getRecordedByName(recordedBy: any): string {
+    if (!recordedBy) return 'N/A';
+    
+    // If it's a string
+    if (typeof recordedBy === 'string') {
+      try {
+        // Try to parse it as JSON
+        const parsed = JSON.parse(recordedBy);
+        return parsed.userName || parsed.name || recordedBy;
+      } catch {
+        // If parsing fails, return as is
+        return recordedBy;
+      }
+    }
+    
+    // If it's already an object
+    if (typeof recordedBy === 'object') {
+      return recordedBy.userName || recordedBy.name || 'N/A';
+    }
+    
+    return String(recordedBy);
+  }
+
   async function fetchBookingData() {
     try {
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
-      const productsList = Array.isArray(booking.products) ? booking.products : [];
+      // Filter out cancelled products
+      const productsList = Array.isArray(booking.products) 
+        ? booking.products.filter((p: any) => p.status !== 'cancelled') 
+        : [];
       setProducts(productsList);
     } catch (error) {
       console.error('Error fetching booking data:', error);
@@ -104,6 +133,12 @@ export function PaymentManagement({
       const transactionsResponse = await paymentTransactionsApi.getByBookingId(bookingId);
       const currentTransactions = transactionsResponse.data || [];
 
+      // ⚠️ CRITICAL: Don't update status if booking is cancelled or partially cancelled
+      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_cancelled') {
+        console.log('⚠️ Booking is cancelled/partially_cancelled - skipping automatic status update');
+        return;
+      }
+
       const totalAmount = typeof currentBooking.total_amount === 'number'
         ? currentBooking.total_amount
         : parseFloat(currentBooking.total_amount || '0') || 0;
@@ -115,7 +150,10 @@ export function PaymentManagement({
         : parseFloat(currentBooking.paid_amount || '0') || 0;
 
       // Check for per-item refunds
-      const products = Array.isArray(currentBooking.products) ? currentBooking.products : [];
+      // Filter out cancelled products
+      const products = Array.isArray(currentBooking.products) 
+        ? currentBooking.products.filter((p: any) => p.status !== 'cancelled')
+        : [];
       const refundTransactions = currentTransactions.filter((t: any) => t.type === 'refund');
       
       // Count how many products have refunds by checking transaction notes
@@ -343,7 +381,10 @@ export function PaymentManagement({
         let securityDepositNum = 0;
         try {
           const bookingResponse = await bookingsApi.getById(bookingId);
-          const currentProducts = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+          // Filter out cancelled products
+          const currentProducts = Array.isArray(bookingResponse.data.products) 
+            ? bookingResponse.data.products.filter((p: any) => p.status !== 'cancelled')
+            : [];
           
           if (currentProducts.length > 0) {
             securityDepositNum = currentProducts.reduce((sum: number, product: any) => {
@@ -383,7 +424,7 @@ export function PaymentManagement({
         const currentPaid = currentTransactions.data.reduce((sum: number, t: any) => {
           // Exclude date_change_charge, exchange_penalty, exchange_lapsed
           if (t.type === 'date_change_charge') return sum;
-          if (t.method === 'exchange_penalty' || t.method === 'exchange_lapsed' || t.method === 'lapsed_refund') return sum;
+          if (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty' || t.method === 'exchange_lapsed' || t.method === 'lapsed_refund') return sum;
           
           const tAmount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
           return sum + (t.type === 'refund' ? -tAmount : tAmount);
@@ -497,7 +538,7 @@ export function PaymentManagement({
         if (t.type === 'date_change_charge') return sum;
         
         const method = String(t.method || '').toLowerCase().trim();
-        if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+        if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
           return sum;
         }
         
@@ -534,7 +575,7 @@ export function PaymentManagement({
           ? product.security_deposit
           : parseFloat(String(product.security_deposit || '0')) || 0;
 
-        if (isNaN(refundAmount) || refundAmount <= 0) {
+        if (isNaN(refundAmount) || refundAmount < 0) {
           toast.warning(`Please enter a valid refund amount for ${product.name}`);
           return;
         }
@@ -634,14 +675,16 @@ export function PaymentManagement({
 
   return (
     <div className="space-y-6">
-      {/* Payment Summary */}
+      {/* Payment Summary - Hide for fully cancelled bookings */}
+      {!isFullyCancelled && (
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         {/* Calculate totals */}
         {(() => {
           const totalAmountNum = typeof totalAmount === 'number' ? totalAmount : parseFloat(String(totalAmount)) || 0;
           
           // ALWAYS calculate security deposit from products to ensure accuracy
-          // This prevents issues where booking.security_deposit might include transportation or other incorrect values
+          // CRITICAL: Security deposit is NEVER affected by discount - it's always the sum of product security deposits
+          // This prevents issues where booking.security_deposit might include transportation, discount, or other incorrect values
           let securityDepositNum = 0;
           if (products.length > 0) {
             securityDepositNum = products.reduce((sum: number, product: any) => {
@@ -655,12 +698,11 @@ export function PaymentManagement({
             securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
           }
           
-          console.log('🔐 SECURITY DEPOSIT CALCULATION:');
+          console.log('🔐 SECURITY DEPOSIT CALCULATION (Discount NOT applied):');
           console.log('  Products count:', products.length);
-          console.log('  Calculated from products:', securityDepositNum);
+          console.log('  Calculated from products (no discount):', securityDepositNum);
           console.log('  Props value (for reference):', securityDeposit);
-          
-          const totalRequired = totalAmountNum + securityDepositNum;
+          console.log('  Note: Security deposit is NEVER affected by discount');
           
           // Calculate netAmount excluding date_change_charge, exchange_penalty, and exchange_lapsed transactions
           // Date change charges, exchange penalties, and lapsed amounts are separate and don't affect payment calculations
@@ -677,8 +719,30 @@ export function PaymentManagement({
             // CRITICAL: Exclude exchange_penalty transactions (collected separately at exchange time)
             // These should NEVER affect rent or security calculations
             const method = String(t.method || '').toLowerCase().trim();
-            if (method === 'exchange_penalty' || method === 'exchange') {
+            const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+            
+            // Exclude delayed_charges transactions - they are separate charges that don't affect rent/security
+            if (transactionType === 'delayed_charges' || method === 'delayed_charges') {
+              console.log('Excluding delayed_charges transaction:', t);
+              return sum;
+            }
+            
+            if (method === 'exchange_penalty' || method === 'exchange' || transactionType === 'exchange_penalty' || transactionType === 'exchange') {
               console.log('Excluding exchange_penalty transaction:', t);
+              return sum;
+            }
+            
+            // CRITICAL: Exclude downgrade_penalty transactions (rent_diff when downgrading)
+            // This is a non-refundable penalty charge, should NOT be counted as security payment
+            if (transactionType === 'downgrade_penalty' || method === 'downgrade_penalty') {
+              console.log('Excluding downgrade_penalty transaction:', t);
+              return sum;
+            }
+            
+            // CRITICAL: Exclude cancellation_penalty transactions
+            // These are non-refundable penalty charges
+            if (transactionType === 'cancellation_penalty') {
+              console.log('Excluding cancellation_penalty transaction:', t);
               return sum;
             }
             
@@ -708,13 +772,22 @@ export function PaymentManagement({
               return sum;
             }
             
-            // Exclude transactions with exchange penalty/charge notes (unless it's rent difference)
+            // Also exclude transactions with exchange penalty/charge notes (for backward compatibility)
             if (notes.includes('exchange penalty') || notes.includes('exchange charge')) {
               // Keep exchange_upgrade (rent differences) only if not lapsed
               if (method !== 'exchange_upgrade' && method !== 'exchange_lapsed' && !notes.includes('additional rent') && !notes.includes('rent difference')) {
                 console.log('Excluding transaction with exchange penalty note:', t);
                 return sum;
               }
+            }
+            
+            // Exclude delayed charges transactions - they are separate charges that don't affect rent/security calculations
+            if (t.transaction_type === 'delayed_charges' || 
+                method === 'delayed_charges' ||
+                notes.includes('Delayed return charges') ||
+                notes.includes('delayed return charges')) {
+              console.log('Excluding delayed charges transaction:', t);
+              return sum;
             }
             
             // Include refunds in calculation (they may exist to correct overpayments)
@@ -760,15 +833,64 @@ export function PaymentManagement({
           // Net amount = payments - refunds
           const netAmount = netAmountFromTransactions - totalRefundsAmount;
           
+          // Calculate total penalties (exchange_penalty + downgrade_penalty + cancellation_penalty)
+          // These are additional charges that consume the available money
+          const totalPenalties = transactions.reduce((sum: number, t: any) => {
+            const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+            if (transactionType === 'exchange_penalty' || 
+                transactionType === 'downgrade_penalty' || 
+                transactionType === 'cancellation_penalty') {
+              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+              return sum + amount;
+            }
+            return sum;
+          }, 0);
+
+          // Calculate penalty breakdown
+          const exchangePenalties = transactions.reduce((sum: number, t: any) => {
+            const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+            if (transactionType === 'exchange_penalty') {
+              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+              return sum + amount;
+            }
+            return sum;
+          }, 0);
+
+          const downgradePenalties = transactions.reduce((sum: number, t: any) => {
+            const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+            if (transactionType === 'downgrade_penalty') {
+              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+              return sum + amount;
+            }
+            return sum;
+          }, 0);
+
+          const cancellationPenalties = transactions.reduce((sum: number, t: any) => {
+            const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+            if (transactionType === 'cancellation_penalty') {
+              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
+              return sum + amount;
+            }
+            return sum;
+          }, 0);
+          
+          // CRITICAL: Total Required = Rent + Security + Penalties
+          // totalAmountNum already has discount applied (if any) - it's booking.total_amount
+          // securityDepositNum is calculated from products and NEVER includes discount
+          // totalPenalties includes all penalty charges (exchange, downgrade, cancellation)
+          const totalRequired = totalAmountNum + securityDepositNum + totalPenalties;
+          
           console.log('========================================');
           console.log('💰 PAYMENT BREAKDOWN - PaymentManagement Component');
           console.log('========================================');
           console.log('Total transactions processed:', transactions.length);
           console.log('Net Amount (from transactions):', netAmount);
+          console.log('Total Penalties (exchange + downgrade + cancellation):', totalPenalties);
+          console.log('Available after penalties:', netAmount - totalPenalties);
           console.log('Total Amount (rent):', totalAmount);
           console.log('Security Deposit:', securityDeposit);
-          console.log('Rent Paid:', Math.min(netAmount, totalAmount));
-          console.log('Rent Due:', Math.max(0, totalAmount - netAmount));
+          console.log('Rent Paid:', Math.min(netAmount - totalPenalties, totalAmount));
+          console.log('Rent Due:', Math.max(0, totalAmount - (netAmount - totalPenalties)));
           console.log('========================================');
           
           // Debug log to help identify issues
@@ -856,17 +978,23 @@ export function PaymentManagement({
           const overpayment = netAmount > totalRequired ? netAmount - totalRequired : 0;
           
           // Calculate amount due correctly:
-          // - Rent Due = max(0, totalAmount - netAmount)
-          // - Security Due = full security (never reduced by rent overpayment)
-          // - Balance Due = Rent Due + Security Due
-          const rentDue = Math.max(0, totalAmountNum - netAmount);
-          const securityDue = securityDepositNum; // Full security, not affected by rent payments
-          const amountDue = hasAnyRefund ? 0 : (rentDue + securityDue);
+          // CRITICAL: Balance Due = Total Required - Net Amount Paid
+          // This automatically accounts for any unpaid rent, security, or penalties
+          // Refunds are already included in netAmount calculation, so no special handling needed
+          const amountDue = Math.max(0, totalRequired - netAmount);
           
-          // Fully paid only when BOTH rent AND security are paid (not just rent with overpayment)
-          const isFullyPaid = hasAnyRefund ? true : (rentDue === 0 && securityDue === 0);
+          // For detailed breakdown (used in Payment Breakdown section)
+          const netAmountAfterPenalties = netAmount - totalPenalties;
+          const rentDue = Math.max(0, totalAmountNum - netAmountAfterPenalties);
+          const securityDue = Math.max(0, securityDepositNum - Math.max(0, netAmountAfterPenalties - totalAmountNum));
+          
+          // Fully paid only when Total Paid >= Total Required (including penalties)
+          const isFullyPaid = (netAmount >= totalRequired);
           
           console.log('💰 AMOUNT DUE CALCULATION:');
+          console.log('  Total Required:', totalRequired);
+          console.log('  Net Amount Paid:', netAmount);
+          console.log('  Total Penalties:', totalPenalties);
           console.log('  Rent Due:', rentDue);
           console.log('  Security Due:', securityDue);
           console.log('  Total Balance Due:', amountDue);
@@ -947,7 +1075,18 @@ export function PaymentManagement({
                           if (t.type !== 'payment') return false;
                           // Also exclude transactions with date change notes
                           const notes = (t.notes || '').toLowerCase();
-                          return !notes.includes('date change charge') && !notes.includes('date change');
+                          if (notes.includes('date change charge') || notes.includes('date change')) return false;
+                          
+                          // Exclude auto-adjustment penalties (they're not actual payments from customer)
+                          const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                          const method = String(t.method || '').toLowerCase().trim();
+                          const isAutoAdjustmentPenalty = (
+                            (transactionType === 'exchange_penalty' || 
+                             transactionType === 'downgrade_penalty' || 
+                             transactionType === 'cancellation_penalty') && 
+                            method === 'adjustment'
+                          );
+                          return !isAutoAdjustmentPenalty;
                         })
                         .reduce((sum: number, t: any) => {
                           const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
@@ -1067,12 +1206,12 @@ export function PaymentManagement({
                         </div>
                         <div className="flex justify-between text-sm">
                           <span className="text-gray-700">Paid:</span>
-                          <span className="font-bold text-green-600">{formatCurrency(Math.min(netAmount, totalAmountNum))}</span>
+                          <span className="font-bold text-green-600">{formatCurrency(Math.min(netAmountAfterPenalties, totalAmountNum))}</span>
                         </div>
                         <div className="flex justify-between text-sm pt-1 border-t border-gray-200">
                           <span className="text-gray-700 font-semibold">Rent Due:</span>
-                          <span className={`font-bold ${netAmount >= totalAmountNum ? 'text-green-600' : 'text-red-600'}`}>
-                            {formatCurrency(Math.max(0, totalAmountNum - netAmount))}
+                          <span className={`font-bold ${netAmountAfterPenalties >= totalAmountNum ? 'text-green-600' : 'text-red-600'}`}>
+                            {formatCurrency(Math.max(0, totalAmountNum - netAmountAfterPenalties))}
                           </span>
                         </div>
                       </div>
@@ -1091,21 +1230,55 @@ export function PaymentManagement({
                           <span className="font-bold text-green-600">
                             {hasAnyRefund 
                               ? formatCurrency(securityDepositRefunds) // If refunds exist, show security deposit refunds only (not overpayment)
-                              : formatCurrency(Math.max(0, Math.min(securityDepositNum, netAmount - totalAmountNum))) // Security paid = excess after rent
+                              : formatCurrency(Math.max(0, Math.min(securityDepositNum, netAmountAfterPenalties - totalAmountNum))) // Security paid = excess after rent and penalties
                             }
                           </span>
                         </div>
                         <div className="flex justify-between text-sm pt-1 border-t border-gray-200">
                           <span className="text-gray-700 font-semibold">{hasAnyRefund ? 'Deducted/Due:' : 'Security Due:'}</span>
-                          <span className={`font-bold ${(hasAnyRefund ? (securityDepositRefunds >= securityDepositNum) : (netAmount >= totalAmountNum + securityDepositNum)) ? 'text-green-600' : 'text-red-600'}`}>
+                          <span className={`font-bold ${(hasAnyRefund ? (securityDepositRefunds >= securityDepositNum) : (netAmountAfterPenalties >= totalAmountNum + securityDepositNum)) ? 'text-green-600' : 'text-red-600'}`}>
                             {hasAnyRefund
-                              ? formatCurrency(Math.max(0, securityDepositNum - securityDepositRefunds)) // Amount deducted/remaining (using security refunds only)
-                              : formatCurrency(Math.max(0, securityDepositNum - Math.max(0, netAmount - totalAmountNum))) // Security remaining
+                              ? formatCurrency(Math.max(0, securityDepositNum - securityDepositRefunds))
+                              : formatCurrency(Math.max(0, securityDepositNum - Math.max(0, netAmountAfterPenalties - totalAmountNum)))
                             }
                           </span>
                         </div>
                       </div>
                     </div>
+
+                    {/* Penalties Section - Show if penalties exist */}
+                    {totalPenalties > 0 && (
+                      <div className="bg-white rounded-lg p-3 border border-red-200">
+                        <p className="text-xs text-gray-600 mb-2">⚠️ Penalties Applied</p>
+                        <div className="space-y-1">
+                          {exchangePenalties > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-700">Exchange Penalty:</span>
+                              <span className="font-bold text-red-600">{formatCurrency(exchangePenalties)}</span>
+                            </div>
+                          )}
+                          {downgradePenalties > 0 && (
+                            <div className="flex justify-between text-sm pt-1 border-t border-gray-200">
+                              <span className="text-gray-700">Downgrade Penalty:</span>
+                              <span className="font-bold text-red-600">{formatCurrency(downgradePenalties)}</span>
+                            </div>
+                          )}
+                          {cancellationPenalties > 0 && (
+                            <div className="flex justify-between text-sm pt-1 border-t border-gray-200">
+                              <span className="text-gray-700">Cancellation Penalty:</span>
+                              <span className="font-bold text-red-600">{formatCurrency(cancellationPenalties)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between text-sm pt-1 border-t border-red-200">
+                            <span className="text-gray-700 font-semibold">Total Penalties:</span>
+                            <span className="font-bold text-red-600">{formatCurrency(totalPenalties)}</span>
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">
+                            (Non-refundable charges that reduce available funds)
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Total Summary */}
                     <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200">
@@ -1173,14 +1346,26 @@ export function PaymentManagement({
                             const notes = refund.notes || '';
                             let matchedProduct = null;
                             let chargesDeducted = 0;
+                            let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
+                            const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
                             
                             for (const product of products) {
                               if (notes.includes(`(${product.code})`)) {
                                 matchedProduct = product;
-                                const productSecurity = typeof product.security_deposit === 'number'
-                                  ? product.security_deposit
-                                  : parseFloat(String(product.security_deposit || '0')) || 0;
-                                chargesDeducted = productSecurity - refundAmount;
+                                
+                                if (isCancellationRefund) {
+                                  // For cancellation refunds, base amount is the product RENT (not security)
+                                  baseAmount = typeof product.rent_per_day === 'number'
+                                    ? product.rent_per_day
+                                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                } else {
+                                  // For normal security refunds, base amount is the security deposit
+                                  baseAmount = typeof product.security_deposit === 'number'
+                                    ? product.security_deposit
+                                    : parseFloat(String(product.security_deposit || '0')) || 0;
+                                }
+                                
+                                chargesDeducted = baseAmount - refundAmount;
                                 break;
                               }
                             }
@@ -1196,9 +1381,9 @@ export function PaymentManagement({
                                         </p>
                                         <div className="grid grid-cols-3 gap-2 text-xs">
                                           <div className="bg-blue-50 p-2 rounded">
-                                            <p className="text-gray-600">Security Deposit</p>
+                                            <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
                                             <p className="font-bold text-blue-600">
-                                              {formatCurrency(matchedProduct.security_deposit)}
+                                              {formatCurrency(baseAmount)}
                                             </p>
                                           </div>
                                           <div className="bg-green-50 p-2 rounded">
@@ -1223,7 +1408,7 @@ export function PaymentManagement({
                                       </p>
                                     )}
                                     <p className="text-xs text-gray-500">
-                                      {formatDate(refund.created_at)} • {refund.method || 'N/A'} • by {refund.recorded_by}
+                                      {formatDate(refund.created_at)} • {refund.method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
                                     </p>
                                   </div>
                                 </div>
@@ -1286,14 +1471,24 @@ export function PaymentManagement({
                               const notes = refund.notes || '';
                               let matchedProduct = null;
                               let chargesDeducted = 0;
+                              let baseAmount = 0;
+                              const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
                               
                               for (const product of products) {
                                 if (notes.includes(`(${product.code})`)) {
                                   matchedProduct = product;
-                                  const productSecurity = typeof product.security_deposit === 'number'
-                                    ? product.security_deposit
-                                    : parseFloat(String(product.security_deposit || '0')) || 0;
-                                  chargesDeducted = productSecurity - refundAmount;
+                                  
+                                  if (isCancellationRefund) {
+                                    baseAmount = typeof product.rent_per_day === 'number'
+                                      ? product.rent_per_day
+                                      : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                  } else {
+                                    baseAmount = typeof product.security_deposit === 'number'
+                                      ? product.security_deposit
+                                      : parseFloat(String(product.security_deposit || '0')) || 0;
+                                  }
+                                  
+                                  chargesDeducted = baseAmount - refundAmount;
                                   break;
                                 }
                               }
@@ -1310,7 +1505,7 @@ export function PaymentManagement({
                                   </div>
                                   {matchedProduct && (
                                     <p className="text-xs text-gray-600 mb-1">
-                                      Product: {matchedProduct.name} ({matchedProduct.code})
+                                      Product: {matchedProduct.name} ({matchedProduct.code}) - {isCancellationRefund ? 'Rent' : 'Security'}: {formatCurrency(baseAmount)}
                                     </p>
                                   )}
                                   {chargesDeducted > 0 && (
@@ -1324,7 +1519,7 @@ export function PaymentManagement({
                                     </p>
                                   )}
                                   <p className="text-xs text-gray-500 mt-1">
-                                    Method: {refund.method} • By: {refund.recorded_by}
+                                    Method: {refund.method} • By: {getRecordedByName(refund.recorded_by)}
                                   </p>
                                 </div>
                               );
@@ -1377,14 +1572,24 @@ export function PaymentManagement({
                               const notes = refund.notes || '';
                               let matchedProduct = null;
                               let chargesDeducted = 0;
+                              let baseAmount = 0;
+                              const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
                               
                               for (const product of products) {
                                 if (notes.includes(`(${product.code})`)) {
                                   matchedProduct = product;
-                                  const productSecurity = typeof product.security_deposit === 'number'
-                                    ? product.security_deposit
-                                    : parseFloat(String(product.security_deposit || '0')) || 0;
-                                  chargesDeducted = productSecurity - refundAmount;
+                                  
+                                  if (isCancellationRefund) {
+                                    baseAmount = typeof product.rent_per_day === 'number'
+                                      ? product.rent_per_day
+                                      : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                  } else {
+                                    baseAmount = typeof product.security_deposit === 'number'
+                                      ? product.security_deposit
+                                      : parseFloat(String(product.security_deposit || '0')) || 0;
+                                  }
+                                  
+                                  chargesDeducted = baseAmount - refundAmount;
                                   break;
                                 }
                               }
@@ -1400,9 +1605,9 @@ export function PaymentManagement({
                                           </p>
                                           <div className="grid grid-cols-3 gap-2 text-xs">
                                             <div className="bg-blue-50 p-2 rounded">
-                                              <p className="text-gray-600">Security Deposit</p>
+                                              <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
                                               <p className="font-bold text-blue-600">
-                                                {formatCurrency(matchedProduct.security_deposit)}
+                                                {formatCurrency(baseAmount)}
                                               </p>
                                             </div>
                                             <div className="bg-green-50 p-2 rounded">
@@ -1427,7 +1632,7 @@ export function PaymentManagement({
                                         </p>
                                       )}
                                       <p className="text-xs text-gray-500">
-                                        {formatDate(refund.created_at)} • {refund.method || 'N/A'} • by {refund.recorded_by}
+                                        {formatDate(refund.created_at)} • {refund.method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
                                       </p>
                                     </div>
                                   </div>
@@ -1515,6 +1720,7 @@ export function PaymentManagement({
           );
         })()}
       </div>
+      )}
 
       {/* Transaction History */}
       <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -1524,11 +1730,35 @@ export function PaymentManagement({
           <p className="text-gray-500 text-center py-8">No transactions yet</p>
         ) : (
           <div className="space-y-4">
-            {/* Regular Transactions (payments, refunds, adjustments) */}
-            {transactions.filter((t: any) => t.type !== 'date_change_charge').length > 0 && (
+            {/* Regular Transactions (payments, refunds, adjustments) - exclude auto-adjustment penalties only */}
+            {transactions.filter((t: any) => {
+              const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+              const method = String(t.method || '').toLowerCase().trim();
+              // Exclude penalties that are automatic adjustments (from overpayment)
+              // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+              const isAutoAdjustmentPenalty = (
+                (transactionType === 'exchange_penalty' || 
+                 transactionType === 'downgrade_penalty' || 
+                 transactionType === 'cancellation_penalty') && 
+                method === 'adjustment'
+              );
+              return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+            }).length > 0 && (
           <div className="space-y-3">
                 {transactions
-                  .filter((t: any) => t.type !== 'date_change_charge')
+                  .filter((t: any) => {
+                    const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                    const method = String(t.method || '').toLowerCase().trim();
+                    // Exclude penalties that are automatic adjustments (from overpayment)
+                    // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                    const isAutoAdjustmentPenalty = (
+                      (transactionType === 'exchange_penalty' || 
+                       transactionType === 'downgrade_penalty' || 
+                       transactionType === 'cancellation_penalty') && 
+                      method === 'adjustment'
+                    );
+                    return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                  })
                   .map((transaction) => (
               <div
                 key={transaction.id}
@@ -1550,8 +1780,10 @@ export function PaymentManagement({
                         <span className="font-medium">Type:</span> {
                           transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
                           transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                          transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
                           transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
                           transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                          transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
                           transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
                           'Booking'
                         }
@@ -1571,7 +1803,7 @@ export function PaymentManagement({
                       <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
                     )}
                     <p className="text-xs text-gray-500">
-                      Recorded by: {transaction.recorded_by}
+                      Recorded by: {getRecordedByName(transaction.recorded_by)}
                     </p>
                   </div>
                 </div>
@@ -1622,7 +1854,7 @@ export function PaymentManagement({
                               <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
                             )}
                             <p className="text-xs text-gray-500">
-                              Recorded by: {transaction.recorded_by}
+                              Recorded by: {getRecordedByName(transaction.recorded_by)}
                             </p>
                           </div>
                         </div>
@@ -1914,7 +2146,7 @@ export function PaymentManagement({
                 if (t.type === 'date_change_charge') return sum;
                 
                 const method = String(t.method || '').toLowerCase().trim();
-                if (method === 'exchange_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
+                if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
                   return sum;
                 }
                 

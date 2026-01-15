@@ -14,8 +14,8 @@ router.post('/check', async (req, res) => {
     console.log(`🔍 Checking availability for product ${product_id} from ${date_from} to ${date_to}`);
 
     // Query bookings for this product that overlap with the requested dates
-    // Exclude cancelled and completed bookings
-    // Exclude cancelled products (status != 'active')
+    // Exclude cancelled and completed bookings (but allow partially_cancelled as other products may still be active)
+    // CRITICAL: Only check products with status = 'active' - this ensures cancelled products don't block dates
     const query = `
       SELECT 
         b.id,

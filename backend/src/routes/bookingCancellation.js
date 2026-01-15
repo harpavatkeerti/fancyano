@@ -46,6 +46,12 @@ router.post('/', async (req, res) => {
     
     const booking = bookingResult.rows[0];
     
+    // Check for discount - if partial cancellation, discount will be removed
+    const hasDiscount = booking.discount_type && booking.discount_value > 0;
+    const originalDiscountType = booking.discount_type;
+    const originalDiscountValue = parseFloat(booking.discount_value) || 0;
+    const originalDiscountAmount = parseFloat(booking.discount_amount) || 0;
+    
     // Check if booking is completed
     if (booking.status === 'completed') {
       return res.status(400).json({ error: 'Cannot cancel completed booking' });
@@ -172,20 +178,24 @@ router.post('/', async (req, res) => {
       
       totalPenaltyAmount += penaltyAmount;
       
-      // Record cancellation penalty transaction for this product
-      if (penaltyAmount > 0) {
-        const notes = manualPenalty?.notes || 
-          `Cancellation penalty for ${product.name} (${product.code}): ${penaltyPercentage}% of rent ₹${productRent} | Reason: ${cancellation_reason || 'Not specified'}`;
-        
-        await client.query(
-          `INSERT INTO payment_transactions 
-           (booking_id, amount, type, transaction_type, method, notes, recorded_by)
-           VALUES ($1, $2, 'payment', 'cancellation_penalty', $3, $4, $5)`,
-          [booking_id, penaltyAmount, 'N/A', notes, cancelled_by || 'system']
-        );
-        
-        console.log(`✅ Recorded penalty for ${product.code}: ₹${penaltyAmount}`);
-      }
+      // NOTE: Penalty transaction is NOT created separately
+      // The penalty is already deducted from the refund amount
+      // Creating a separate penalty transaction would cause double-counting
+      // if (penaltyAmount > 0) {
+      //   const notes = manualPenalty?.notes || 
+      //     `Cancellation penalty for ${product.name} (${product.code}): ${penaltyPercentage}% of rent ₹${productRent} | Reason: ${cancellation_reason || 'Not specified'}`;
+      //   
+      //   await client.query(
+      //     `INSERT INTO payment_transactions 
+      //      (booking_id, amount, type, transaction_type, method, notes, recorded_by)
+      //      VALUES ($1, $2, 'payment', 'cancellation_penalty', $3, $4, $5)`,
+      //     [booking_id, penaltyAmount, 'N/A', notes, cancelled_by || 'system']
+      //   );
+      //   
+      //   console.log(`✅ Recorded penalty for ${product.code}: ₹${penaltyAmount}`);
+      // }
+      
+      console.log(`✅ Penalty of ₹${penaltyAmount} for ${product.code} deducted from refund (no separate transaction created)`);
       
       // Mark product as cancelled (don't delete)
       await client.query(
@@ -207,35 +217,30 @@ router.post('/', async (req, res) => {
       console.log(`✅ Marked ${product.code} as cancelled`);
     }
     
-    // Calculate what portion of PAID rent and security to refund based on cancelled products
-    // Only refund what was actually paid, proportional to cancelled products
-    const rentRefundRatio = bookingTotalRent > 0 ? totalCancelledRentRequired / bookingTotalRent : 0;
-    const totalCancelledRentToRefund = paidRent * rentRefundRatio;
+    // ============ NEW REFUND CALCULATION LOGIC ============
+    // Formula: Refund = Total Booking Rent - (Remaining Due + Penalty + Remaining Product Rent)
     
-    const securityRefundRatio = bookingSecurityDeposit > 0 ? totalCancelledSecurityRequired / bookingSecurityDeposit : 0;
-    const totalCancelledSecurityToRefund = paidSecurityDeposit * securityRefundRatio;
+    // Calculate remaining product rent (products NOT being cancelled)
+    const remainingRentRequired = bookingTotalRent - totalCancelledRentRequired;
     
-    console.log('🔢 RENT CALCULATION:');
-    console.log(`  Total Rent Required for Cancelled Products: ₹${totalCancelledRentRequired.toFixed(2)}`);
-    console.log(`  Rent Refund Ratio: ${(rentRefundRatio * 100).toFixed(2)}%`);
-    console.log(`  Rent to Refund: ₹${totalCancelledRentToRefund.toFixed(2)}`);
+    // Calculate the difference (amount still due for total booking)
+    const differenceOfAmountPaid = Math.max(0, bookingTotalRent - netPaid);
     
-    console.log('🔢 SECURITY CALCULATION:');
-    console.log(`  Total Security Required for Cancelled Products: ₹${totalCancelledSecurityRequired.toFixed(2)}`);
-    console.log(`  Security Refund Ratio: ${(securityRefundRatio * 100).toFixed(2)}%`);
-    console.log(`  Security to Refund: ₹${totalCancelledSecurityToRefund.toFixed(2)}`);
-    
-    // Calculate refund based ONLY on cancelled products (PAID rent + PAID security - penalty + extra_refund)
-    // DO NOT include other charges like transportation, exchange penalty, etc.
+    // Calculate refund using the correct formula
+    // Refund = Total Booking Rent - (Remaining Due + Penalty + Remaining Product Rent)
     const extraRefundAmount = parseFloat(extra_refund) || 0;
-    const calculatedRefund = totalCancelledRentToRefund + totalCancelledSecurityToRefund - totalPenaltyAmount + extraRefundAmount;
+    const calculatedRefund = bookingTotalRent - (differenceOfAmountPaid + totalPenaltyAmount + remainingRentRequired) + extraRefundAmount;
     
-    console.log('💰 REFUND CALCULATION:');
-    console.log(`  Cancelled Products Rent (Paid): ₹${totalCancelledRentToRefund.toFixed(2)}`);
-    console.log(`  Cancelled Products Security (Paid): ₹${totalCancelledSecurityToRefund.toFixed(2)}`);
-    console.log(`  Total Penalty: ₹${totalPenaltyAmount.toFixed(2)}`);
-    console.log(`  Extra Refund: ₹${extraRefundAmount.toFixed(2)}`);
-    console.log(`  Final Refund Amount: ₹${calculatedRefund.toFixed(2)}`);
+    console.log('🔢 NEW REFUND CALCULATION:');
+    console.log(`  Total Booking Rent: ₹${Math.floor(bookingTotalRent)}`);
+    console.log(`  Cancelled Products Rent: ₹${Math.floor(totalCancelledRentRequired)}`);
+    console.log(`  Remaining Products Rent: ₹${Math.floor(remainingRentRequired)}`);
+    console.log(`  Advance Paid (Net): ₹${Math.floor(netPaid)}`);
+    console.log(`  Remaining Due: ₹${Math.floor(differenceOfAmountPaid)}`);
+    console.log(`  Total Penalty: ₹${Math.floor(totalPenaltyAmount)}`);
+    console.log(`  Extra Refund: ₹${Math.floor(extraRefundAmount)}`);
+    console.log(`  Formula: ${Math.floor(bookingTotalRent)} - (${Math.floor(differenceOfAmountPaid)} + ${Math.floor(totalPenaltyAmount)} + ${Math.floor(remainingRentRequired)}) = ₹${Math.floor(calculatedRefund)}`);
+    console.log(`  Final Refund Amount: ₹${Math.floor(calculatedRefund)}`);
     
     let paymentAction = null;
     let paymentDifference = 0;
@@ -246,7 +251,13 @@ router.post('/', async (req, res) => {
       
       // Record refund transaction
       if (calculatedRefund > 0) {
-        const refundNotes = `Cancellation refund for ${productsToCancel.length} product(s): Rent ₹${totalCancelledRentToRefund.toFixed(2)} + Security ₹${totalCancelledSecurityToRefund.toFixed(2)} - Penalty ₹${totalPenaltyAmount}${extraRefundAmount > 0 ? ` + Extra Refund ₹${extraRefundAmount}` : ''}${extra_refund_note ? ` (${extra_refund_note})` : ''} | Reason: ${cancellation_reason || 'Not specified'}`;
+        // Build detailed notes with product-by-product breakdown
+        let productDetails = productsToCancel.map(p => {
+          const pPenalty = (parseFloat(p.rent_per_day) * penaltyPercentage) / 100;
+          return `${p.name} (${p.code}): Rent ₹${Math.floor(parseFloat(p.rent_per_day))} - Penalty ₹${Math.floor(pPenalty)}`;
+        }).join('; ');
+        
+        const refundNotes = `Cancellation refund for ${productsToCancel.length} product(s). Formula: Total Booking Rent ₹${Math.floor(bookingTotalRent)} - (Remaining Due ₹${Math.floor(differenceOfAmountPaid)} + Penalty ₹${Math.floor(totalPenaltyAmount)} + Remaining Product Rent ₹${Math.floor(remainingRentRequired)}) = ₹${Math.floor(calculatedRefund)}${extraRefundAmount > 0 ? ` + Extra ₹${Math.floor(extraRefundAmount)}` : ''}. Products: ${productDetails}${extra_refund_note ? ` | Note: ${extra_refund_note}` : ''} | Reason: ${cancellation_reason || 'Not specified'}`;
         
         await client.query(
           `INSERT INTO payment_transactions 
@@ -276,8 +287,8 @@ router.post('/', async (req, res) => {
       [
         booking_id,
         JSON.stringify(cancelledProducts),
-        totalCancelledRentToRefund, // Use the actual paid rent being refunded
-        totalCancelledSecurityToRefund, // Use the actual paid security being refunded
+        totalCancelledRentRequired, // Total rent for cancelled products
+        totalCancelledSecurityRequired, // Total security for cancelled products
         totalPenaltyAmount,
         extraRefundAmount,
         extra_refund_note || null,
@@ -311,7 +322,22 @@ router.post('/', async (req, res) => {
     
     // Update booking status and totals
     const isPartialCancellation = productsToCancel.length < allProducts.length;
-    const newStatus = isPartialCancellation ? 'partially_cancelled' : 'cancelled';
+    // If partial cancellation, set status to 'confirmed' (booking continues with remaining products)
+    // If full cancellation, set status to 'cancelled'
+    const newStatus = isPartialCancellation ? 'confirmed' : 'cancelled';
+    
+    // IMPORTANT: For partial cancellation, remove discount entirely (Option B approach)
+    // New total = remaining product rent + transportation (no discount)
+    let finalTotalAmount = newTotalRent + transportationCharges;
+    
+    if (isPartialCancellation && hasDiscount) {
+      console.log(`🔄 DISCOUNT REMOVAL (Partial Cancellation):`);
+      console.log(`  Original Discount: ${originalDiscountType} ${originalDiscountValue}${originalDiscountType === 'percentage' ? '%' : ''} = ₹${originalDiscountAmount}`);
+      console.log(`  Remaining Products Rent: ₹${newTotalRent}`);
+      console.log(`  Transportation: ₹${transportationCharges}`);
+      console.log(`  New Total (without discount): ₹${finalTotalAmount}`);
+      console.log(`  Note: Discount removed due to partial cancellation`);
+    }
     
     // If there are remaining active products, update booking dates to match them
     // If all products are cancelled, keep the original dates
@@ -323,12 +349,15 @@ router.post('/', async (req, res) => {
              security_deposit = $3,
              booked_from = $4,
              booked_to = $5,
+             discount_type = NULL,
+             discount_value = 0,
+             discount_amount = 0,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $6`,
-        [newStatus, newTotalRent + transportationCharges, newTotalSecurity, minBookedFrom, maxBookedTo, booking_id]
+        [newStatus, finalTotalAmount, newTotalSecurity, minBookedFrom, maxBookedTo, booking_id]
       );
     } else {
-      // Full cancellation or no active products remain - don't update dates
+      // Full cancellation or no active products remain - don't update dates, keep discount for records
       await client.query(
         `UPDATE bookings 
          SET status = $1,
@@ -336,13 +365,16 @@ router.post('/', async (req, res) => {
              security_deposit = $3,
              updated_at = CURRENT_TIMESTAMP
          WHERE id = $4`,
-        [newStatus, newTotalRent + transportationCharges, newTotalSecurity, booking_id]
+        [newStatus, finalTotalAmount, newTotalSecurity, booking_id]
       );
     }
     
     console.log(`✅ Booking status updated to: ${newStatus}`);
-    console.log(`✅ New total_amount: ₹${newTotalRent + transportationCharges}`);
+    console.log(`✅ New total_amount: ₹${finalTotalAmount}`);
     console.log(`✅ New security_deposit: ₹${newTotalSecurity}`);
+    if (isPartialCancellation && hasDiscount) {
+      console.log(`⚠️  Discount removed from booking due to partial cancellation`);
+    }
     
     await client.query('COMMIT');
     
@@ -350,9 +382,12 @@ router.post('/', async (req, res) => {
       message: isPartialCancellation ? 'Products cancelled successfully' : 'Booking cancelled successfully',
       cancellation_details: {
         cancelled_products: cancelledProducts,
-        total_cancelled_rent: totalCancelledRentToRefund,
-        total_cancelled_security: totalCancelledSecurityToRefund,
+        total_cancelled_rent: totalCancelledRentRequired,
+        total_cancelled_security: totalCancelledSecurityRequired,
         total_penalty_amount: totalPenaltyAmount,
+        difference_of_amount_paid: differenceOfAmountPaid,
+        remaining_rent_required: remainingRentRequired,
+        advance_paid: netPaid,
         extra_refund: extraRefundAmount,
         extra_refund_note: extra_refund_note,
         refund_amount: calculatedRefund,
@@ -361,7 +396,13 @@ router.post('/', async (req, res) => {
         new_status: newStatus,
         remaining_products_count: allProducts.length - productsToCancel.length,
         new_total_rent: newTotalRent,
-        new_security_deposit: newTotalSecurity
+        new_security_deposit: newTotalSecurity,
+        discount_removed: isPartialCancellation && hasDiscount,
+        original_discount_info: hasDiscount ? {
+          type: originalDiscountType,
+          value: originalDiscountValue,
+          amount: originalDiscountAmount
+        } : null
       }
     });
   } catch (error) {
@@ -402,6 +443,12 @@ router.get('/preview/:booking_id', async (req, res) => {
     }
     
     const booking = bookingResult.rows[0];
+    
+    // Check for discount - if partial cancellation, discount will be removed
+    const hasDiscount = booking.discount_type && booking.discount_value > 0;
+    const originalDiscountType = booking.discount_type;
+    const originalDiscountValue = parseFloat(booking.discount_value) || 0;
+    const originalDiscountAmount = parseFloat(booking.discount_amount) || 0;
     
     if (booking.status === 'cancelled') {
       return res.status(400).json({ error: 'Booking is already cancelled' });
@@ -511,26 +558,22 @@ router.get('/preview/:booking_id', async (req, res) => {
     const totalCancelledRentRequired = productPenalties.reduce((sum, p) => sum + p.rent, 0);
     const totalCancelledSecurityRequired = productPenalties.reduce((sum, p) => sum + p.security_deposit, 0);
     
-    // Calculate what portion of PAID rent and security to refund based on cancelled products
-    const rentRefundRatio = bookingTotalRent > 0 ? totalCancelledRentRequired / bookingTotalRent : 0;
-    const totalCancelledRentToRefund = paidRent * rentRefundRatio;
+    // ============ NEW REFUND CALCULATION LOGIC (PREVIEW) ============
+    // Formula: Refund = Total Booking Rent - (Remaining Due + Penalty + Remaining Product Rent)
     
-    const securityRefundRatio = bookingSecurityDeposit > 0 ? totalCancelledSecurityRequired / bookingSecurityDeposit : 0;
-    const totalCancelledSecurityToRefund = paidSecurityDeposit * securityRefundRatio;
+    const remainingRentRequired = bookingTotalRent - totalCancelledRentRequired;
+    const differenceOfAmountPaid = Math.max(0, bookingTotalRent - netPaid);
+    const baseRefund = bookingTotalRent - (differenceOfAmountPaid + totalPenaltyAmount + remainingRentRequired);
     
-    console.log('🔢 RENT CALCULATION:');
-    console.log(`  Total Rent Required for Cancelled Products: ₹${totalCancelledRentRequired.toFixed(2)}`);
-    console.log(`  Rent Refund Ratio: ${(rentRefundRatio * 100).toFixed(2)}%`);
-    console.log(`  Rent to Refund: ₹${totalCancelledRentToRefund.toFixed(2)}`);
-    
-    console.log('🔢 SECURITY CALCULATION:');
-    console.log(`  Total Security Required for Cancelled Products: ₹${totalCancelledSecurityRequired.toFixed(2)}`);
-    console.log(`  Security Refund Ratio: ${(securityRefundRatio * 100).toFixed(2)}%`);
-    console.log(`  Security to Refund: ₹${totalCancelledSecurityToRefund.toFixed(2)}`);
-    
-    // Calculate refund: ONLY cancelled products' (PAID rent + PAID security - penalty)
-    // Extra refund will be added in the UI
-    const baseRefund = totalCancelledRentToRefund + totalCancelledSecurityToRefund - totalPenaltyAmount;
+    console.log('🔢 NEW REFUND CALCULATION (PREVIEW):');
+    console.log(`  Total Booking Rent: ₹${Math.floor(bookingTotalRent)}`);
+    console.log(`  Cancelled Products Rent: ₹${Math.floor(totalCancelledRentRequired)}`);
+    console.log(`  Remaining Products Rent: ₹${Math.floor(remainingRentRequired)}`);
+    console.log(`  Advance Paid (Net): ₹${Math.floor(netPaid)}`);
+    console.log(`  Remaining Due: ₹${Math.floor(differenceOfAmountPaid)}`);
+    console.log(`  Total Penalty: ₹${Math.floor(totalPenaltyAmount)}`);
+    console.log(`  Formula: ${Math.floor(bookingTotalRent)} - (${Math.floor(differenceOfAmountPaid)} + ${Math.floor(totalPenaltyAmount)} + ${Math.floor(remainingRentRequired)}) = ₹${Math.floor(baseRefund)}`);
+    console.log(`  Base Refund: ₹${Math.floor(baseRefund)}`);
     
     // Determine payment action
     let paymentAction = 'none';
@@ -543,6 +586,8 @@ router.get('/preview/:booking_id', async (req, res) => {
       paymentAction = 'collect';
       paymentDifference = Math.abs(baseRefund);
     }
+    
+    const isPartialCancellation = productsToCancel.length < allProducts.length;
     
     res.json({
       booking_id: booking.id,
@@ -558,20 +603,27 @@ router.get('/preview/:booking_id', async (req, res) => {
         security_deposit: parseFloat(p.security_deposit) || 0
       })),
       products_to_cancel: productPenalties,
-      total_cancelled_rent: totalCancelledRentToRefund, // Amount of rent that will be refunded (paid only)
-      total_cancelled_rent_required: totalCancelledRentRequired, // Amount of rent required (for display)
-      total_cancelled_security: totalCancelledSecurityToRefund, // Amount of security that will be refunded (paid only)
-      total_cancelled_security_required: totalCancelledSecurityRequired, // Amount of security required (for display)
+      total_cancelled_rent_required: totalCancelledRentRequired,
+      total_cancelled_security_required: totalCancelledSecurityRequired,
       total_penalty_amount: totalPenaltyAmount,
+      difference_of_amount_paid: differenceOfAmountPaid,
+      remaining_rent_required: remainingRentRequired,
+      advance_paid: netPaid,
       base_refund: baseRefund,
       total_paid: totalPaid,
       total_refunded: totalRefunded,
       net_paid: netPaid,
-      paid_rent: paidRent, // How much rent was actually paid
-      paid_security_deposit: paidSecurityDeposit, // How much security was actually paid
+      paid_rent: paidRent,
+      paid_security_deposit: paidSecurityDeposit,
       payment_action: paymentAction,
       payment_difference: paymentDifference,
-      is_partial: productsToCancel.length < allProducts.length
+      is_partial: isPartialCancellation,
+      discount_removed: isPartialCancellation && hasDiscount,
+      original_discount_info: hasDiscount ? {
+        type: originalDiscountType,
+        value: originalDiscountValue,
+        amount: originalDiscountAmount
+      } : null
     });
   } catch (error) {
     console.error('Error fetching cancellation preview:', error);

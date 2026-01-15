@@ -18,6 +18,30 @@ export default function CustomerOrderDetailsPage() {
   const [showComplaintForm, setShowComplaintForm] = useState(false);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
 
+  // Helper function to extract username from recorded_by field
+  function getRecordedByName(recordedBy: any): string {
+    if (!recordedBy) return 'N/A';
+    
+    // If it's a string
+    if (typeof recordedBy === 'string') {
+      try {
+        // Try to parse it as JSON
+        const parsed = JSON.parse(recordedBy);
+        return parsed.userName || parsed.name || recordedBy;
+      } catch {
+        // If parsing fails, return as is
+        return recordedBy;
+      }
+    }
+    
+    // If it's already an object
+    if (typeof recordedBy === 'object') {
+      return recordedBy.userName || recordedBy.name || 'N/A';
+    }
+    
+    return String(recordedBy);
+  }
+
   useEffect(() => {
     if (params.id) {
       fetchBooking();
@@ -74,6 +98,11 @@ export default function CustomerOrderDetailsPage() {
     });
     
     return productsWithRefunds;
+  }
+
+  // Helper to check if a product is cancelled
+  function isProductCancelled(product: any): boolean {
+    return product.status === 'cancelled';
   }
 
   function getStatusIcon(status: string) {
@@ -345,19 +374,28 @@ export default function CustomerOrderDetailsPage() {
             const hasMeasurements = product.measurements && Object.keys(product.measurements).length > 0;
             const isDropDatePassed = new Date(product.booked_to) < new Date();
             const hasRefund = productsWithRefunds.has(product.id);
+            const isCancelled = isProductCancelled(product);
             
             return (
               <div key={index} className={`border rounded-lg p-4 hover:shadow-md transition-shadow ${
+                isCancelled ? 'border-red-300 bg-red-50 opacity-60' :
                 hasRefund ? 'border-green-500 bg-green-50' : 'border-gray-200'
               }`}>
-                {hasRefund && (
+                {isCancelled ? (
+                  <div className="mb-3 flex items-center gap-2 text-red-700">
+                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <span className="text-sm font-semibold">Product Cancelled</span>
+                  </div>
+                ) : hasRefund ? (
                   <div className="mb-3 flex items-center gap-2 text-green-700">
                     <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                     </svg>
                     <span className="text-sm font-semibold">Refund Processed</span>
                   </div>
-                )}
+                ) : null}
                 <div className="flex gap-4">
                   {imageUrl ? (
                     <img
@@ -430,6 +468,77 @@ export default function CustomerOrderDetailsPage() {
       {/* Payment History */}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <h2 className="text-xl font-semibold text-gray-900 mb-4">Payment History</h2>
+        
+        {/* Show Financial Summary for Fully Cancelled Bookings */}
+        {(() => {
+          const products = Array.isArray(booking?.products) ? booking.products : [];
+          const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+          const isFullyCancelled = products.length > 0 && activeProducts.length === 0;
+          
+          if (isFullyCancelled) {
+            // Calculate financial summary
+            const totalPaid = transactions
+              .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
+              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+            
+            const penalties = transactions
+              .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
+              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+            
+            const refunded = transactions
+              .filter((t: any) => t.type === 'refund')
+              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+            
+            return (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                  </svg>
+                  <h3 className="text-sm font-semibold text-red-900">Booking Fully Cancelled</h3>
+                </div>
+                
+                {/* Financial Summary */}
+                <div className="bg-white rounded-lg p-3 space-y-2">
+                  <h4 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h4>
+                  <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                    <span className="text-xs text-gray-600">Total Rent Paid by You:</span>
+                    <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
+                  </div>
+                  {penalties > 0 && (
+                    <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                      <span className="text-xs text-gray-600">Charges + Penalties:</span>
+                      <span className="text-sm font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                    <span className="text-xs text-gray-600">Total Refunded:</span>
+                    <span className="text-sm font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-2 bg-gray-50 rounded px-2 mt-2">
+                    <span className="text-xs font-semibold text-gray-800">Net Amount (You Paid):</span>
+                    <span className="text-base font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="bg-blue-50 border-l-4 border-blue-400 p-2 mt-2">
+                    <p className="text-xs text-blue-800">
+                      You paid ₹{Math.floor(totalPaid).toLocaleString('en-IN')} and received ₹{Math.floor(refunded).toLocaleString('en-IN')} back (after deducting penalties ₹{Math.floor(penalties).toLocaleString('en-IN')}). 
+                      Net: ₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}
+                      {Math.floor(totalPaid - refunded) === 0 && ' (Fully settled)'}
+                      {Math.floor(totalPaid - refunded) > 0 && ' (kept for penalties & charges)'}.
+                    </p>
+                  </div>
+                </div>
+                
+                <p className="text-xs text-red-700 mt-3">
+                  All products in your booking have been cancelled. Transaction details are shown below.
+                </p>
+              </div>
+            );
+          }
+          
+          return null;
+        })()}
+        
         {transactions.length === 0 ? (
           <p className="text-gray-500 text-center py-4">No transactions recorded</p>
         ) : (
@@ -471,6 +580,7 @@ export default function CustomerOrderDetailsPage() {
                             <span className="font-medium">Type:</span> {
                               transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
                               transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                              transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
                               transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
                               transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
                               transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
@@ -488,7 +598,7 @@ export default function CustomerOrderDetailsPage() {
                           )}
                           {transaction.recorded_by && (
                             <p className="text-xs text-gray-500 mt-2">
-                              Recorded by: {transaction.recorded_by}
+                              Recorded by: {getRecordedByName(transaction.recorded_by)}
                             </p>
                           )}
                         </div>
@@ -549,7 +659,7 @@ export default function CustomerOrderDetailsPage() {
                             )}
                             {transaction.recorded_by && (
                               <p className="text-xs text-gray-500 mt-2">
-                                Recorded by: {transaction.recorded_by}
+                                Recorded by: {getRecordedByName(transaction.recorded_by)}
                               </p>
                             )}
                           </div>

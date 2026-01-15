@@ -251,6 +251,8 @@ class InvoiceGenerator {
             transType = 'Exchange Upgrade';
           } else if (transaction.transaction_type === 'exchange_penalty') {
             transType = 'Exchange Penalty';
+          } else if (transaction.transaction_type === 'downgrade_penalty') {
+            transType = 'Downgrade Penalty';
           } else if (transaction.transaction_type === 'cancellation_penalty') {
             transType = 'Cancellation';
           }

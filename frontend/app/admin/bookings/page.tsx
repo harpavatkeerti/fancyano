@@ -60,6 +60,8 @@ export default function BookingsPage() {
     products: [] as { id: number; name: string; rent_per_day: number; code: string; size?: string; booked_from: string; booked_to: string }[],
     total_amount: 0,
     transportation_opted: false,
+    discount_type: null as 'percentage' | 'amount' | null,
+    discount_value: 0,
   });
   const [lastProductDates, setLastProductDates] = useState<{ from: string; to: string } | null>(null);
   const [showDateConfirmModal, setShowDateConfirmModal] = useState(false);
@@ -112,6 +114,7 @@ export default function BookingsPage() {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all'); // New status filter
+  const [allTransactions, setAllTransactions] = useState<any[]>([]); // Store all transactions for delay check
   
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
@@ -122,6 +125,7 @@ export default function BookingsPage() {
     fetchProducts();
     fetchTransportationCharge();
     fetchDateChangeChargeSettings();
+    fetchAllTransactions(); // Fetch transactions for delay detection
   }, []);
 
   async function fetchDateChangeChargeSettings() {
@@ -204,6 +208,95 @@ export default function BookingsPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function fetchAllTransactions() {
+    try {
+      const response = await paymentTransactionsApi.getAll();
+      setAllTransactions(response.data || []);
+    } catch (error) {
+      console.error('Error fetching transactions:', error);
+      setAllTransactions([]);
+    }
+  }
+
+  // Helper function to check if a product has security deposit refund
+  function hasSecurityDepositRefund(bookingId: number, productCode: string): boolean {
+    return allTransactions.some((transaction: any) => {
+      const isSecurityRefund = transaction.booking_id === bookingId &&
+                              transaction.type === 'refund' &&
+                              transaction.transaction_type === 'security_refund';
+      
+      // Check if transaction notes contain the product code
+      const notes = String(transaction.notes || '').toLowerCase();
+      const code = productCode.toLowerCase();
+      
+      return isSecurityRefund && notes.includes(code);
+    });
+  }
+
+  // Helper function to check if a booking is delayed
+  function isBookingDelayed(booking: Booking): boolean {
+    // Only check for confirmed or in_progress bookings
+    if (booking.status !== 'confirmed' && booking.status !== 'in_progress') {
+      return false;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    
+    // Check each product
+    for (const product of products) {
+      if (!product.booked_to) continue;
+
+      const returnDate = new Date(product.booked_to);
+      returnDate.setHours(0, 0, 0, 0);
+
+      // If today is past the return date
+      if (today > returnDate) {
+        // Check if security deposit has been refunded for this product
+        const hasRefund = hasSecurityDepositRefund(booking.id, product.code);
+        
+        // If no refund found, product is delayed
+        if (!hasRefund) {
+          return true; // At least one product is delayed
+        }
+      }
+    }
+
+    return false;
+  }
+
+  // Helper function to get delayed products for a booking
+  function getDelayedProducts(booking: Booking): any[] {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const delayedProducts: any[] = [];
+    
+    for (const product of products) {
+      if (!product.booked_to) continue;
+
+      const returnDate = new Date(product.booked_to);
+      returnDate.setHours(0, 0, 0, 0);
+
+      if (today > returnDate) {
+        const hasRefund = hasSecurityDepositRefund(booking.id, product.code);
+        
+        if (!hasRefund) {
+          const daysDelayed = Math.floor((today.getTime() - returnDate.getTime()) / (1000 * 60 * 60 * 24));
+          delayedProducts.push({
+            ...product,
+            daysDelayed
+          });
+        }
+      }
+    }
+
+    return delayedProducts;
   }
 
   async function fetchProducts() {
@@ -703,7 +796,29 @@ export default function BookingsPage() {
   function calculateTotal() {
     const subtotal = calculateSubtotal();
     const transport = addFormData.transportation_opted ? Math.floor(transportationCharge) : 0;
-    return Math.floor(subtotal + transport);
+    
+    // Calculate discount on subtotal only (not including transportation)
+    let discount = 0;
+    if (addFormData.discount_type === 'percentage' && addFormData.discount_value > 0) {
+      discount = Math.floor((subtotal * addFormData.discount_value) / 100);
+    } else if (addFormData.discount_type === 'amount' && addFormData.discount_value > 0) {
+      discount = Math.floor(addFormData.discount_value);
+    }
+    
+    // Final Total = Subtotal - Discount + Transportation
+    return Math.floor(subtotal - discount + transport);
+  }
+
+  function calculateDiscount() {
+    const subtotal = calculateSubtotal();
+    
+    // Discount applies only on product rent (subtotal), not transportation
+    if (addFormData.discount_type === 'percentage' && addFormData.discount_value > 0) {
+      return Math.floor((subtotal * addFormData.discount_value) / 100);
+    } else if (addFormData.discount_type === 'amount' && addFormData.discount_value > 0) {
+      return Math.floor(addFormData.discount_value);
+    }
+    return 0;
   }
 
   function handleRemoveProduct(productId: number) {
@@ -924,6 +1039,7 @@ export default function BookingsPage() {
 
     // All validations passed - show payment collection modal
     const finalTotal = calculateTotal();
+    const discountAmount = calculateDiscount();
     setPendingBookingData({
       customer_name: addFormData.customer_name,
       fullPhone1,
@@ -934,6 +1050,9 @@ export default function BookingsPage() {
       finalTotal,
       transportation_opted: addFormData.transportation_opted,
       other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+      discount_type: addFormData.discount_type,
+      discount_value: addFormData.discount_value,
+      discount_amount: discountAmount,
     });
     setPaymentAmount(''); // Reset payment amount
     setPaymentMethod('Cash');
@@ -950,6 +1069,7 @@ export default function BookingsPage() {
         const fullPhone1 = `${country1?.callingCode}${addFormData.customer_phone}`;
         const fullPhone2 = `${country2?.callingCode}${addFormData.alternate_phone}`;
         const finalTotal = calculateTotal();
+        const discountAmount = calculateDiscount();
         
         await bookingsApi.create({
           customer_name: addFormData.customer_name,
@@ -967,6 +1087,9 @@ export default function BookingsPage() {
           total_amount: finalTotal,
           transportation_opted: addFormData.transportation_opted,
           other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+          discount_type: addFormData.discount_type,
+          discount_value: addFormData.discount_value,
+          discount_amount: discountAmount,
           status: 'pending',
         } as any);
         
@@ -999,6 +1122,9 @@ export default function BookingsPage() {
         total_amount: pendingBookingData.finalTotal,
         transportation_opted: pendingBookingData.transportation_opted,
         other_charges: pendingBookingData.other_charges,
+        discount_type: pendingBookingData.discount_type,
+        discount_value: pendingBookingData.discount_value,
+        discount_amount: pendingBookingData.discount_amount,
         status: 'pending',
       } as any);
       
@@ -1129,6 +1255,18 @@ export default function BookingsPage() {
     }
     
     return matchesSearch && matchesStatus && matchesUrgentFilter && matchesDateRange;
+  }).sort((a, b) => {
+    // Sort delayed bookings to the top (highest priority)
+    const aDelayed = isBookingDelayed(a);
+    const bDelayed = isBookingDelayed(b);
+    
+    if (aDelayed && !bDelayed) return -1; // a comes first
+    if (!aDelayed && bDelayed) return 1;  // b comes first
+    
+    // If both delayed or both not delayed, sort by booking_date (newest first)
+    const dateA = new Date(a.booking_date).getTime();
+    const dateB = new Date(b.booking_date).getTime();
+    return dateB - dateA;
   });
 
   if (loading) {
@@ -1141,6 +1279,30 @@ export default function BookingsPage() {
         <h1 className="text-3xl font-bold text-gray-800">Bookings</h1>
         <Button onClick={handleAddBooking}>Add Booking</Button>
       </div>
+
+      {/* Delayed Bookings Alert */}
+      {(() => {
+        const delayedCount = filteredBookings.filter(b => isBookingDelayed(b)).length;
+        if (delayedCount > 0) {
+          return (
+            <div className="bg-red-50 border-2 border-red-500 rounded-lg p-4 animate-pulse">
+              <div className="flex items-center gap-3">
+                <span className="text-3xl">🚨</span>
+                <div className="flex-1">
+                  <h3 className="text-lg font-bold text-red-800">URGENT: {delayedCount} Delayed Booking{delayedCount > 1 ? 's' : ''}</h3>
+                  <p className="text-sm text-red-700">
+                    Product(s) not returned on scheduled date. Follow-up required immediately!
+                  </p>
+                </div>
+                <span className="px-4 py-2 bg-red-600 text-white text-xl font-bold rounded-full">
+                  {delayedCount}
+                </span>
+              </div>
+            </div>
+          );
+        }
+        return null;
+      })()}
 
       {/* Search and Date Filter */}
       <div className="bg-white p-4 rounded-lg shadow space-y-4">
@@ -1252,11 +1414,20 @@ export default function BookingsPage() {
               const productCount = products.length;
               const isUrgent = isBookingUrgent(booking);
               const urgentReason = isUrgent ? getUrgentReason(booking) : '';
+              const isDelayed = isBookingDelayed(booking);
+              const delayedProducts = isDelayed ? getDelayedProducts(booking) : [];
               
               return (
-                <tr key={booking.id} className="hover:bg-gray-50 relative">
+                <tr key={booking.id} className={`hover:bg-gray-50 relative ${isDelayed ? 'bg-red-50 border-l-4 border-red-500' : ''}`}>
                   <td className="px-3 py-3 whitespace-nowrap text-sm font-medium text-gray-900">
-                    <span className="font-semibold text-blue-600">#{booking.id}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold text-blue-600">#{booking.id}</span>
+                      {isDelayed && (
+                        <span className="px-2 py-1 bg-red-600 text-white text-xs font-bold rounded-full animate-pulse">
+                          DELAYED
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-3 py-3 text-sm font-medium text-gray-900">
                     <div className="flex items-center gap-1 max-w-[200px]">
@@ -1268,6 +1439,20 @@ export default function BookingsPage() {
                           title={urgentReason}
                         >
                           ⚠️
+                        </button>
+                      )}
+                      {isDelayed && (
+                        <button
+                          onClick={() => {
+                            const delayInfo = delayedProducts.map(p => 
+                              `${p.name} (${p.code}): ${p.daysDelayed} day${p.daysDelayed > 1 ? 's' : ''} overdue`
+                            ).join('\n');
+                            toast.error(`⚠️ DELAYED PRODUCTS:\n\n${delayInfo}\n\nExpected return: ${new Date(delayedProducts[0].booked_to).toLocaleDateString('en-GB')}\n\n⚠️ FOLLOW UP REQUIRED - Product(s) not returned!`, 10000);
+                          }}
+                          className="flex-shrink-0 px-1.5 py-0.5 bg-red-600 text-white text-xs font-bold rounded hover:bg-red-700 transition-colors animate-pulse"
+                          title="Click for details"
+                        >
+                          🚨
                         </button>
                       )}
                     </div>
@@ -2093,6 +2278,98 @@ export default function BookingsPage() {
                       )}
                     </div>
 
+                    {/* Discount Section */}
+                    <div className="bg-yellow-50 border-t border-yellow-200 px-4 py-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <span className="text-2xl">💰</span>
+                          <div>
+                            <p className="font-semibold text-gray-800">Discount</p>
+                            <p className="text-sm text-gray-600">Apply discount on product rent only (transportation not included)</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="discount_type"
+                              checked={!addFormData.discount_type}
+                              onChange={() => {
+                                setAddFormData({ ...addFormData, discount_type: null, discount_value: 0 });
+                              }}
+                              className="w-5 h-5 text-gray-600"
+                            />
+                            <span className="font-medium text-gray-700">No Discount</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="discount_type"
+                              checked={addFormData.discount_type === 'percentage'}
+                              onChange={() => setAddFormData({ ...addFormData, discount_type: 'percentage', discount_value: 0 })}
+                              className="w-5 h-5 text-blue-600"
+                            />
+                            <span className="font-medium text-gray-700">Percentage (%)</span>
+                          </label>
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="radio"
+                              name="discount_type"
+                              checked={addFormData.discount_type === 'amount'}
+                              onChange={() => setAddFormData({ ...addFormData, discount_type: 'amount', discount_value: 0 })}
+                              className="w-5 h-5 text-green-600"
+                            />
+                            <span className="font-medium text-gray-700">Fixed Amount (₹)</span>
+                          </label>
+                        </div>
+                      </div>
+                      
+                      {/* Discount Input - Shows when discount type is selected */}
+                      {addFormData.discount_type && (
+                        <div className="mt-3 pl-12">
+                          <label className="block text-sm font-medium text-gray-700 mb-1">
+                            {addFormData.discount_type === 'percentage' ? 'Enter Discount Percentage*' : 'Enter Discount Amount*'}
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className="text-gray-700 font-medium">
+                              {addFormData.discount_type === 'amount' ? '₹' : ''}
+                            </span>
+                            <input
+                              type="number"
+                              value={addFormData.discount_value || ''}
+                              onChange={(e) => {
+                                const value = parseFloat(e.target.value) || 0;
+                                // Validate percentage (0-100) or amount
+                                if (addFormData.discount_type === 'percentage') {
+                                  if (value >= 0 && value <= 100) {
+                                    setAddFormData({ ...addFormData, discount_value: value });
+                                  }
+                                } else {
+                                  if (value >= 0) {
+                                    setAddFormData({ ...addFormData, discount_value: value });
+                                  }
+                                }
+                              }}
+                              placeholder={addFormData.discount_type === 'percentage' ? 'Enter percentage (0-100)' : 'Enter amount'}
+                              min="0"
+                              max={addFormData.discount_type === 'percentage' ? 100 : undefined}
+                              step={addFormData.discount_type === 'percentage' ? '0.1' : '1'}
+                              className="w-64 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              required
+                            />
+                            {addFormData.discount_type === 'percentage' && (
+                              <span className="text-gray-700 font-medium">%</span>
+                            )}
+                          </div>
+                          {calculateDiscount() > 0 && (
+                            <p className="text-sm text-green-600 mt-2 font-medium">
+                              💵 Discount Amount: ₹{calculateDiscount()}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
                     {/* Final Total */}
                     <div className="bg-gradient-to-r from-green-600 to-green-500 text-white px-4 py-4">
                       <div className="flex justify-between items-center">
@@ -2101,6 +2378,11 @@ export default function BookingsPage() {
                           {addFormData.transportation_opted && (
                             <p className="text-xs text-green-200 mt-1">
                               (Includes local transportation charge: ₹{Math.floor(transportationCharge)})
+                            </p>
+                          )}
+                          {calculateDiscount() > 0 && (
+                            <p className="text-xs text-green-200 mt-1">
+                              (Discount applied: -₹{calculateDiscount()})
                             </p>
                           )}
                         </div>

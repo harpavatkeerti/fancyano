@@ -4,11 +4,14 @@ import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
+import { settingsApi } from '@/lib/settingsApi';
+import { productTrackingApi } from '@/lib/productTrackingApi';
 import { Booking } from '@/types';
 import { Button, PaymentManagement, ProductExchange } from '@/components/common';
 import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
+import { calculateBookingDelayedCharges, DelayedChargesSettings } from '@/lib/delayedCharges';
 import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
@@ -30,12 +33,361 @@ export default function OrderDetailsPage() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [pdfPublicUrl, setPdfPublicUrl] = useState<string | null>(null);
   const [showWhatsAppShareModal, setShowWhatsAppShareModal] = useState(false);
+  const [delayedChargesSettings, setDelayedChargesSettings] = useState<DelayedChargesSettings | null>(null);
+  const [delayedChargesData, setDelayedChargesData] = useState<any>(null);
+  const [applyingDelayedCharges, setApplyingDelayedCharges] = useState(false);
 
   useEffect(() => {
     if (params.id) {
       fetchBooking();
+      fetchDelayedChargesSettings();
     }
   }, [params.id]);
+
+  useEffect(() => {
+    if (booking && delayedChargesSettings) {
+      calculateDelayedCharges();
+    }
+  }, [booking, delayedChargesSettings]);
+
+  // Recalculate when transactions change (in case return was just recorded)
+  useEffect(() => {
+    if (booking && delayedChargesSettings && transactions.length > 0) {
+      // Small delay to ensure tracking data is updated
+      const timer = setTimeout(() => {
+        calculateDelayedCharges();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [transactions.length]);
+
+  async function fetchDelayedChargesSettings() {
+    try {
+      const response = await settingsApi.getByKey('delayed_charges_settings');
+      if (response.data?.setting_value) {
+        const parsed = JSON.parse(response.data.setting_value);
+        setDelayedChargesSettings({
+          enabled: parsed.enabled || false,
+          type: parsed.type || 'fixed',
+          value: parsed.value || 0,
+        });
+      } else {
+        setDelayedChargesSettings({
+          enabled: false,
+          type: 'fixed',
+          value: 0,
+        });
+      }
+    } catch (error) {
+      console.log('Delayed charges settings not found, using defaults');
+      setDelayedChargesSettings({
+        enabled: false,
+        type: 'fixed',
+        value: 0,
+      });
+    }
+  }
+
+  async function calculateDelayedCharges() {
+    if (!booking || !delayedChargesSettings || !delayedChargesSettings.enabled) {
+      setDelayedChargesData(null);
+      return;
+    }
+
+    try {
+      const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
+      
+      console.log('🔍 Calculating delayed charges for booking:', booking.id);
+      console.log('  Settings:', delayedChargesSettings);
+      console.log('  Products:', products.length);
+      
+      // Fetch tracking data for all products to get actual return dates
+      const productsWithTracking = await Promise.all(
+        products.map(async (product: any) => {
+          try {
+            const trackingResponse = await productTrackingApi.getByProductId(product.id);
+            const trackingData = Array.isArray(trackingResponse.data?.data) 
+              ? trackingResponse.data.data 
+              : Array.isArray(trackingResponse.data) 
+                ? trackingResponse.data 
+                : [];
+            
+            console.log(`  Product ${product.id} (${product.code}): Found ${trackingData.length} tracking records`);
+            
+            // Find the tracking record for this booking with return date
+            // Try multiple conditions to find the right tracking record
+            let bookingTracking = trackingData.find((t: any) => 
+              t.booking_id === booking.id && 
+              t.tracking_type === 'picked_by_customer' &&
+              t.status === 'returned' &&
+              t.return_date
+            );
+
+            // If not found, try without status check (in case status is not set correctly)
+            if (!bookingTracking) {
+              bookingTracking = trackingData.find((t: any) => 
+                t.booking_id === booking.id && 
+                t.tracking_type === 'picked_by_customer' &&
+                t.return_date
+              );
+            }
+
+            // If still not found, try any tracking record for this booking with return_date
+            if (!bookingTracking) {
+              bookingTracking = trackingData.find((t: any) => 
+                t.booking_id === booking.id && 
+                t.return_date
+              );
+            }
+
+            // Get scheduled return date (product level or booking level)
+            const scheduledReturnDate = product.booked_to || booking.booked_to;
+            
+            // Get actual return date from tracking
+            const actualReturnDate = bookingTracking?.return_date || null;
+
+            // If no actual return date but scheduled date has passed, we can still calculate delay
+            // using today's date (for products that are overdue but not yet returned)
+            let effectiveReturnDate = actualReturnDate;
+            if (!actualReturnDate && scheduledReturnDate) {
+              const scheduled = new Date(scheduledReturnDate);
+              const today = new Date();
+              today.setHours(0, 0, 0, 0);
+              scheduled.setHours(0, 0, 0, 0);
+              
+              // If scheduled return date has passed, use today as effective return date
+              if (today > scheduled) {
+                effectiveReturnDate = today.toISOString();
+                console.log(`    Product ${product.code}: No return date, but scheduled date passed. Using today as effective return date.`);
+              }
+            }
+
+            console.log(`    Product ${product.code}: Scheduled=${scheduledReturnDate}, Actual=${actualReturnDate || 'Not returned'}, Effective=${effectiveReturnDate || 'N/A'}`);
+
+            return {
+              ...product,
+              tracking: effectiveReturnDate ? {
+                return_date: effectiveReturnDate
+              } : null
+            };
+          } catch (error) {
+            console.error(`Error fetching tracking for product ${product.id}:`, error);
+            return {
+              ...product,
+              tracking: null
+            };
+          }
+        })
+      );
+
+      const charges = calculateBookingDelayedCharges(
+        productsWithTracking,
+        booking.booked_to,
+        delayedChargesSettings
+      );
+
+      console.log('  Calculated charges:', charges);
+      console.log('  Has delayed products:', charges.hasDelayedProducts);
+      console.log('  Total charge:', charges.totalCharge);
+
+      setDelayedChargesData(charges);
+    } catch (error) {
+      console.error('Error calculating delayed charges:', error);
+      setDelayedChargesData(null);
+    }
+  }
+
+  async function applyDelayedCharges() {
+    if (!booking || !delayedChargesData || delayedChargesData.totalCharge <= 0) {
+      console.error('❌ Cannot apply delayed charges:', {
+        hasBooking: !!booking,
+        hasData: !!delayedChargesData,
+        totalCharge: delayedChargesData?.totalCharge
+      });
+      toast.error('No delayed charges to apply');
+      return;
+    }
+
+    // Check if delayed charges have already been applied
+    // Need to check per-product if dates differ, or per-booking if dates same
+    const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
+    
+    // Check if all products have same dates
+    const allDatesSame = products.length > 0 && products.every((p: any) => {
+      const firstProduct = products[0];
+      return (p.booked_from || booking.booked_from) === (firstProduct.booked_from || booking.booked_from) &&
+             (p.booked_to || booking.booked_to) === (firstProduct.booked_to || booking.booked_to);
+    });
+
+    if (allDatesSame) {
+      // All products have same dates - check if any delayed charges exist for this booking
+      const existingDelayedCharges = transactions.find((t: any) => 
+        t.transaction_type === 'delayed_charges' || 
+        (t.type === 'payment' && t.method === 'delayed_charges') ||
+        (t.notes && t.notes.includes('Delayed return charges'))
+      );
+
+      if (existingDelayedCharges) {
+        console.warn('⚠️ Delayed charges already applied for booking:', existingDelayedCharges);
+        toast.warning('Delayed charges have already been applied for this booking');
+        return;
+      }
+    } else {
+      // Products have different dates - check per product
+      const delayedProducts = delayedChargesData.productCharges.filter((p: any) => p.isDelayed);
+      const alreadyAppliedProducts: string[] = [];
+
+      for (const product of delayedProducts) {
+        const productTransaction = transactions.find((t: any) => {
+          const isDelayedCharge = t.transaction_type === 'delayed_charges' || 
+                                  (t.type === 'payment' && t.method === 'delayed_charges') ||
+                                  (t.notes && t.notes.includes('Delayed return charges'));
+          
+          if (!isDelayedCharge) return false;
+          
+          // Check if this transaction is for this specific product
+          return t.notes && (
+            t.notes.includes(product.productCode) ||
+            t.notes.includes(product.productName)
+          );
+        });
+
+        if (productTransaction) {
+          alreadyAppliedProducts.push(product.productName);
+        }
+      }
+
+      if (alreadyAppliedProducts.length > 0) {
+        console.warn('⚠️ Delayed charges already applied for products:', alreadyAppliedProducts);
+        toast.warning(`Delayed charges have already been applied for: ${alreadyAppliedProducts.join(', ')}`);
+        return;
+      }
+    }
+
+    try {
+      console.log('🚀 Applying delayed charges for booking:', booking.id);
+      console.log('  Total charge:', delayedChargesData.totalCharge);
+      console.log('  Product charges:', delayedChargesData.productCharges.filter((p: any) => p.isDelayed));
+      
+      setApplyingDelayedCharges(true);
+
+      // Create payment transaction(s) for delayed charges
+      // If all products have same dates, create one transaction for whole booking
+      // If products have different dates, create separate transactions per product
+      const delayedProducts = delayedChargesData.productCharges.filter((p: any) => p.isDelayed);
+      
+      if (allDatesSame) {
+        // All products have same dates - create one transaction for whole booking
+        const productDetails = delayedProducts
+          .map((p: any) => `${p.productName} (${p.productCode}): ${p.daysDelayed} day(s)`)
+          .join(', ');
+
+        const transactionData = {
+          booking_id: booking.id,
+          amount: delayedChargesData.totalCharge,
+          type: 'payment',
+          transaction_type: 'delayed_charges',
+          method: 'delayed_charges',
+          recorded_by: 'admin',
+          notes: `Delayed return charges (All products): ${productDetails}. Total: ₹${delayedChargesData.totalCharge.toFixed(2)}`
+        };
+
+        console.log('📝 Creating single payment transaction for whole booking:', transactionData);
+        await paymentTransactionsApi.create(transactionData);
+      } else {
+        // Products have different dates - create separate transactions per product
+        console.log('📝 Creating separate payment transactions for each product');
+        
+        for (const product of delayedProducts) {
+          const transactionData = {
+            booking_id: booking.id,
+            amount: product.chargeAmount,
+            type: 'payment',
+            transaction_type: 'delayed_charges',
+            method: 'delayed_charges',
+            recorded_by: 'admin',
+            notes: `Delayed return charges for ${product.productName} (${product.productCode}): ${product.daysDelayed} day(s). Scheduled: ${new Date(product.scheduledReturnDate).toLocaleDateString('en-GB')}, Actual: ${product.actualReturnDate ? new Date(product.actualReturnDate).toLocaleDateString('en-GB') : 'N/A'}. Charge: ₹${product.chargeAmount.toFixed(2)}`
+          };
+
+          console.log(`  Creating transaction for ${product.productName}:`, transactionData);
+          await paymentTransactionsApi.create(transactionData);
+        }
+      }
+
+      toast.success(
+        allDatesSame 
+          ? `Delayed charges of ₹${delayedChargesData.totalCharge.toFixed(2)} applied successfully for all products`
+          : `Delayed charges applied successfully for ${delayedProducts.length} product(s). Total: ₹${delayedChargesData.totalCharge.toFixed(2)}`
+      );
+      
+      // Refresh booking data and transactions
+      console.log('🔄 Refreshing booking data...');
+      await fetchBooking();
+      
+      // Also fetch transactions separately to ensure they're updated
+      try {
+        console.log('🔄 Fetching updated transactions for booking:', booking.id);
+        const transactionsResponse = await paymentTransactionsApi.getByBookingId(booking.id);
+        console.log('📦 Transactions response:', transactionsResponse);
+        
+        const updatedTransactions = Array.isArray(transactionsResponse.data) 
+          ? transactionsResponse.data 
+          : Array.isArray(transactionsResponse.data?.data) 
+            ? transactionsResponse.data.data 
+            : [];
+        
+        console.log('📊 Updated transactions count:', updatedTransactions.length);
+        console.log('📋 All transactions:', updatedTransactions);
+        
+        setTransactions(updatedTransactions);
+        
+        // Check if delayed charges transaction was created
+        const delayedChargeTransaction = updatedTransactions.find((t: any) => 
+          t.transaction_type === 'delayed_charges' || 
+          (t.type === 'payment' && t.method === 'delayed_charges') ||
+          (t.notes && t.notes.includes('Delayed return charges'))
+        );
+        
+        if (delayedChargeTransaction) {
+          console.log('✅ Delayed charges transaction found in list:', delayedChargeTransaction);
+          console.log('💰 Transaction amount:', delayedChargeTransaction.amount);
+          console.log('📝 Transaction notes:', delayedChargeTransaction.notes);
+        } else {
+          console.warn('⚠️ Delayed charges transaction not found in updated transactions list');
+          console.warn('   Searching for similar transactions...');
+          const similarTransactions = updatedTransactions.filter((t: any) => 
+            t.type === 'payment' || 
+            t.notes?.toLowerCase().includes('delayed') ||
+            t.notes?.toLowerCase().includes('return')
+          );
+          console.warn('   Similar transactions found:', similarTransactions);
+        }
+      } catch (txnError: any) {
+        console.error('❌ Error fetching transactions:', txnError);
+        console.error('   Error details:', {
+          message: txnError.message,
+          response: txnError.response?.data,
+          status: txnError.response?.status
+        });
+      }
+      
+      // Recalculate delayed charges (should now show 0 or hide the section)
+      setTimeout(() => {
+        calculateDelayedCharges();
+      }, 1000);
+      
+    } catch (error: any) {
+      console.error('❌ Error applying delayed charges:', error);
+      console.error('  Error details:', {
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status
+      });
+      toast.error(error.response?.data?.error || error.message || 'Failed to apply delayed charges');
+    } finally {
+      setApplyingDelayedCharges(false);
+    }
+  }
 
   async function fetchBooking() {
     try {
@@ -132,9 +484,18 @@ export default function OrderDetailsPage() {
   function calculateBookingStatus(): string {
     if (!booking) return 'pending';
 
-    // If booking is explicitly cancelled, return cancelled
-    if (booking.status === 'cancelled') {
+    // CRITICAL: Check if ALL products are cancelled - if so, booking should show as cancelled
+    const products = Array.isArray(booking.products) ? booking.products : [];
+    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+    
+    // If all products are cancelled, show booking as cancelled
+    if (products.length > 0 && activeProducts.length === 0) {
       return 'cancelled';
+    }
+
+    // If booking is explicitly cancelled or partially cancelled, return that status
+    if (booking.status === 'cancelled' || booking.status === 'partially_cancelled') {
+      return booking.status;
     }
 
     const totalAmount = typeof booking.total_amount === 'number'
@@ -148,7 +509,6 @@ export default function OrderDetailsPage() {
       : parseFloat(booking.paid_amount || '0') || 0;
 
     // Check for per-item refunds
-    const products = Array.isArray(booking.products) ? booking.products : [];
     const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
     
     // Count how many products have refunds by checking transaction notes
@@ -189,7 +549,7 @@ export default function OrderDetailsPage() {
           to: p.booked_to || booking.booked_to
         }));
         
-        const uniqueDates = new Set(dates.map(d => `${d.from}-${d.to}`));
+        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
         if (uniqueDates.size > 1) {
           // Multiple products with different dates - Partially Completed
           return 'in_progress'; // Will display as "Partially Completed" or "Under Process"
@@ -218,6 +578,10 @@ export default function OrderDetailsPage() {
     switch (calculatedStatus) {
       case 'completed':
         return { text: 'Completed', color: 'text-blue-600' };
+      case 'cancelled':
+        return { text: 'Cancelled', color: 'text-red-600' };
+      case 'partially_cancelled':
+        return { text: 'Partially Cancelled', color: 'text-orange-600' };
       case 'in_progress':
         return { text: 'Under Process', color: 'text-blue-600' };
       case 'confirmed':
@@ -553,6 +917,11 @@ export default function OrderDetailsPage() {
 
   const products = Array.isArray(booking.products) ? booking.products : [];
 
+  // Helper to check if a product is cancelled
+  function isProductCancelled(product: any): boolean {
+    return product.status === 'cancelled';
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-8">
@@ -647,8 +1016,8 @@ export default function OrderDetailsPage() {
                     return bookingSecurityDeposit;
                   }
                   
-                  // Calculate from products
-                  const products = Array.isArray(booking.products) ? booking.products : [];
+                  // Calculate from products (exclude cancelled)
+                  const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
                   const calculatedSecurity = products.reduce((sum: number, product: any) => {
                     const productSecurity = typeof product.security_deposit === 'number'
                       ? product.security_deposit
@@ -673,8 +1042,8 @@ export default function OrderDetailsPage() {
                   
                   let securityDeposit = bookingSecurityDeposit;
                   if (securityDeposit === 0) {
-                    // Calculate from products
-                    const products = Array.isArray(booking.products) ? booking.products : [];
+                    // Calculate from products (exclude cancelled)
+                    const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
                     securityDeposit = products.reduce((sum: number, product: any) => {
                       const productSecurity = typeof product.security_deposit === 'number'
                         ? product.security_deposit
@@ -692,79 +1061,6 @@ export default function OrderDetailsPage() {
           </div>
         </div>
 
-        {/* Cancellation Summary - Only show for cancelled bookings */}
-        {booking.status === 'cancelled' && (
-          <div className="mb-8 bg-red-50 border-2 border-red-200 rounded-lg p-6">
-            <h3 className="text-lg font-bold text-red-900 mb-4 flex items-center gap-2">
-              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-              </svg>
-              Cancellation Summary
-            </h3>
-            
-            {(() => {
-              // Get cancellation transactions
-              const cancellationTransactions = transactions.filter((t: any) => 
-                t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
-              );
-              
-              const penaltyTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_penalty');
-              const refundTransaction = cancellationTransactions.find((t: any) => t.transaction_type === 'cancellation_refund');
-              
-              // Calculate amounts
-              const totalPaid = parseFloat(booking.paid_amount || '0');
-              const penaltyAmount = penaltyTransaction ? parseFloat(penaltyTransaction.amount || '0') : 0;
-              const refundAmount = refundTransaction ? parseFloat(refundTransaction.amount || '0') : 0;
-              const extraRefund = refundAmount > (totalPaid - penaltyAmount) ? refundAmount - (totalPaid - penaltyAmount) : 0;
-              
-              return (
-                <div className="bg-white rounded-lg p-4 space-y-3">
-                  <div className="flex justify-between items-center pb-2">
-                    <span className="text-gray-700 font-medium">Customer Paid (before cancellation)</span>
-                    <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
-                  </div>
-                  
-                  {penaltyAmount > 0 && (
-                    <div className="flex justify-between items-center pb-2 border-t pt-2">
-                      <span className="text-gray-700 font-medium">
-                        <span className="mr-2">−</span>
-                        Cancellation Penalty
-                      </span>
-                      <span className="text-lg font-bold text-red-600">₹{Math.floor(penaltyAmount).toLocaleString('en-IN')}</span>
-                    </div>
-                  )}
-                  
-                  {extraRefund > 0 && (
-                    <div className="flex justify-between items-center pb-2 border-t pt-2">
-                      <span className="text-gray-700 font-medium">
-                        <span className="mr-2">+</span>
-                        Extra Compensation
-                      </span>
-                      <span className="text-lg font-bold text-blue-600">₹{Math.floor(extraRefund).toLocaleString('en-IN')}</span>
-                    </div>
-                  )}
-                  
-                  <div className="flex justify-between items-center border-t-2 border-green-600 pt-3 mt-3">
-                    <span className="text-gray-900 font-bold text-lg">
-                      <span className="mr-2">=</span>
-                      Refunded to Customer
-                    </span>
-                    <span className="text-2xl font-bold text-green-600">₹{Math.floor(refundAmount).toLocaleString('en-IN')}</span>
-                  </div>
-                  
-                  {/* Show transaction notes if available */}
-                  {refundTransaction && refundTransaction.notes && (
-                    <div className="mt-4 pt-4 border-t">
-                      <p className="text-xs text-gray-500 font-semibold mb-1">Cancellation Details:</p>
-                      <p className="text-xs text-gray-600">{refundTransaction.notes}</p>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
-          </div>
-        )}
-
         {/* Products List */}
         <div className="mb-8">
           <h3 className="text-lg font-semibold mb-4">Products</h3>
@@ -779,9 +1075,12 @@ export default function OrderDetailsPage() {
             const isFemale = isFemaleClothing(product.name);
             const isMale = isMaleClothing(product.name);
             const isExpanded = showMeasurements[uniqueKey] || false;
+            const isCancelled = isProductCancelled(product);
 
             return (
-            <div key={index} className="border rounded-lg p-4 mb-4">
+            <div key={index} className={`border rounded-lg p-4 mb-4 ${
+              isCancelled ? 'opacity-60 border-red-300 bg-red-50' : ''
+            }`}>
               <div className="flex justify-between items-start mb-2">
                   <div className="flex items-start gap-3">
                     {/* Product Image */}
@@ -801,7 +1100,14 @@ export default function OrderDetailsPage() {
                       ) : null;
                     })()}
                 <div>
-                  <p className="font-semibold text-lg">{product.name}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="font-semibold text-lg">{product.name}</p>
+                    {isCancelled && (
+                      <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
+                        ❌ Cancelled
+                      </span>
+                    )}
+                  </div>
                       {product.code && (
                         <div className="flex items-center gap-2 mt-1">
                           {(() => {
@@ -1051,11 +1357,175 @@ export default function OrderDetailsPage() {
             <ProductExchange
               bookingId={booking.id}
               bookingDate={booking.booking_date}
-              currentProducts={Array.isArray(booking.products) ? booking.products : []}
+              currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []}
               onExchangeComplete={fetchBooking}
               userRole="admin"
               bookingStatus={booking.status}
             />
+          </div>
+        )}
+
+        {/* Delayed Charges Section - Debug Info */}
+        {delayedChargesSettings && (
+          <div className="mt-6 bg-gray-50 border border-gray-200 rounded-lg p-4 text-xs">
+            <p><strong>Delayed Charges Debug:</strong></p>
+            <p>Enabled: {delayedChargesSettings.enabled ? 'Yes' : 'No'}</p>
+            <p>Type: {delayedChargesSettings.type}</p>
+            <p>Value: {delayedChargesSettings.value}</p>
+            {delayedChargesData && (
+              <>
+                <p>Has Data: Yes</p>
+                <p>Has Delayed Products: {delayedChargesData.hasDelayedProducts ? 'Yes' : 'No'}</p>
+                <p>Total Charge: ₹{delayedChargesData.totalCharge}</p>
+                <p>Product Charges Count: {delayedChargesData.productCharges.length}</p>
+                {delayedChargesData.productCharges.map((p: any, idx: number) => (
+                  <div key={idx} className="ml-4 mt-1">
+                    <p>- {p.productName} ({p.productCode}): Delayed={p.isDelayed ? 'Yes' : 'No'}, Days={p.daysDelayed}, Charge=₹{p.chargeAmount}</p>
+                  </div>
+                ))}
+              </>
+            )}
+            {!delayedChargesData && <p>Has Data: No</p>}
+          </div>
+        )}
+
+        {/* Delayed Charges Section */}
+        {delayedChargesSettings?.enabled && delayedChargesData && delayedChargesData.hasDelayedProducts && (() => {
+          // Check if delayed charges have already been applied
+          const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
+          const allDatesSame = products.length > 0 && products.every((p: any) => {
+            const firstProduct = products[0];
+            return (p.booked_from || booking.booked_from) === (firstProduct.booked_from || booking.booked_from) &&
+                   (p.booked_to || booking.booked_to) === (firstProduct.booked_to || booking.booked_to);
+          });
+
+          if (allDatesSame) {
+            // Check if any delayed charges exist for this booking
+            const existingDelayedCharges = transactions.find((t: any) => 
+              t.transaction_type === 'delayed_charges' || 
+              (t.type === 'payment' && t.method === 'delayed_charges') ||
+              (t.notes && t.notes.includes('Delayed return charges'))
+            );
+            if (existingDelayedCharges) {
+              return null; // Don't show section if already applied
+            }
+          } else {
+            // Check per product - if all delayed products have charges, don't show
+            const delayedProducts = delayedChargesData.productCharges.filter((p: any) => p.isDelayed);
+            const allApplied = delayedProducts.every((product: any) => {
+              return transactions.some((t: any) => {
+                const isDelayedCharge = t.transaction_type === 'delayed_charges' || 
+                                        (t.type === 'payment' && t.method === 'delayed_charges') ||
+                                        (t.notes && t.notes.includes('Delayed return charges'));
+                if (!isDelayedCharge) return false;
+                return t.notes && (
+                  t.notes.includes(product.productCode) ||
+                  t.notes.includes(product.productName)
+                );
+              });
+            });
+            if (allApplied) {
+              return null; // Don't show section if all products have charges applied
+            }
+          }
+          return true; // Show section
+        })() && (
+          <div className="mt-6 bg-yellow-50 border border-yellow-200 rounded-lg p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <h3 className="text-lg font-semibold text-yellow-900">Delayed Return Charges</h3>
+              </div>
+              {(() => {
+                // Calculate remaining charges (exclude already applied products)
+                const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
+                const allDatesSame = products.length > 0 && products.every((p: any) => {
+                  const firstProduct = products[0];
+                  return (p.booked_from || booking.booked_from) === (firstProduct.booked_from || booking.booked_from) &&
+                         (p.booked_to || booking.booked_to) === (firstProduct.booked_to || booking.booked_to);
+                });
+
+                let remainingCharge = delayedChargesData.totalCharge;
+                if (!allDatesSame) {
+                  // Calculate remaining for products that haven't been charged
+                  const delayedProducts = delayedChargesData.productCharges.filter((p: any) => p.isDelayed);
+                  remainingCharge = delayedProducts
+                    .filter((product: any) => {
+                      // Check if this product already has charges applied
+                      return !transactions.some((t: any) => {
+                        const isDelayedCharge = t.transaction_type === 'delayed_charges' || 
+                                                (t.type === 'payment' && t.method === 'delayed_charges') ||
+                                                (t.notes && t.notes.includes('Delayed return charges'));
+                        if (!isDelayedCharge) return false;
+                        return t.notes && (
+                          t.notes.includes(product.productCode) ||
+                          t.notes.includes(product.productName)
+                        );
+                      });
+                    })
+                    .reduce((sum: number, p: any) => sum + p.chargeAmount, 0);
+                }
+
+                if (remainingCharge > 0) {
+                  return (
+                    <button
+                      onClick={applyDelayedCharges}
+                      disabled={applyingDelayedCharges}
+                      className="px-4 py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {applyingDelayedCharges ? 'Applying...' : `Apply Charges (₹${remainingCharge.toFixed(2)})`}
+                    </button>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+
+            <div className="space-y-3">
+              {delayedChargesData.productCharges
+                .filter((p: any) => p.isDelayed)
+                .map((product: any, index: number) => (
+                  <div key={index} className="bg-white rounded-lg p-4 border border-yellow-200">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <p className="font-semibold text-gray-900">{product.productName}</p>
+                        <p className="text-sm text-gray-600">Code: {product.productCode}</p>
+                        <div className="mt-2 space-y-1">
+                          <p className="text-xs text-gray-500">
+                            Scheduled Return: {new Date(product.scheduledReturnDate).toLocaleDateString('en-GB')}
+                          </p>
+                          <p className="text-xs text-gray-500">
+                            Actual Return: {product.actualReturnDate ? new Date(product.actualReturnDate).toLocaleDateString('en-GB') : 'Not returned'}
+                          </p>
+                          <p className="text-xs text-yellow-700 font-medium">
+                            Delayed by: {product.daysDelayed} day{product.daysDelayed > 1 ? 's' : ''}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-sm text-gray-600">Charge:</p>
+                        <p className="text-lg font-bold text-yellow-700">
+                          ₹{product.chargeAmount.toFixed(2)}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {product.chargeType === 'fixed' 
+                            ? `₹${product.chargeValue}/day × ${product.daysDelayed} day(s)`
+                            : `${product.chargeValue}% of ₹${product.rentPerDay}/day × ${product.daysDelayed} day(s)`}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              
+              <div className="bg-yellow-100 rounded-lg p-4 border border-yellow-300">
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-semibold text-yellow-900">Total Delayed Charges:</span>
+                  <span className="text-2xl font-bold text-yellow-900">₹{delayedChargesData.totalCharge.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1075,37 +1545,100 @@ export default function OrderDetailsPage() {
             </div>
           )}
           
-          <PaymentManagement
-            bookingId={booking.id}
-            totalAmount={(() => {
-              // Calculate total amount from products + transportation
-              const products = Array.isArray(booking.products) ? booking.products : [];
+          {/* Payment Management - Show read-only for fully cancelled bookings */}
+          {(() => {
+            const calculatedStatus = calculateBookingStatus();
+            const isFullyCancelled = calculatedStatus === 'cancelled';
+            
+            if (isFullyCancelled) {
+              // Calculate financial summary for cancelled booking
+              const totalPaid = transactions
+                .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
+                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
               
-              if (products.length > 0) {
-                // Calculate from products
-                const rentFromProducts = products.reduce((sum: number, product: any) => {
-                  const rent = typeof product.rent_per_day === 'number'
-                    ? product.rent_per_day
-                    : parseFloat(String(product.rent_per_day || '0')) || 0;
-                  return sum + rent;
-                }, 0);
-                
-                let transportationCharges = 0;
-                if (booking.other_charges !== null && booking.other_charges !== undefined) {
-                  if (typeof booking.other_charges === 'number') {
-                    transportationCharges = booking.other_charges;
-                  } else if (typeof booking.other_charges === 'string') {
-                    transportationCharges = parseFloat(booking.other_charges) || 0;
-                  }
-                }
-                
-                return rentFromProducts + transportationCharges;
-              } else {
-                // Fallback to booking.total_amount if products not loaded
-                return typeof booking.total_amount === 'number'
-                  ? booking.total_amount
-                  : parseFloat(booking.total_amount || '0') || 0;
-              }
+              const penalties = transactions
+                .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
+                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+              
+              const refunded = transactions
+                .filter((t: any) => t.type === 'refund')
+                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+              
+              return (
+                <div className="space-y-4">
+                  {/* Cancellation Summary */}
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+                    <div className="flex items-center gap-3 mb-4">
+                      <svg className="w-6 h-6 text-red-600" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                      </svg>
+                      <h3 className="text-lg font-semibold text-red-900">Booking Fully Cancelled</h3>
+                    </div>
+                    
+                    {/* Financial Summary */}
+                    <div className="bg-white rounded-lg p-4 mb-4">
+                      <h4 className="text-sm font-semibold text-gray-700 mb-3">📊 Financial Summary</h4>
+                      <div className="space-y-2">
+                        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                          <span className="text-sm text-gray-600">Total Rent Paid by Customer:</span>
+                          <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
+                        </div>
+                        {penalties > 0 && (
+                          <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                            <span className="text-sm text-gray-600">Charges + Penalties:</span>
+                            <span className="text-lg font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                          <span className="text-sm text-gray-600">Total Refunded:</span>
+                          <span className="text-lg font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-3 bg-gray-50 rounded px-3 mt-2">
+                          <span className="text-sm font-semibold text-gray-800">Net Amount (Customer):</span>
+                          <span className="text-xl font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="bg-blue-50 border-l-4 border-blue-400 p-3 mt-3">
+                          <p className="text-xs text-blue-800">
+                            <strong>Formula:</strong> Paid (₹{Math.floor(totalPaid).toLocaleString('en-IN')}) - (Remaining Due ₹{Math.floor(Math.max(0, (booking.total_amount || 0) - totalPaid)).toLocaleString('en-IN')} + Penalties ₹{Math.floor(penalties).toLocaleString('en-IN')} + Refunded ₹{Math.floor(refunded).toLocaleString('en-IN')}).
+                            {Math.floor(totalPaid - refunded) === 0 && ' Net = ₹0 (Fully settled).'}
+                            {Math.floor(totalPaid - refunded) > 0 && ` Net = ₹${Math.floor(totalPaid - refunded).toLocaleString('en-IN')}.`}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                    
+                    <p className="text-sm text-red-700">
+                      All products in this booking have been cancelled. No further payments can be recorded.
+                      Transaction history is available below for reference.
+                    </p>
+                  </div>
+                  
+                  {/* Payment History - Read Only */}
+                  <PaymentManagement
+                    bookingId={booking.id}
+                    totalAmount={0}
+                    securityDeposit={0}
+                    userRole="admin"
+                    isFullyCancelled={true}
+                    onPaymentUpdate={() => {
+                      fetchBooking();
+                    }}
+                    onStatusUpdate={handleStatusUpdate}
+                  />
+                </div>
+              );
+            }
+            
+            return (
+              <PaymentManagement
+                bookingId={booking.id}
+                totalAmount={(() => {
+                  // Use booking.total_amount which already has discount applied
+                  // This ensures discount is only applied to rent, not security deposit
+                  // booking.total_amount = (sum of product rents + transportation) - discount
+                  return typeof booking.total_amount === 'number'
+                    ? booking.total_amount
+                    : parseFloat(booking.total_amount || '0') || 0;
             })()}
             securityDeposit={(() => {
               // Calculate security deposit from products if booking.security_deposit is 0 or missing
@@ -1118,8 +1651,8 @@ export default function OrderDetailsPage() {
                 return bookingSecurityDeposit;
               }
               
-              // Calculate from products
-              const products = Array.isArray(booking.products) ? booking.products : [];
+              // Calculate from products (exclude cancelled)
+              const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
               const calculatedSecurity = products.reduce((sum: number, product: any) => {
                 const productSecurity = typeof product.security_deposit === 'number'
                   ? product.security_deposit
@@ -1135,6 +1668,8 @@ export default function OrderDetailsPage() {
             }}
             onStatusUpdate={handleStatusUpdate}
           />
+            );
+          })()}
         </div>
       </div>
 

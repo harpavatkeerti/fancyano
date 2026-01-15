@@ -27,9 +27,32 @@ router.post('/', async (req, res) => {
     const { booking_id, amount, type, transaction_type, method, recorded_by, notes } = req.body;
     
     // Validate required fields
-    if (!booking_id || !amount || !type || !recorded_by) {
+    // Allow 0 amount for refunds (user may not want to create a refund)
+    if (!booking_id || amount === undefined || amount === null || amount === '' || !type || !recorded_by) {
       return res.status(400).json({ 
         error: 'Missing required fields: booking_id, amount, type, recorded_by' 
+      });
+    }
+    
+    // Validate amount is a number (allow 0 for refunds)
+    const amountNum = parseFloat(amount);
+    if (isNaN(amountNum)) {
+      return res.status(400).json({ 
+        error: 'Amount must be a valid number' 
+      });
+    }
+    
+    // For payments, amount must be greater than 0 (refunds can be 0)
+    if (type === 'payment' && amountNum <= 0) {
+      return res.status(400).json({ 
+        error: 'Payment amount must be greater than 0' 
+      });
+    }
+    
+    // For refunds, amount must be >= 0 (allow 0)
+    if (type === 'refund' && amountNum < 0) {
+      return res.status(400).json({ 
+        error: 'Refund amount cannot be negative' 
       });
     }
     
@@ -106,14 +129,16 @@ router.post('/', async (req, res) => {
       }
       
       // Update booking paid_amount ONLY for payment and refund types
-      // date_change_charge, exchange_penalty, and adjustments do NOT affect payment calculations
-      // Exchange penalties are collected separately and should not be counted in paid_amount
+      // date_change_charge, exchange_penalty, downgrade_penalty, delayed_charges, and adjustments do NOT affect payment calculations
+      // Exchange penalties, downgrade penalties, and delayed charges are collected separately and should not be counted in paid_amount
       // Adjustments are changes to booking total, not payments received
       const txnType = transaction_type || 'booking';
       if (type !== 'date_change_charge' && 
           type !== 'adjustment' &&
           txnType !== 'exchange_penalty' && 
-          txnType !== 'exchange') {
+          txnType !== 'downgrade_penalty' &&
+          txnType !== 'exchange' &&
+          txnType !== 'delayed_charges') {
         // For payments: add to paid_amount
         // For refunds: subtract from paid_amount
         const amountChange = type === 'refund' ? -Math.abs(amount) : Math.abs(amount);
@@ -158,8 +183,8 @@ router.get('/summary/:bookingId', async (req, res) => {
         COUNT(*) as transaction_count,
         SUM(CASE 
           WHEN type = 'payment' 
-          AND (transaction_type IS NULL OR (transaction_type != 'exchange_penalty' AND transaction_type != 'exchange'))
-          AND (notes IS NULL OR (LOWER(notes) NOT LIKE '%exchange penalty%' AND LOWER(notes) NOT LIKE '%exchange charge%'))
+          AND (transaction_type IS NULL OR (transaction_type != 'exchange_penalty' AND transaction_type != 'downgrade_penalty' AND transaction_type != 'exchange' AND transaction_type != 'delayed_charges'))
+          AND (notes IS NULL OR (LOWER(notes) NOT LIKE '%exchange penalty%' AND LOWER(notes) NOT LIKE '%exchange charge%' AND LOWER(notes) NOT LIKE '%delayed return charges%'))
           THEN amount 
           ELSE 0 
         END) as total_payments,
@@ -167,19 +192,27 @@ router.get('/summary/:bookingId', async (req, res) => {
         SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
         SUM(CASE WHEN type = 'date_change_charge' THEN amount ELSE 0 END) as total_date_change_charges,
         SUM(CASE 
-          WHEN transaction_type = 'exchange_penalty' 
+          WHEN transaction_type = 'exchange_penalty'
+          OR transaction_type = 'downgrade_penalty'
           OR transaction_type = 'exchange'
           OR (notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%'))
           THEN amount 
           ELSE 0 
         END) as total_exchange_penalties,
         SUM(CASE 
-          -- CRITICAL: Exclude ALL refunds from net_amount calculation
-          -- Since exchanges are only allowed when new rent >= old rent, refunds should not affect the balance
+          WHEN transaction_type = 'delayed_charges'
+          OR (notes IS NOT NULL AND LOWER(notes) LIKE '%delayed return charges%')
+          THEN amount 
+          ELSE 0 
+        END) as total_delayed_charges,
+        SUM(CASE 
+          -- CRITICAL: Exclude ALL refunds, delayed charges, exchange penalties, and date change charges from net_amount calculation
+          -- Delayed charges are separate charges that don't affect rent/security calculations
           WHEN type = 'refund' THEN 0
           WHEN type = 'date_change_charge' THEN 0
-          WHEN transaction_type = 'exchange_penalty' OR transaction_type = 'exchange' THEN 0
-          WHEN notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%') THEN 0
+          WHEN transaction_type = 'exchange_penalty' OR transaction_type = 'downgrade_penalty' OR transaction_type = 'exchange' THEN 0
+          WHEN transaction_type = 'delayed_charges' THEN 0
+          WHEN notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%' OR LOWER(notes) LIKE '%delayed return charges%') THEN 0
           ELSE amount 
         END) as net_amount
        FROM payment_transactions 
