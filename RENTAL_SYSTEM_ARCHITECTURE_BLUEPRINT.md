@@ -44,6 +44,7 @@ CREATE TABLE bookings (
   -- Transport (booking-level, optional, editable)
   transport_opted BOOLEAN DEFAULT FALSE,
   transport_charge INT DEFAULT 0,
+  transport_paid INT DEFAULT 0,
   
   -- Final discount (optional, applied at finalization, default = 0)
   final_discount INT DEFAULT 0,
@@ -289,9 +290,9 @@ CREATE TABLE rental_policies (
   value INT NOT NULL,
   
   -- Days from booking condition (optional)
-  -- If NULL, applies always. If set, applies when days_from_booking matches condition
-  days_from_booking_min INT NULL COMMENT 'Minimum days from booking date for this rule',
-  days_from_booking_max INT NULL COMMENT 'Maximum days from booking date for this rule',
+  -- If NULL, applies always. If set, applies when days since product was added matches condition
+  days_from_booking_min INT NULL COMMENT 'Minimum days since product added (booking_product.created_at)',
+  days_from_booking_max INT NULL COMMENT 'Maximum days since product added (booking_product.created_at)',
   
   -- Constraints
   min_value INT DEFAULT 0,
@@ -300,9 +301,6 @@ CREATE TABLE rental_policies (
   -- Active status
   is_active BOOLEAN DEFAULT TRUE,
   
-  -- Priority (for multiple matching rules, higher priority wins)
-  priority INT DEFAULT 0,
-  
   -- Audit
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -310,92 +308,235 @@ CREATE TABLE rental_policies (
   
   INDEX idx_policy_key (policy_key),
   INDEX idx_policy_type (policy_type),
-  INDEX idx_active (is_active)
+  INDEX idx_active (is_active),
+  
+  -- Ensure no overlapping date ranges for same policy type
+  CONSTRAINT chk_no_date_overlap CHECK (
+    days_from_booking_min IS NULL OR 
+    days_from_booking_max IS NULL OR 
+    days_from_booking_min <= days_from_booking_max
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Default policies
-INSERT INTO rental_policies (policy_key, policy_name, policy_type, value_type, value, days_from_booking_min, days_from_booking_max, priority) VALUES
+INSERT INTO rental_policies (policy_key, policy_name, policy_type, value_type, value, days_from_booking_min, days_from_booking_max) VALUES
   -- Transport fee (fixed amount, always applicable)
-  ('transport_fee_default', 'Default Transport Fee', 'transport_fee', 'fixed', 100, NULL, NULL, 0),
+  ('transport_fee_default', 'Default Transport Fee', 'transport_fee', 'fixed', 100, NULL, NULL),
   
   -- Late fee (fixed per extra day, always applicable)
-  ('late_fee_default', 'Default Late Fee', 'late_fee', 'fixed', 200, NULL, NULL, 0),
+  ('late_fee_default', 'Default Late Fee', 'late_fee', 'fixed', 200, NULL, NULL),
   
-  -- Exchange penalty (time-based rules)
-  ('exchange_penalty_within_5_days', 'Exchange Penalty (Within 5 Days)', 'exchange_penalty', 'percentage', 10, 0, 5, 3),
-  ('exchange_penalty_within_10_days', 'Exchange Penalty (6-10 Days)', 'exchange_penalty', 'percentage', 20, 6, 10, 2),
-  ('exchange_penalty_after_10_days', 'Exchange Penalty (After 10 Days)', 'exchange_penalty', 'percentage', 30, 11, NULL, 1),
+  -- Exchange penalty (time-based rules - non-overlapping ranges)
+  ('exchange_penalty_within_5_days', 'Exchange Penalty (Within 5 Days)', 'exchange_penalty', 'percentage', 10, 0, 5),
+  ('exchange_penalty_within_10_days', 'Exchange Penalty (6-10 Days)', 'exchange_penalty', 'percentage', 20, 6, 10),
+  ('exchange_penalty_after_10_days', 'Exchange Penalty (After 10 Days)', 'exchange_penalty', 'percentage', 30, 11, NULL),
   
-  -- Cancellation penalty (time-based rules - same as exchange)
-  ('cancellation_penalty_within_5_days', 'Cancellation Penalty (Within 5 Days)', 'cancellation_penalty', 'percentage', 10, 0, 5, 3),
-  ('cancellation_penalty_within_10_days', 'Cancellation Penalty (6-10 Days)', 'cancellation_penalty', 'percentage', 20, 6, 10, 2),
-  ('cancellation_penalty_after_10_days', 'Cancellation Penalty (After 10 Days)', 'cancellation_penalty', 'percentage', 30, 11, NULL, 1);
+  -- Cancellation penalty (time-based rules - non-overlapping ranges)
+  ('cancellation_penalty_within_5_days', 'Cancellation Penalty (Within 5 Days)', 'cancellation_penalty', 'percentage', 10, 0, 5),
+  ('cancellation_penalty_within_10_days', 'Cancellation Penalty (6-10 Days)', 'cancellation_penalty', 'percentage', 20, 6, 10),
+  ('cancellation_penalty_after_10_days', 'Cancellation Penalty (After 10 Days)', 'cancellation_penalty', 'percentage', 30, 11, NULL);
 ```
 
-#### 1.1.8 `product_availability_calendar` Table (NEW)
+**Validation Rules:**
+- Date ranges for the same policy_type MUST NOT overlap
+- Backend validates this when creating/updating policies
+- If admin tries to create overlapping rules, API returns error: "Date range overlaps with existing policy"
+
+#### 1.1.8 `booking_activity_log` Table (NEW)
 
 ```sql
-CREATE TABLE product_availability_calendar (
+CREATE TABLE booking_activity_log (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  product_id INT NOT NULL,
+  booking_id INT NOT NULL,
   
-  -- Date range for this availability entry
-  date DATE NOT NULL,
+  -- Activity type
+  activity_type VARCHAR(50) NOT NULL,
   
-  -- Availability status
-  is_available BOOLEAN DEFAULT TRUE,
-  
-  -- If booked, link to the booking_product
+  -- Related product (if applicable)
   booking_product_id INT NULL,
-  booking_id INT NULL,
   
-  -- Reason for unavailability (if not available and not booked)
-  reason VARCHAR(255) NULL COMMENT 'e.g., "Under Maintenance", "Reserved", etc.',
+  -- References to detailed records (instead of duplicating data)
+  exchange_history_id INT NULL,
+  cancellation_history_id INT NULL,
+  payment_transaction_id INT NULL,
   
-  -- Audit
+  -- Human-readable description
+  description TEXT NOT NULL,
+  
+  -- Lightweight metadata (only for activities without dedicated tables)
+  metadata JSON NULL,
+  
+  -- Who performed this action
+  performed_by VARCHAR(100),
+  
+  -- When it happened
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   
-  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+  FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE,
   FOREIGN KEY (booking_product_id) REFERENCES booking_products(id) ON DELETE SET NULL,
-  FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE SET NULL,
+  FOREIGN KEY (exchange_history_id) REFERENCES booking_exchange_history(id) ON DELETE SET NULL,
+  FOREIGN KEY (cancellation_history_id) REFERENCES booking_cancellation_history(id) ON DELETE SET NULL,
+  FOREIGN KEY (payment_transaction_id) REFERENCES payment_transactions(id) ON DELETE SET NULL,
   
-  -- Ensure one entry per product per date
-  UNIQUE KEY unique_product_date (product_id, date),
-  
-  INDEX idx_product_date_range (product_id, date, is_available),
-  INDEX idx_booking_product (booking_product_id)
+  INDEX idx_booking_activity (booking_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ```
 
-**Note on Availability Calendar:**
-- **Purpose**: Track which products are available on which dates for booking
-- **Structure**: One row per product per date
-- **Automatic Population**: When a booking_product is created, a trigger automatically inserts one row for each date in the range (booked_from to booked_to)
-- **Status Updates**: When product status changes to 'cancelled' or 'exchanged', the calendar entries are freed (is_available=TRUE)
-- **Availability Queries**: 
-  ```sql
-  -- Check if product is available for a date range
-  SELECT COUNT(*) FROM product_availability_calendar
-  WHERE product_id = ?
-    AND date BETWEEN ? AND ?
-    AND is_available = FALSE;
-  -- If COUNT > 0, product is NOT available
-  ```
-- **Manual Blocking**: Admin can manually block dates (e.g., for maintenance) by setting is_available=FALSE with a reason
-- **Performance**: Indexed on (product_id, date, is_available) for fast lookups
+**Activity Types:**
+- `booking_created` - Booking initially created
+- `product_added` - Product added to booking
+- `product_exchanged` - Product exchanged (ref: exchange_history_id)
+- `product_cancelled` - Product cancelled (ref: cancellation_history_id)
+- `product_picked_up` - Product picked up
+- `product_returned` - Product returned
+- `payment_received` - Payment recorded (ref: payment_transaction_id)
+- `refund_issued` - Refund issued (ref: payment_transaction_id)
+- `adjustment_made` - Payment adjustment (ref: payment_transaction_id)
+- `booking_completed` - Booking finalized
 
-**Alternative Approach (If calendar table becomes too large):**
-Instead of per-date rows, use overlapping date range checks:
+**Example Activity Log Entries:**
+
+```javascript
+// Booking created
+{ 
+  activity_type: 'booking_created',
+  description: 'Booking created with 2 products',
+  metadata: { 
+    product_count: 2,
+    product_ids: [45, 46]
+  },
+  performed_by: 'admin_user'
+}
+
+// Product exchanged (references exchange_history table)
+{
+  activity_type: 'product_exchanged',
+  booking_product_id: 123,
+  exchange_history_id: 78,  // Points to booking_exchange_history record
+  description: 'Product L001 exchanged for S002',
+  performed_by: 'salesman_user'
+  // All exchange details (penalties, products) in booking_exchange_history table
+}
+
+// Product cancelled (references cancellation_history table)
+{
+  activity_type: 'product_cancelled',
+  booking_product_id: 124,
+  cancellation_history_id: 56,  // Points to booking_cancellation_history record
+  description: 'Product L002 cancelled',
+  performed_by: 'admin_user'
+  // All cancellation details (penalty, refund) in booking_cancellation_history table
+}
+
+// Payment received (references payment_transactions table)
+{
+  activity_type: 'payment_received',
+  payment_transaction_id: 456,  // Points to payment_transactions record
+  description: 'Payment of ₹5000 received via UPI',
+  performed_by: 'salesman_user'
+  // All payment details in payment_transactions table
+}
+
+// Product picked up (no dedicated table, uses metadata)
+{
+  activity_type: 'product_picked_up',
+  booking_product_id: 125,
+  description: 'Product L003 picked up',
+  metadata: {
+    product_code: 'L003'
+  },
+  performed_by: 'salesman_user'
+}
+```
+
+**API Endpoint:**
+```javascript
+GET /api/bookings/:id/activity-log
+Response: [{
+  id: number,
+  activity_type: string,
+  description: string,
+  booking_product_id: number | null,
+  exchange_history_id: number | null,
+  cancellation_history_id: number | null,
+  payment_transaction_id: number | null,
+  metadata: object | null,
+  performed_by: string,
+  created_at: timestamp
+}]
+
+// Frontend can fetch detailed records using the reference IDs when needed
+```
+
+#### 1.1.8 Product Availability - No Separate Table Needed! ✅
+
+**Current Implementation (Keep It!):**
+The existing system already uses an optimal approach - **date range overlap queries** directly on `booking_products`. This is scalable and works well.
+
+**How Availability Checking Works:**
+
 ```sql
--- Check availability without calendar table
-SELECT COUNT(*) FROM booking_products
-WHERE product_id = ?
-  AND status IN ('confirmed', 'in_progress')
-  AND NOT (booked_to < ? OR booked_from > ?);
+-- Check if product is available for date range
+SELECT COUNT(*) FROM booking_products bp
+JOIN bookings b ON bp.booking_id = b.id
+WHERE bp.product_id = ?
+  AND b.status NOT IN ('cancelled', 'completed')
+  AND bp.status IN ('confirmed', 'in_progress')
+  AND (
+    -- Date range overlap logic
+    (bp.booked_from <= ? AND bp.booked_to >= ?) OR  -- Overlaps start date
+    (bp.booked_from <= ? AND bp.booked_to >= ?) OR  -- Overlaps end date
+    (bp.booked_from >= ? AND bp.booked_to <= ?)     -- Contained within range
+  );
 -- If COUNT > 0, product is NOT available
 ```
-Choose calendar table for simplicity and manual blocking support.
+
+**Why This Approach is Better:**
+- ✅ **No extra table** - Uses existing `booking_products` structure
+- ✅ **Highly scalable** - Stores only 2 dates per booking (start/end), not one row per day
+- ✅ **Fast performance** - With proper indexes (see below)
+- ✅ **Simple maintenance** - No triggers needed to populate/update calendar
+- ✅ **Already working** - Proven in current system
+
+**Required Index for Performance:**
+```sql
+CREATE INDEX idx_product_availability 
+  ON booking_products(product_id, status, booked_from, booked_to);
+```
+
+**Optional: Manual Blocking Table (for maintenance/holds):**
+If you need to manually block products (e.g., maintenance, reserved), add a lightweight table:
+
+```sql
+CREATE TABLE product_blocks (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  product_id INT NOT NULL,
+  blocked_from DATE NOT NULL,
+  blocked_to DATE NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  created_by VARCHAR(100),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE,
+  INDEX idx_product_dates (product_id, blocked_from, blocked_to)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Availability check includes blocks
+SELECT COUNT(*) FROM (
+  SELECT 1 FROM booking_products bp
+  WHERE bp.product_id = ? AND bp.status IN ('confirmed', 'in_progress')
+    AND (date overlap logic)
+  UNION ALL
+  SELECT 1 FROM product_blocks pb
+  WHERE pb.product_id = ? 
+    AND (date overlap logic)
+) AS conflicts;
+```
+
+**Scale Test:**
+- 1,000 products × 365 days/year = 365K rows (per-date approach) ❌ Bad
+- 1,000 products × 50 bookings/year = 50K rows (date range approach) ✅ Good
+- Even with 10 years of data: 500K rows vs 3.65M rows (7x more efficient)
 
 ---
 
@@ -415,8 +556,11 @@ ALTER TABLE booking_products ADD CONSTRAINT chk_product_dates
 ALTER TABLE bookings ADD CONSTRAINT chk_overpayment 
   CHECK (overpayment >= 0);
 
+ALTER TABLE bookings ADD CONSTRAINT chk_transport_paid
+  CHECK (transport_paid >= 0 AND transport_paid <= transport_charge);
+
 ALTER TABLE product_charges ADD CONSTRAINT chk_charge_amounts 
-  CHECK (due_amount >= 0 AND paid_amount >= 0 AND paid_amount <= due_amount + 0.01);
+  CHECK (due_amount >= 0 AND paid_amount >= 0 AND paid_amount <= due_amount);
 
 ALTER TABLE booking_products ADD CONSTRAINT chk_rent_values 
   CHECK (rent > 0 AND effective_rent >= 0);
@@ -429,106 +573,37 @@ ALTER TABLE booking_products ADD CONSTRAINT chk_product_discount
   );
 ```
 
-#### Triggers
+#### Backend-Handled Logic (No Database Triggers)
 
-```sql
--- Auto-calculate booking date range from products
-DELIMITER //
-CREATE TRIGGER trg_update_booking_dates
-AFTER INSERT ON booking_products
-FOR EACH ROW
-BEGIN
-  UPDATE bookings 
-  SET 
-    booked_from = (
-      SELECT MIN(booked_from) FROM booking_products WHERE booking_id = NEW.booking_id
-    ),
-    booked_to = (
-      SELECT MAX(booked_to) FROM booking_products WHERE booking_id = NEW.booking_id
-    )
-  WHERE id = NEW.booking_id;
-END//
-DELIMITER ;
+**Design Decision:** All dynamic logic is handled in backend APIs rather than database triggers for better debuggability and maintainability.
 
--- Initialize product charges on product creation
-DELIMITER //
-CREATE TRIGGER trg_init_product_charges
-AFTER INSERT ON booking_products
-FOR EACH ROW
-BEGIN
-  -- Create rent charge
+**1. Booking Date Range Updates:**
+- **When:** Product added/removed/dates changed
+- **Where:** Booking creation/update APIs
+- **Logic:** Calculate `MIN(booked_from)` and `MAX(booked_to)` from all products, update booking table
+
+**2. Product Charges Initialization:**
+- **When:** Product added to booking
+- **Where:** `POST /api/bookings` and `POST /api/bookings/:id/products/:productId/exchange`
+- **Logic:** 
+  ```javascript
+  // Create rent charge
   INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
-  VALUES (NEW.id, 'rent', NEW.effective_rent, 0);
+  VALUES (bookingProductId, 'rent', effective_rent, 0);
   
-  -- Create security charge
+  // Create security charge
   INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
-  VALUES (NEW.id, 'security', NEW.security_deposit, 0);
-END//
-DELIMITER ;
+  VALUES (bookingProductId, 'security', security_deposit, 0);
+  ```
 
--- Prevent invalid status changes
-DELIMITER //
-CREATE TRIGGER trg_validate_product_status_change
-BEFORE UPDATE ON booking_products
-FOR EACH ROW
-BEGIN
-  -- Cannot change status of exchanged/cancelled/completed products
-  IF OLD.status IN ('exchanged', 'cancelled', 'completed') AND NEW.status != OLD.status THEN
-    SIGNAL SQLSTATE '45000' 
-    SET MESSAGE_TEXT = 'Cannot change status of exchanged/cancelled/completed products';
-  END IF;
-  
-  -- in_progress can only come from confirmed
-  IF NEW.status = 'in_progress' AND OLD.status != 'confirmed' THEN
-    SIGNAL SQLSTATE '45000' 
-    SET MESSAGE_TEXT = 'Product must be confirmed before pickup';
-  END IF;
-  
-  -- completed can only come from in_progress
-  IF NEW.status = 'completed' AND OLD.status != 'in_progress' THEN
-    SIGNAL SQLSTATE '45000' 
-    SET MESSAGE_TEXT = 'Product must be in progress before return';
-  END IF;
-END//
-DELIMITER ;
-
--- Populate availability calendar on booking_product creation
-DELIMITER //
-CREATE TRIGGER trg_populate_availability_calendar
-AFTER INSERT ON booking_products
-FOR EACH ROW
-BEGIN
-  DECLARE curr_date DATE;
-  SET curr_date = NEW.booked_from;
-  
-  WHILE curr_date <= NEW.booked_to DO
-    INSERT INTO product_availability_calendar 
-      (product_id, date, is_available, booking_product_id, booking_id)
-    VALUES 
-      (NEW.product_id, curr_date, FALSE, NEW.id, NEW.booking_id);
-    
-    SET curr_date = DATE_ADD(curr_date, INTERVAL 1 DAY);
-  END WHILE;
-END//
-DELIMITER ;
-
--- Update availability calendar on booking_product status change
-DELIMITER //
-CREATE TRIGGER trg_update_availability_on_status_change
-AFTER UPDATE ON booking_products
-FOR EACH ROW
-BEGIN
-  -- If product is cancelled or exchanged, free up the dates
-  IF NEW.status IN ('cancelled', 'exchanged') AND OLD.status NOT IN ('cancelled', 'exchanged') THEN
-    UPDATE product_availability_calendar
-    SET is_available = TRUE,
-        booking_product_id = NULL,
-        booking_id = NULL
-    WHERE booking_product_id = NEW.id;
-  END IF;
-END//
-DELIMITER ;
-```
+**3. Product Status Validation:**
+- **When:** Status update requested
+- **Where:** All lifecycle APIs (pickup, return, exchange, cancel)
+- **Validation Rules:**
+  - Cannot change status of exchanged/cancelled/completed products
+  - `in_progress` can only come from `confirmed`
+  - `completed` can only come from `in_progress`
+- **Implementation:** Validate before UPDATE, return error if invalid transition
 
 ---
 
@@ -539,9 +614,9 @@ DELIMITER ;
 CREATE INDEX idx_booking_product_status_dates 
   ON booking_products(booking_id, status, booked_from, booked_to);
 
+-- CRITICAL: Main availability check index
 CREATE INDEX idx_product_availability 
-  ON booking_products(product_id, status, booked_from, booked_to)
-  WHERE status IN ('confirmed', 'in_progress');
+  ON booking_products(product_id, status, booked_from, booked_to);
 
 CREATE INDEX idx_pending_pickups 
   ON booking_products(status, booked_from)
@@ -552,8 +627,11 @@ CREATE INDEX idx_pending_returns
   WHERE status = 'in_progress';
 
 -- Financial queries
-CREATE INDEX idx_unpaid_charges 
-  ON product_charges(booking_product_id, charge_type, due_amount, paid_amount);
+CREATE INDEX idx_product_charges_lookup 
+  ON product_charges(booking_product_id, charge_type);
+
+-- For calculating unpaid amounts (computed column not indexable)
+-- Query will use above index and filter in memory
 
 CREATE INDEX idx_booking_transactions 
   ON payment_transactions(booking_id, type, transaction_date);
@@ -571,23 +649,75 @@ CREATE FULLTEXT INDEX idx_customer_search
 
 **Critical Rule**: Payment applies in this exact order:
 
-1. **Rent**: Product A → Product B → Product C → ...
-2. **Transport**: Booking-level fee (tracked separately in `bookings.transport_charge`)
-3. **Exchange Penalties**: Product A → Product B → ...
-4. **Downgrade Penalties**: Product A → Product B → ...
-5. **Cancellation Penalties**: Product A → Product B → ...
-6. **Late Fees**: Product A → Product B → ...
-7. **Damage Fees**: Product A → Product B → ...
-8. **Securities**: Product A → Product B → ...
-9. **Overpayment**: Any remaining amount
+1. **Rent**: Product A → Product B → Product C → ... (from `product_charges`)
+2. **Transport**: Booking-level fee (from `bookings.transport_charge`, NOT in product_charges)
+3. **Exchange Penalties**: Product A → Product B → ... (from `product_charges`)
+4. **Downgrade Penalties**: Product A → Product B → ... (from `product_charges`)
+5. **Cancellation Penalties**: Product A → Product B → ... (from `product_charges`)
+6. **Late Fees**: Product A → Product B → ... (from `product_charges`)
+7. **Damage Fees**: Product A → Product B → ... (from `product_charges`)
+8. **Securities**: Product A → Product B → ... (from `product_charges`)
+9. **Overpayment**: Any remaining amount (to `bookings.overpayment`)
 
 **Key Points**:
 - `due_amount` is IMMUTABLE (set at charge creation)
 - `paid_amount` is MUTABLE (increases with payments/adjustments)
 - Pending = `due_amount - paid_amount`
 - Adjustment transaction increases `paid_amount` WITHOUT money changing hands
-- Transport is tracked at booking level, applied to `transport_charge` in priority order #2
+- **Transport is special**: Tracked at booking level in `bookings.transport_charge`, not in `product_charges` table
 - All amounts are integers (no decimals)
+
+**CRITICAL - Exchanged/Cancelled Products:**
+- When product is exchanged or cancelled, its status changes to 'exchanged'/'cancelled'
+- **due_amount stays INTACT** (never set to 0) - preserves audit trail
+- **paid_amount stays INTACT** - preserves payment history
+- In calculations:
+  - `total_due` = SUM of due_amount WHERE status NOT IN ('exchanged', 'cancelled')
+  - `total_paid` = SUM of paid_amount (ALL products, including exchanged/cancelled)
+- This ensures: balance = (active dues) - (all payments made), which is correct
+
+**Payment Application Algorithm**:
+```javascript
+async function applyPayment(bookingId, amount) {
+  let remaining = amount;
+  
+  // 1. Apply to all product rents (priority #1)
+  remaining = await applyToChargeType(bookingId, 'rent', remaining);
+  
+  // 2. Apply to transport (booking-level, priority #2)
+  remaining = await applyToTransport(bookingId, remaining);
+  
+  // 3-7. Apply to penalties and fees (priorities #3-#7)
+  for (const type of ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty', 'late_fee', 'damage_fee']) {
+    remaining = await applyToChargeType(bookingId, type, remaining);
+  }
+  
+  // 8. Apply to securities (priority #8)
+  remaining = await applyToChargeType(bookingId, 'security', remaining);
+  
+  // 9. Any remainder goes to overpayment
+  if (remaining > 0) {
+    await updateBookingOverpayment(bookingId, remaining);
+  }
+}
+
+async function applyToTransport(bookingId, amount) {
+  const booking = await getBooking(bookingId);
+  const transportDue = booking.transport_charge;
+  const transportPaid = booking.transport_paid;
+  const transportPending = transportDue - transportPaid;
+  
+  if (transportPending > 0) {
+    const toApply = Math.min(amount, transportPending);
+    await updateBooking(bookingId, { 
+      transport_paid: transportPaid + toApply 
+    });
+    return amount - toApply;
+  }
+  
+  return amount;
+}
+```
 
 ---
 
@@ -603,11 +733,17 @@ class ChargeAccountingService {
    */
   async getPaymentSummary(bookingId) {
     // Returns:
-    // - Per-product charge breakdown (all 8 categories)
+    // - Per-product charge breakdown (7 categories: rent, 3 penalties, 2 fees, security)
+    // - Booking-level transport charge
     // - Totals (grand_total_due, grand_total_paid, balance_due)
     // - Overpayment amount
     // - Final discount
     // - Transaction history
+    
+    // CRITICAL: For exchanged/cancelled products:
+    // - due_amount is EXCLUDED from total_due calculations
+    // - paid_amount is INCLUDED in total_paid calculations
+    // This preserves audit trail while correctly calculating balance
   }
   
   /**
@@ -639,6 +775,24 @@ class ChargeAccountingService {
     // 2. Record as adjustment transaction (type='adjustment')
     // 3. No actual money transfer
   }
+  
+  /**
+   * Initialize product charges when booking_product created
+   * NOTE: Called explicitly in booking creation APIs (no database trigger)
+   */
+  async initializeProductCharges(bookingProductId, effectiveRent, securityDeposit) {
+    // Create rent charge
+    await db.query(`
+      INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+      VALUES ($1, 'rent', $2, 0)
+    `, [bookingProductId, effectiveRent]);
+    
+    // Create security charge
+    await db.query(`
+      INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+      VALUES ($1, 'security', $2, 0)
+    `, [bookingProductId, securityDeposit]);
+  }
 }
 ```
 
@@ -653,6 +807,7 @@ class ProductLifecycleService {
    * - Status = 'confirmed'
    * - Today <= booked_to
    * - Full security paid
+   * NOTE: Validates status transition (no database trigger)
    */
   async validatePickupEligibility(bookingProductId) {
     // Returns: {eligible: true/false, reason, security_pending}
@@ -660,27 +815,33 @@ class ProductLifecycleService {
   
   /**
    * Process product pickup
-   * - Update status: confirmed → in_progress
-   * - Record picked_up_at, picked_up_by
+   * - Validate status transition (confirmed → in_progress)
+   * - Update status, picked_up_at, picked_up_by
    * - Update booking status if needed
+   * - Update booking date range if needed
    */
   async pickupProduct(bookingProductId, pickedUpBy) {
-    // Validates then updates
+    // 1. Validate current status = 'confirmed'
+    // 2. Update product status to 'in_progress'
+    // 3. Set picked_up_at, picked_up_by
+    // 4. Update booking status if all products picked up
+    // 5. Recalculate booking dates
   }
   
   /**
    * Process product return
+   * - Validate status transition (in_progress → completed)
    * - Calculate late fee if applicable (daily rate × days late)
    * - Add damage fee if provided (0 to security_amount)
-   * - Update status: in_progress → completed
-   * - Record returned_at, returned_to
+   * - Update status, returned_at, returned_to
    */
   async returnProduct(bookingProductId, {lateFee, damageFee, notes}, returnedTo) {
-    // 1. Validate status = in_progress
+    // 1. Validate status = 'in_progress'
     // 2. Calculate late fee from policy
-    // 3. Add charges (late_fee, damage_fee)
-    // 4. Update product status
-    // 5. Update booking status
+    // 3. Add charges (late_fee, damage_fee) to product_charges
+    // 4. Update product status to 'completed'
+    // 5. Set returned_at, returned_to
+    // 6. Update booking status if all products returned
   }
   
   /**
@@ -697,6 +858,24 @@ class ProductLifecycleService {
     //    - Refund remainder
     // 4. If action='adjust': Full adjustment
   }
+  
+  /**
+   * Update booking date range from products
+   * NOTE: Called explicitly after product changes (no database trigger)
+   */
+  async updateBookingDateRange(bookingId) {
+    const result = await db.query(`
+      SELECT MIN(booked_from) as min_from, MAX(booked_to) as max_to
+      FROM booking_products
+      WHERE booking_id = $1 AND status NOT IN ('cancelled', 'exchanged')
+    `, [bookingId]);
+    
+    await db.query(`
+      UPDATE bookings 
+      SET booked_from = $1, booked_to = $2
+      WHERE id = $3
+    `, [result.rows[0].min_from, result.rows[0].max_to, bookingId]);
+  }
 }
 ```
 
@@ -710,6 +889,7 @@ class ExchangeService {
    * Requirements:
    * - Booking status: confirmed/in_progress/partially_completed
    * - Product status: confirmed (not picked up yet)
+   * NOTE: Validates status (no database trigger)
    */
   async validateExchangeEligibility(bookingProductId) {
     // Returns: {eligible, reason, product}
@@ -718,14 +898,18 @@ class ExchangeService {
   /**
    * Exchange 1 old product for N new products
    * Logic:
-   * 1. Calculate exchange_penalty = policy% of old_rent
-   * 2. Check new products availability
-   * 3. Add new products to booking (status=confirmed)
-   * 4. Calculate downgrade_penalty = max(0, old_rent - (exchange_penalty + new_total_rent))
-   * 5. Update old product status → exchanged
-   * 6. Set old product charges (rent, security) due=0
-   * 7. Add penalty charges
-   * 8. Record exchange history
+   * 1. Validate old product status = 'confirmed'
+   * 2. Calculate exchange_penalty = policy% of old_rent (based on days since product added)
+   * 3. Check new products availability
+   * 4. Add new products to booking (status=confirmed)
+   * 5. Initialize charges for new products (call ChargeAccountingService.initializeProductCharges)
+   * 6. Calculate downgrade_penalty = max(0, old_rent - (exchange_penalty + new_total_rent))
+   * 7. Update old product status → 'exchanged'
+   * 8. Keep old product charges (rent, security) due_amount INTACT (audit trail)
+   *    NOTE: Exchanged product charges excluded from total_due but included in total_paid
+   * 9. Add penalty charges to product_charges
+   * 10. Record exchange history
+   * 11. Update booking date range (call ProductLifecycleService.updateBookingDateRange)
    */
   async exchangeProduct(oldProductId, newProducts[], exchangedBy) {
     // newProducts: [{product_id, booked_from, booked_to, discount}]
@@ -741,7 +925,8 @@ class CancellationService {
   
   /**
    * Validate cancellation eligibility
-   * Returns max penalty based on policy
+   * Returns max penalty based on policy (calculated from days since product added)
+   * NOTE: Validates status (no database trigger)
    */
   async validateCancellationEligibility(bookingProductId) {
     // Returns: {eligible, max_penalty, policy}
@@ -750,17 +935,21 @@ class CancellationService {
   /**
    * Cancel product
    * Logic:
-   * 1. Update status → cancelled
-   * 2. Set charges (rent, security) due=0
-   * 3. Add cancellation_penalty charge (0 to max_penalty)
-   * 4. Record penalty_waived amount
-   * 5. Calculate refund (rent_paid + security_paid)
-   * 6. Record cancellation history
-   * 7. Update booking status
+   * 1. Validate product can be cancelled
+   * 2. Calculate max penalty from policy (based on booking_product.created_at)
+   * 3. Update status → 'cancelled'
+   * 4. Set cancelled_at, cancellation_reason
+   * 5. Keep charges (rent, security) due_amount INTACT (audit trail)
+   *    NOTE: Cancelled product charges excluded from total_due but included in total_paid
+   * 6. Add cancellation_penalty charge (0 to max_penalty)
+   * 7. Calculate refund (rent_paid + security_paid)
+   * 8. Record cancellation history
+   * 9. Update booking status
+   * 10. Update booking date range (call ProductLifecycleService.updateBookingDateRange)
    */
   async cancelProduct(bookingProductId, penaltyAmount, reason, cancelledBy) {
     // penaltyAmount: 0 to max_penalty (from policy)
-    // Returns: {penalty_charged, penalty_waived, refund_amount, requires_settlement}
+    // Returns: {penalty_charged, refund_amount, requires_settlement}
   }
 }
 ```
@@ -777,11 +966,15 @@ GET /api/bookings/:id/payment-summary
 Response: {
   booking_id: number,
   booking_status: string,
+  
+  // Booking-level charges
+  transport: {due, paid, pending},
+  
+  // Per-product charges
   products: [{
     product: {...},
     charges: {
       rent: {due, paid, pending},
-      transport: {due, paid, pending},
       exchange_penalty: {due, paid, pending},
       downgrade_penalty: {due, paid, pending},
       cancellation_penalty: {due, paid, pending},
@@ -972,16 +1165,16 @@ Response: [{
   value: number,
   days_from_booking_min: number | null,
   days_from_booking_max: number | null,
-  priority: number,
   is_active: boolean
 }]
 
 // Get applicable policy for specific scenario
-GET /api/policies/applicable?type=exchange_penalty&booking_date=2026-01-20
+GET /api/policies/applicable?type=exchange_penalty&booking_product_id=456
 Response: {
   policy: {...},
   value: number,
   value_type: string,
+  days_since_product_added: number,
   max_penalty: number (calculated based on rent)
 }
 
@@ -995,16 +1188,33 @@ Body: {
   value: number,
   days_from_booking_min: number (optional),
   days_from_booking_max: number (optional),
-  priority: number,
   max_value: number (optional)
+}
+Response: {
+  success: true,
+  policy: {...}
+}
+Error Response: {
+  error: "Date range overlaps with existing policy: Exchange Penalty (6-10 Days)",
+  overlapping_policy: {...}
 }
 
 // Update policy
 PUT /api/policies/:id
 Body: {
   value: number,
+  days_from_booking_min: number,
+  days_from_booking_max: number,
   max_value: number,
   is_active: boolean
+}
+Response: {
+  success: true,
+  policy: {...}
+}
+Error Response: {
+  error: "Date range overlaps with existing policy",
+  overlapping_policy: {...}
 }
 ```
 
@@ -1020,34 +1230,82 @@ Body: {
 | Cancellation Penalty | Percentage | 10%/20%/30% (based on days) | ✅ Yes | ✅ Yes |
 | Late Fee | Fixed | ₹200/day | ❌ No | ✅ Yes |
 | Transport Fee | Fixed | ₹100 | ❌ No | ✅ Yes |
-| Downgrade Penalty | Calculated | Auto (formula) | ❌ No | ❌ No |
-| Damage Fee | Manual Entry | N/A | ❌ No | ❌ No |
+
+**Non-Policy Charges (Ad-hoc):**
+- **Downgrade Penalty**: Calculated via formula: `max(0, old_rent - (exchange_penalty + new_total_rent))`
+- **Damage Fee**: Entered manually at return time (0 to security_deposit amount)
 
 ### 4.2 Time-Based Policy Rules
 
-Exchange and Cancellation penalties are calculated based on how many days before the booking date:
+Exchange and Cancellation penalties are calculated **per product** based on how many days have passed **since that specific product was added to the booking**:
 
-| Days from Booking Date | Exchange Penalty | Cancellation Penalty |
-|------------------------|-----------------|---------------------|
-| 0-5 days (within 5) | 10% of rent | 10% of rent |
-| 6-10 days (within 10) | 20% of rent | 20% of rent |
-| 11+ days (after 10) | 30% of rent | 30% of rent |
+**Formula:** `days_since_product_added = current_date - booking_product.created_at`
+
+| Days Since Product Added | Exchange Penalty | Cancellation Penalty |
+|--------------------------|-----------------|---------------------|
+| 0-5 days | 10% of rent | 10% of rent |
+| 6-10 days | 20% of rent | 20% of rent |
+| 11+ days | 30% of rent | 30% of rent |
+
+**Example:**
+```
+Booking created: Jan 1 with Product A (Product A created_at = Jan 1)
+Product A exchanged on: Jan 5 for Product B
+  → Exchange penalty for Product A: 4 days since added × 10% policy
+  → Product B added (Product B created_at = Jan 5)
+Cancel Product B on: Jan 8 (current_date)
+
+Days since Product B added = Jan 8 - Jan 5 = 3 days
+Cancellation policy applied: 10% (0-5 days range)
+
+NOT 7 days from original booking creation!
+```
+
+**Why per-product timing?**
+- ✅ Fair to customer - new products get their own timeline
+- ✅ Exchange scenario - exchanged product penalty based on when it was added
+- ✅ Per-product logic - consistent with exchange/cancel being product-level operations
 
 **Calculation Logic:**
 ```javascript
-// Example: Booking date is Jan 20, today is Jan 10
-days_from_booking = booking_date - current_date = 10 days
+// Example: Product added on Jan 5, today is Jan 12
+const product = await getBookingProduct(productId);
+const days_since_product_added = dateDiff(currentDate, product.created_at); // 7 days
 
-// Query matching policy
+// Query matching policy (only one will match due to non-overlapping ranges)
 SELECT * FROM rental_policies
 WHERE policy_type = 'exchange_penalty'
   AND is_active = TRUE
-  AND (days_from_booking_min IS NULL OR days_from_booking >= days_from_booking_min)
-  AND (days_from_booking_max IS NULL OR days_from_booking <= days_from_booking_max)
-ORDER BY priority DESC
+  AND (days_from_booking_min IS NULL OR ? >= days_from_booking_min)
+  AND (days_from_booking_max IS NULL OR ? <= days_from_booking_max)
 LIMIT 1;
+// Pass days_since_product_added (7) to both parameters
 
 // Result: 20% policy (6-10 days range)
+```
+
+**Overlap Prevention:**
+Backend validates on policy creation/update:
+```javascript
+async function validateNoOverlap(policyType, minDays, maxDays, excludePolicyId = null) {
+  // Check if any existing policy of same type has overlapping date range
+  // Note: Days are measured from booking_product.created_at (when product was added)
+  const overlapping = await db.query(`
+    SELECT * FROM rental_policies
+    WHERE policy_type = ?
+      AND is_active = TRUE
+      AND id != ?
+      AND (
+        -- New range overlaps with existing range
+        (? IS NULL OR ? IS NULL OR days_from_booking_max IS NULL OR ? <= days_from_booking_max)
+        AND (? IS NULL OR ? IS NULL OR days_from_booking_min IS NULL OR ? >= days_from_booking_min)
+      )
+  `, [policyType, excludePolicyId, minDays, minDays, minDays, maxDays, maxDays, maxDays]);
+  
+  if (overlapping.length > 0) {
+    throw new Error(`Date range overlaps with existing policy: ${overlapping[0].policy_name}`);
+  }
+}
 ```
 
 ### 4.3 Policy Application Examples
@@ -1055,11 +1313,12 @@ LIMIT 1;
 #### Exchange Penalty (Time-Based)
 
 ```
-Scenario 1: Exchange 5 days before booking
-Booking Date: Jan 20
-Current Date: Jan 15
-Days from booking: 5 days
-Policy: 10% (within 5 days)
+Scenario 1: Exchange 5 days after product was added
+Original booking: Jan 1 with Product A
+Product A added: Jan 1 (booking_product.created_at)
+Exchange Product A on: Jan 6
+Days since Product A added: 5 days
+Policy: 10% (0-5 days)
 Old Product Rent: ₹5,000
 
 Calculation:
@@ -1067,15 +1326,22 @@ exchange_penalty = 5000 × 0.10 = ₹500
 ```
 
 ```
-Scenario 2: Exchange 15 days before booking
-Booking Date: Jan 20
-Current Date: Jan 5
-Days from booking: 15 days
-Policy: 30% (after 10 days)
-Old Product Rent: ₹5,000
+Scenario 2: Exchange of already-exchanged product
+Original booking: Jan 1 with Product A (Product A created_at = Jan 1)
+First exchange on: Jan 5
+  → Product A exchanged for Product B
+  → Exchange penalty for Product A: 4 days (Jan 1-5) → 10% policy
+  → Product B added (Product B created_at = Jan 5)
+Second exchange on: Jan 20
+  → Product B exchanged for Product C
+  → Exchange penalty for Product B: 15 days (Jan 5-20) → 30% policy (11+ days)
+Old Product (B) Rent: ₹5,000
 
-Calculation:
+Calculation for second exchange:
 exchange_penalty = 5000 × 0.30 = ₹1,500
+
+Note: The 15 days are counted from when Product B was added, 
+NOT the 19 days from original booking!
 ```
 
 #### Downgrade Penalty
@@ -1098,11 +1364,11 @@ Total customer pays: 500 + 1500 + 3000 = ₹5,000 (same as original)
 #### Cancellation Penalty (Time-Based)
 
 ```
-Scenario 1: Cancel 3 days before booking
-Booking Date: Jan 20
-Current Date: Jan 17
-Days from booking: 3 days
-Policy: 10% (within 5 days)
+Scenario 1: Cancel 3 days after product was added
+Booking created: Jan 17 with Product A (booking_product.created_at = Jan 17)
+Cancel Product A on: Jan 20
+Days since Product A added: 3 days
+Policy: 10% (0-5 days)
 Product Rent: ₹8,000
 
 Max Penalty: 8000 × 0.10 = ₹800
@@ -1113,11 +1379,11 @@ Charged: ₹600
 ```
 
 ```
-Scenario 2: Cancel 12 days before booking
-Booking Date: Jan 20
-Current Date: Jan 8
-Days from booking: 12 days
-Policy: 30% (after 10 days)
+Scenario 2: Cancel 12 days after product was added
+Booking created: Jan 8 with Product A (booking_product.created_at = Jan 8)
+Cancel Product A on: Jan 20
+Days since Product A added: 12 days
+Policy: 30% (11+ days)
 Product Rent: ₹8,000
 
 Max Penalty: 8000 × 0.30 = ₹2,400
@@ -1166,20 +1432,17 @@ Settings → Rental Policies
 │ ┌───────────────────────────────────────┐  │
 │ │ Within 5 days        [Active ✓]      │  │
 │ │ ├─ Days: 0 to 5                      │  │
-│ │ ├─ Penalty: [10] %                   │  │
-│ │ └─ Priority: [3]                     │  │
+│ │ └─ Penalty: [10] %                   │  │
 │ │                              [Edit]  │  │
 │ ├───────────────────────────────────────┤  │
 │ │ 6-10 days            [Active ✓]      │  │
 │ │ ├─ Days: 6 to 10                     │  │
-│ │ ├─ Penalty: [20] %                   │  │
-│ │ └─ Priority: [2]                     │  │
+│ │ └─ Penalty: [20] %                   │  │
 │ │                              [Edit]  │  │
 │ ├───────────────────────────────────────┤  │
 │ │ After 10 days        [Active ✓]      │  │
 │ │ ├─ Days: 11+                         │  │
-│ │ ├─ Penalty: [30] %                   │  │
-│ │ └─ Priority: [1]                     │  │
+│ │ └─ Penalty: [30] %                   │  │
 │ │                              [Edit]  │  │
 │ └───────────────────────────────────────┘  │
 │                                             │
@@ -1191,8 +1454,150 @@ Settings → Rental Policies
 │ [Save All Changes]                          │
 └─────────────────────────────────────────────┘
 
-Note: Higher priority rules are evaluated first when multiple rules match.
+⚠️ Note: Date ranges cannot overlap. System validates on save.
+    Days are counted from when the product was added (booking_product.created_at).
+    Example: Product added Jan 1, exchange on Jan 8 = 7 days → 20% penalty.
+    For exchanged products, new product gets its own timeline from when it was added.
 ```
+
+---
+
+### 4.5 Final Discount at Settlement
+
+**Purpose:** Manual adjustment at final settlement to account for goodwill, negotiations, or special circumstances outside systematic calculations.
+
+**When Applied:** ONLY at final settlement when:
+- Booking is being completed (all products returned), OR
+- Booking is being fully cancelled
+
+**How It Works:**
+
+#### Scenario 1: Customer Owes Money (Underpayment)
+
+```
+Total Due (all charges): ₹10,000
+Total Paid: ₹8,000
+Balance Due: ₹2,000 (customer owes us)
+
+Admin enters Final Discount: ₹500
+Final Amount to Collect from Customer: ₹1,500
+
+Formula: Final Collection = Balance Due - Final Discount
+         ₹1,500 = ₹2,000 - ₹500
+
+Effect: Discount reduces what customer owes
+```
+
+#### Scenario 2: Customer Overpaid (We Owe Refund)
+
+```
+Total Due (all charges): ₹10,000  
+Total Paid: ₹11,000
+Overpayment: ₹1,000 (we owe customer)
+
+Admin enters Final Discount: ₹300
+Final Amount to Refund to Customer: ₹1,300
+
+Formula: Final Refund = Overpayment + Final Discount
+         ₹1,300 = ₹1,000 + ₹300
+
+Effect: Discount INCREASES what customer gets back
+```
+
+#### Scenario 3: Perfectly Settled (No Balance)
+
+```
+Total Due: ₹10,000
+Total Paid: ₹10,000
+Balance: ₹0
+
+Admin enters Final Discount: ₹200
+Final Amount to Refund to Customer: ₹200
+
+Formula: Final Refund = Final Discount
+         ₹200 = ₹200
+
+Effect: Discount given as pure refund
+```
+
+#### Implementation Logic
+
+```javascript
+/**
+ * Calculate final settlement amount
+ * @param {number} totalDue - Sum of all charges (rent, transport, penalties, fees, security)
+ * @param {number} totalPaid - Sum of all payments
+ * @param {number} finalDiscount - Optional discount at settlement (default 0)
+ * @returns {Object} { action: 'collect'|'refund'|'none', amount: number }
+ */
+function calculateFinalSettlement(totalDue, totalPaid, finalDiscount = 0) {
+  const rawBalance = totalDue - totalPaid;
+  const finalAmount = rawBalance - finalDiscount;
+  
+  if (finalAmount > 0) {
+    // Customer owes money
+    return { 
+      action: 'collect', 
+      amount: finalAmount,
+      discount_applied: finalDiscount
+    };
+  } else if (finalAmount < 0) {
+    // We owe customer money (refund)
+    return { 
+      action: 'refund', 
+      amount: Math.abs(finalAmount),
+      discount_applied: finalDiscount
+    };
+  } else {
+    // Perfectly settled (finalAmount = 0)
+    return { 
+      action: 'none', 
+      amount: 0,
+      discount_applied: finalDiscount
+    };
+  }
+}
+```
+
+#### Database Update
+
+```sql
+-- Store final discount in bookings table
+UPDATE bookings 
+SET final_discount = ?,
+    status = 'completed',
+    updated_at = NOW()
+WHERE id = ?;
+```
+
+#### API Endpoint
+
+```javascript
+// Apply final discount and complete booking
+POST /api/bookings/:id/finalize
+Body: {
+  finalDiscount: number (optional, default 0)
+}
+Response: {
+  success: true,
+  settlement: {
+    total_due: number,
+    total_paid: number,
+    raw_balance: number,
+    final_discount: number,
+    action: 'collect' | 'refund' | 'none',
+    amount: number
+  }
+}
+```
+
+**Key Points:**
+- ✅ Final discount ALWAYS benefits the customer
+- ✅ Underpayment: Reduces what they owe
+- ✅ Overpayment: Increases what they get back
+- ✅ Applied only once at final settlement
+- ✅ Optional field (defaults to 0)
+- ✅ UI should show calculation preview before applying
 
 ---
 
@@ -1625,20 +2030,17 @@ This blueprint provides:
 
 ---
 
-## 10. KEY CORRECTIONS APPLIED
+## 10. KEY ARCHITECTURAL DECISIONS
 
-This blueprint incorporates the following critical corrections:
+This blueprint incorporates the following critical architectural decisions:
 
-1. **✅ All amounts are integers** - No DECIMAL types, all financial fields use INT
-2. **✅ booking_products simplified** - Removed `rent_per_day` and `days_booked`, only `rent` field
-3. **✅ Transport removed from product_charges** - Transport tracked only at booking level
-4. **✅ Payment method enum** - 'Cash', 'UPI', 'Debit Card', 'Credit Card', 'Net Banking', 'Voucher'
-5. **✅ Transactions are booking-level** - Removed `booking_product_id` from payment_transactions
-6. **✅ Cancellation penalty simplified** - Removed `penalty_waived`, API returns max penalty, admin sets actual
-7. **✅ Global policies only** - Removed per-category overrides, no downgrade_penalty/damage_fee policies
-8. **✅ Time-based policies** - Exchange and cancellation penalties based on days from booking date
-9. **✅ Default policies specified** - Transport ₹100, Late fee ₹200/day, Exchange 10%/20%/30%, Cancellation 10%/20%/30%
-10. **✅ Availability calendar added** - New `product_availability_calendar` table with triggers for automated management
+1. **✅ All amounts are integers (INT)** - No DECIMAL types for financial calculations, ensures precision
+2. **✅ Transport tracked at booking level** - `bookings.transport_charge`, NOT in `product_charges` table
+3. **✅ No availability calendar table** - Uses date range overlap queries on `booking_products` (7x more efficient)
+4. **✅ Time-based policies** - Penalties calculated from `booking_product.created_at` (per-product timeline, not booking date)
+5. **✅ Global policies only** - No per-category overrides, simpler policy management
+6. **✅ Transactions are booking-level** - Payment application handled by backend, not tied to specific products
+7. **✅ Per-product charge tracking** - Granular `product_charges` table for rent, penalties, fees, security (7 types)
 
 ---
 

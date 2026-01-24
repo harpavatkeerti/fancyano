@@ -1,231 +1,111 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../database/connection');
-
-// GET all payment transactions for a booking
-router.get('/booking/:bookingId', async (req, res) => {
-  try {
-    const { bookingId } = req.params;
-    
-    const result = await pool.query(
-      `SELECT * FROM payment_transactions 
-       WHERE booking_id = $1 
-       ORDER BY created_at DESC`,
-      [bookingId]
-    );
-    
-    res.json(result.rows);
-  } catch (error) {
-    console.error('Error fetching payment transactions:', error);
-    res.status(500).json({ error: 'Failed to fetch payment transactions' });
-  }
-});
-
-// POST create a new payment transaction
-router.post('/', async (req, res) => {
-  try {
-    const { booking_id, amount, type, transaction_type, method, recorded_by, notes } = req.body;
-    
-    // Validate required fields
-    // Allow 0 amount for refunds (user may not want to create a refund)
-    if (!booking_id || amount === undefined || amount === null || amount === '' || !type || !recorded_by) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: booking_id, amount, type, recorded_by' 
-      });
-    }
-    
-    // Validate amount is a number (allow 0 for refunds)
-    const amountNum = parseFloat(amount);
-    if (isNaN(amountNum)) {
-      return res.status(400).json({ 
-        error: 'Amount must be a valid number' 
-      });
-    }
-    
-    // For payments, amount must be greater than 0 (refunds can be 0)
-    if (type === 'payment' && amountNum <= 0) {
-      return res.status(400).json({ 
-        error: 'Payment amount must be greater than 0' 
-      });
-    }
-    
-    // For refunds, amount must be >= 0 (allow 0)
-    if (type === 'refund' && amountNum < 0) {
-      return res.status(400).json({ 
-        error: 'Refund amount cannot be negative' 
-      });
-    }
-    
-    // Validate type
-    if (!['payment', 'refund', 'adjustment', 'date_change_charge'].includes(type)) {
-      return res.status(400).json({ 
-        error: 'Invalid type. Must be: payment, refund, adjustment, or date_change_charge' 
-      });
-    }
-    
-    // Start transaction
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      
-      // Insert transaction (include transaction_type, default to 'booking')
-      const transactionResult = await client.query(
-        `INSERT INTO payment_transactions 
-         (booking_id, amount, type, transaction_type, method, recorded_by, notes) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7) 
-         RETURNING *`,
-        [booking_id, amount, type, transaction_type || 'booking', method, recorded_by, notes]
-      );
-      
-      // If this is a REFUND transaction, check if it's for a specific product's security deposit
-      // If so, free that product from booking_products (mark as completed/returned)
-      if (type === 'refund' && method === 'refund' && notes) {
-        // Parse notes to extract product ID or code
-        // Notes format examples:
-        // "Security deposit refund for Product ID: 28 (Sherwani SH-001)"
-        // "Refund for Product: Sherwani SH-001"
-        
-        const productIdMatch = notes.match(/Product ID[:\s]+(\d+)/i);
-        const productCodeMatch = notes.match(/\(([A-Z]+-\d+)\)/);
-        
-        let productToFree = null;
-        
-        if (productIdMatch) {
-          const productId = parseInt(productIdMatch[1]);
-          const productCheck = await client.query(
-            'SELECT id, code, name FROM products WHERE id = $1',
-            [productId]
-          );
-          if (productCheck.rows.length > 0) {
-            productToFree = productCheck.rows[0];
-          }
-        } else if (productCodeMatch) {
-          const productCode = productCodeMatch[1];
-          const productCheck = await client.query(
-            'SELECT id, code, name FROM products WHERE code = $1',
-            [productCode]
-          );
-          if (productCheck.rows.length > 0) {
-            productToFree = productCheck.rows[0];
-          }
-        }
-        
-        // DON'T free products here - they will be freed when booking status becomes "completed"
-        // This prevents wrong calculations when status is recalculated after refund
-        // if (productToFree) {
-        //   const freedProduct = await client.query(
-        //     `DELETE FROM booking_products 
-        //      WHERE booking_id = $1 AND product_id = $2
-        //      RETURNING product_id, booked_from, booked_to`,
-        //     [booking_id, productToFree.id]
-        //   );
-        //   
-        //   if (freedProduct.rows.length > 0) {
-        //     const freed = freedProduct.rows[0];
-        //     console.log(`✅ Freed product ${productToFree.name} (${productToFree.code}) from booking ${booking_id}`);
-        //     console.log(`   Dates freed: ${freed.booked_from} to ${freed.booked_to}`);
-        //   }
-        // }
-      }
-      
-      // Update booking paid_amount ONLY for payment and refund types
-      // date_change_charge, exchange_penalty, downgrade_penalty, delayed_charges, and adjustments do NOT affect payment calculations
-      // Exchange penalties, downgrade penalties, and delayed charges are collected separately and should not be counted in paid_amount
-      // Adjustments are changes to booking total, not payments received
-      const txnType = transaction_type || 'booking';
-      if (type !== 'date_change_charge' && 
-          type !== 'adjustment' &&
-          txnType !== 'exchange_penalty' && 
-          txnType !== 'downgrade_penalty' &&
-          txnType !== 'exchange' &&
-          txnType !== 'delayed_charges') {
-        // For payments: add to paid_amount
-        // For refunds: subtract from paid_amount
-        const amountChange = type === 'refund' ? -Math.abs(amount) : Math.abs(amount);
-        
-        await client.query(
-          `UPDATE bookings 
-           SET paid_amount = COALESCE(paid_amount, 0) + $1,
-               due_amount = total_amount - (COALESCE(paid_amount, 0) + $1),
-               payment_status = CASE 
-                 WHEN (COALESCE(paid_amount, 0) + $1) >= total_amount THEN 'paid'
-                 WHEN (COALESCE(paid_amount, 0) + $1) > 0 THEN 'partial'
-                 ELSE 'unpaid'
-               END,
-               updated_at = CURRENT_TIMESTAMP
-           WHERE id = $2`,
-          [amountChange, booking_id]
-        );
-      }
-      
-      await client.query('COMMIT');
-      
-      res.status(201).json(transactionResult.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('Error creating payment transaction:', error);
-    res.status(500).json({ error: 'Failed to create payment transaction' });
-  }
-});
+const chargeAccountingService = require('../services/chargeAccountingService');
 
 // GET payment summary for a booking
 router.get('/summary/:bookingId', async (req, res) => {
   try {
     const { bookingId } = req.params;
     
-    const result = await pool.query(
-      `SELECT 
-        COUNT(*) as transaction_count,
-        SUM(CASE 
-          WHEN type = 'payment' 
-          AND (transaction_type IS NULL OR (transaction_type != 'exchange_penalty' AND transaction_type != 'downgrade_penalty' AND transaction_type != 'exchange' AND transaction_type != 'delayed_charges'))
-          AND (notes IS NULL OR (LOWER(notes) NOT LIKE '%exchange penalty%' AND LOWER(notes) NOT LIKE '%exchange charge%' AND LOWER(notes) NOT LIKE '%delayed return charges%'))
-          THEN amount 
-          ELSE 0 
-        END) as total_payments,
-        SUM(CASE WHEN type = 'refund' THEN amount ELSE 0 END) as total_refunds,
-        SUM(CASE WHEN type = 'adjustment' THEN amount ELSE 0 END) as total_adjustments,
-        SUM(CASE WHEN type = 'date_change_charge' THEN amount ELSE 0 END) as total_date_change_charges,
-        SUM(CASE 
-          WHEN transaction_type = 'exchange_penalty'
-          OR transaction_type = 'downgrade_penalty'
-          OR transaction_type = 'exchange'
-          OR (notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%'))
-          THEN amount 
-          ELSE 0 
-        END) as total_exchange_penalties,
-        SUM(CASE 
-          WHEN transaction_type = 'delayed_charges'
-          OR (notes IS NOT NULL AND LOWER(notes) LIKE '%delayed return charges%')
-          THEN amount 
-          ELSE 0 
-        END) as total_delayed_charges,
-        SUM(CASE 
-          -- CRITICAL: Exclude ALL refunds, delayed charges, exchange penalties, and date change charges from net_amount calculation
-          -- Delayed charges are separate charges that don't affect rent/security calculations
-          WHEN type = 'refund' THEN 0
-          WHEN type = 'date_change_charge' THEN 0
-          WHEN transaction_type = 'exchange_penalty' OR transaction_type = 'downgrade_penalty' OR transaction_type = 'exchange' THEN 0
-          WHEN transaction_type = 'delayed_charges' THEN 0
-          WHEN notes IS NOT NULL AND (LOWER(notes) LIKE '%exchange penalty%' OR LOWER(notes) LIKE '%exchange charge%' OR LOWER(notes) LIKE '%delayed return charges%') THEN 0
-          ELSE amount 
-        END) as net_amount
-       FROM payment_transactions 
-       WHERE booking_id = $1`,
-      [bookingId]
+    const summary = await chargeAccountingService.getPaymentSummary(parseInt(bookingId));
+    
+    res.json(summary);
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error fetching payment summary:', error);
+    res.status(500).json({ error: 'Failed to fetch payment summary', details: error.message });
+  }
+});
+
+// POST apply payment to a booking
+router.post('/', async (req, res) => {
+  try {
+    const { 
+      booking_id, 
+      amount, 
+      payment_method,
+      recorded_by,
+      notes 
+    } = req.body;
+    
+    if (!booking_id || !amount || amount <= 0 || !payment_method || !recorded_by) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: booking_id, amount (> 0), payment_method, recorded_by' 
+      });
+    }
+    
+    const result = await chargeAccountingService.applyPayment(
+      booking_id,
+      amount,
+      payment_method,
+      recorded_by,
+      notes
     );
     
-    res.json(result.rows[0]);
+    res.status(201).json({
+      message: 'Payment applied successfully',
+      payment_details: result
+    });
   } catch (error) {
-    console.error('Error fetching payment summary:', error);
-    res.status(500).json({ error: 'Failed to fetch payment summary' });
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message === 'Payment amount must be greater than 0') {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error applying payment:', error);
+    res.status(500).json({ error: 'Failed to apply payment', details: error.message });
+  }
+});
+
+// POST apply adjustments to charges
+router.post('/adjustment', async (req, res) => {
+  try {
+    const { 
+      booking_id, 
+      adjustment_amount,
+      payment_method,
+      reason,
+      adjusted_by
+    } = req.body;
+    
+    if (!booking_id || !adjustment_amount || adjustment_amount <= 0 || !payment_method || !adjusted_by) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: booking_id, adjustment_amount (> 0), payment_method, adjusted_by',
+        example: {
+          booking_id: 1,
+          adjustment_amount: 10000,
+          payment_method: 'Adjustment',
+          reason: 'Goodwill adjustment',
+          adjusted_by: 'admin'
+        }
+      });
+    }
+    
+    const result = await chargeAccountingService.applyAdjustment(
+      booking_id,
+      adjustment_amount,
+      payment_method,
+      adjusted_by,
+      reason
+    );
+    
+    res.json({
+      message: 'Adjustment applied successfully',
+      adjustment_details: result
+    });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message.includes('must be greater than 0')) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error applying adjustment:', error);
+    res.status(500).json({ error: 'Failed to apply adjustment', details: error.message });
   }
 });
 
 module.exports = router;
-
