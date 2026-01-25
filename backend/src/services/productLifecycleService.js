@@ -255,6 +255,73 @@ class ProductLifecycleService {
   }
 
   /**
+   * Validate if product can be picked up
+   * Requirements: status = 'confirmed', security fully paid, not past booked_to date
+   * @param {number} bookingProductId - Booking product ID
+   * @returns {Promise<Object>} - {eligible: boolean, reason?: string, security_pending?: number}
+   */
+  async validatePickupEligibility(bookingProductId) {
+    try {
+      const client = await pool.connect();
+      try {
+        // Get booking product
+        const bpResult = await client.query(
+          'SELECT * FROM booking_products WHERE id = $1',
+          [bookingProductId]
+        );
+
+        if (bpResult.rows.length === 0) {
+          return { eligible: false, reason: 'Booking product not found' };
+        }
+
+        const bp = bpResult.rows[0];
+
+        // Check status
+        if (bp.status !== 'confirmed') {
+          return { eligible: false, reason: `Product status is ${bp.status}, must be confirmed` };
+        }
+
+        // Check if past return date
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const bookedTo = new Date(bp.booked_to);
+        bookedTo.setHours(0, 0, 0, 0);
+
+        if (today > bookedTo) {
+          return { eligible: false, reason: 'Product booking period has expired' };
+        }
+
+        // Check security deposit paid
+        const securityResult = await client.query(
+          `SELECT due_amount, paid_amount FROM product_charges 
+           WHERE booking_product_id = $1 AND charge_type = 'security'`,
+          [bookingProductId]
+        );
+
+        if (securityResult.rows.length > 0) {
+          const security = securityResult.rows[0];
+          const securityPending = security.due_amount - security.paid_amount;
+
+          if (securityPending > 0) {
+            return {
+              eligible: false,
+              reason: 'Full security deposit must be paid before pickup',
+              security_pending: securityPending
+            };
+          }
+        }
+
+        return { eligible: true };
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Error validating pickup eligibility:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Mark products as picked up
    * @param {number} bookingId - The booking ID
    * @param {Array<number>} bookingProductIds - Array of booking product IDs
@@ -459,6 +526,78 @@ class ProductLifecycleService {
     const { rent, created_at } = result.rows[0];
     
     return await policyService.calculateExchangePenalty(rent, created_at);
+  }
+
+  /**
+   * Calculate security deposit refund/adjustment amounts (read-only, no transactions)
+   * @param {number} bookingProductId - Booking product ID
+   * @returns {Promise<Object>} - Calculated amounts {adjusted_amount, refund_amount, total_security, balance_due}
+   */
+  async calculateSecurityReturn(bookingProductId) {
+    try {
+      // Get booking product
+      const bpResult = await pool.query(
+        'SELECT booking_id, status FROM booking_products WHERE id = $1',
+        [bookingProductId]
+      );
+
+      if (bpResult.rows.length === 0) {
+        throw new Error('Booking product not found');
+      }
+
+      const { booking_id, status } = bpResult.rows[0];
+
+      // Only allow security return after product is completed
+      if (status !== 'completed') {
+        throw new Error(`Cannot calculate security return for product with status: ${status}`);
+      }
+
+      // Get security charge
+      const securityResult = await pool.query(
+        `SELECT due_amount, paid_amount FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [bookingProductId]
+      );
+
+      if (securityResult.rows.length === 0) {
+        throw new Error('No security charge found for this product');
+      }
+
+      const security = securityResult.rows[0];
+      const securityPaid = security.paid_amount;
+
+      if (securityPaid === 0) {
+        return {
+          booking_id,
+          booking_product_id: bookingProductId,
+          total_security: 0,
+          adjusted_amount: 0,
+          refund_amount: 0,
+          balance_due: 0,
+          message: 'No security was paid for this product'
+        };
+      }
+
+      // Get booking balance
+      const summaryResult = await chargeAccountingService.getPaymentSummary(booking_id);
+      const balanceDue = summaryResult.totals.balance;
+
+      // Calculate amounts: if balance exists, adjust first then refund remainder
+      const adjustedAmount = Math.min(securityPaid, Math.max(0, balanceDue));
+      const refundAmount = securityPaid - adjustedAmount;
+
+      return {
+        booking_id,
+        booking_product_id: bookingProductId,
+        total_security: securityPaid,
+        adjusted_amount: adjustedAmount,
+        refund_amount: refundAmount,
+        balance_due: balanceDue
+      };
+    } catch (error) {
+      console.error('Error calculating security return:', error);
+      throw error;
+    }
   }
 }
 

@@ -34,14 +34,14 @@ describe('ProductLifecycleService', () => {
       
       // Create test products
       const product1 = await client.query(
-        `INSERT INTO products (name, code, category, size, rent_per_day, security_deposit)
+        `INSERT INTO products (name, code, category, size, rent, security_deposit)
          VALUES ('Test Product 1', 'TEST001', 'Test', 'M', 500, 1000)
          RETURNING id`
       );
       testProductId1 = product1.rows[0].id;
       
       const product2 = await client.query(
-        `INSERT INTO products (name, code, category, size, rent_per_day, security_deposit)
+        `INSERT INTO products (name, code, category, size, rent, security_deposit)
          VALUES ('Test Product 2', 'TEST002', 'Test', 'L', 600, 1200)
          RETURNING id`
       );
@@ -142,7 +142,7 @@ describe('ProductLifecycleService', () => {
       
       // Create another product for testing
       const product3 = await pool.query(
-        `INSERT INTO products (name, code, category, size, rent_per_day, security_deposit)
+        `INSERT INTO products (name, code, category, size, rent, security_deposit)
          VALUES ('Test Product 3', 'TEST003', 'Test', 'XL', 700, 1400)
          RETURNING id`
       );

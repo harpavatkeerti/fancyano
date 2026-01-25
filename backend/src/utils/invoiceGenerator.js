@@ -100,7 +100,7 @@ class InvoiceGenerator {
       
       products.forEach((product, index) => {
         const quantity = product.quantity || 1;
-        const rentPerDay = parseFloat(product.rent_per_day || 0);
+        const rentPerDay = parseFloat(product.rent || 0);
         const total = rentPerDay * quantity;
         calculatedSubtotal += total;
         

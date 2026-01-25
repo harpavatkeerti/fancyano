@@ -22,7 +22,7 @@ describe('Product Exchanges Routes', () => {
     
     // Create test products
     const product1Result = await pool.query(
-      `INSERT INTO products (code, name, rent_per_day, security_deposit, category)
+      `INSERT INTO products (code, name, rent, security_deposit, category)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
       ['TEST-EXCH-001', 'Test Exchange Product 1', 50000, 20000, 'test']
@@ -30,7 +30,7 @@ describe('Product Exchanges Routes', () => {
     testProduct1Id = product1Result.rows[0].id;
 
     const product2Result = await pool.query(
-      `INSERT INTO products (code, name, rent_per_day, security_deposit, category)
+      `INSERT INTO products (code, name, rent, security_deposit, category)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
       ['TEST-EXCH-002', 'Test Exchange Product 2', 60000, 25000, 'test']
@@ -143,7 +143,7 @@ describe('Product Exchanges Routes', () => {
     it('should exchange a product (one-to-many)', async () => {
       // Create another product for multi-exchange
       const product3Result = await pool.query(
-        `INSERT INTO products (code, name, rent_per_day, security_deposit, category)
+        `INSERT INTO products (code, name, rent, security_deposit, category)
          VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
         ['TEST-EXCH-003', 'Test Exchange Product 3', 30000, 15000, 'test']

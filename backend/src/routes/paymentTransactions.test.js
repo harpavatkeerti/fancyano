@@ -15,7 +15,7 @@ describe('Payment Transactions Routes', () => {
   beforeAll(async () => {
     // Create test product
     const productResult = await pool.query(
-      `INSERT INTO products (code, name, rent_per_day, security_deposit, category)
+      `INSERT INTO products (code, name, rent, security_deposit, category)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
       ['TEST-PAY-001', 'Test Payment Product', 50000, 20000, 'test']

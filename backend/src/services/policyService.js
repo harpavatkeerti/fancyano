@@ -292,6 +292,140 @@ class PolicyService {
   }
 
   /**
+   * Update an existing policy
+   * @param {number} policyId - Policy ID
+   * @param {Object} updates - Fields to update
+   * @returns {Promise<Object>} - Updated policy
+   */
+  async updatePolicy(policyId, updates) {
+    try {
+      // Get existing policy
+      const existingResult = await pool.query(
+        'SELECT * FROM rental_policies WHERE id = $1',
+        [policyId]
+      );
+
+      if (existingResult.rows.length === 0) {
+        throw new Error('Policy not found');
+      }
+
+      const existing = existingResult.rows[0];
+
+      // Check for overlaps if date range is being changed
+      const {
+        days_from_booking_min,
+        days_from_booking_max
+      } = updates;
+
+      if (days_from_booking_min !== undefined || days_from_booking_max !== undefined) {
+        const newMin = days_from_booking_min !== undefined ? days_from_booking_min : existing.days_from_booking_min;
+        const newMax = days_from_booking_max !== undefined ? days_from_booking_max : existing.days_from_booking_max;
+
+        if (newMin !== null || newMax !== null) {
+          const overlapCheck = await pool.query(
+            `SELECT * FROM rental_policies 
+             WHERE policy_type = $1 
+             AND id != $2
+             AND is_active = true
+             AND (days_from_booking_min IS NOT NULL OR days_from_booking_max IS NOT NULL)
+             AND (
+               ($3::INTEGER IS NULL OR days_from_booking_max IS NULL OR $3::INTEGER <= days_from_booking_max)
+               AND ($4::INTEGER IS NULL OR days_from_booking_min IS NULL OR $4::INTEGER >= days_from_booking_min)
+             )`,
+            [existing.policy_type, policyId, newMin, newMax]
+          );
+
+          if (overlapCheck.rows.length > 0) {
+            throw new Error('Date range overlaps with existing policy: ' + overlapCheck.rows[0].policy_name);
+          }
+        }
+      }
+
+      // Build update query
+      const setClauses = [];
+      const values = [];
+      let paramCount = 1;
+
+      const allowedFields = [
+        'policy_name', 'value', 'days_from_booking_min', 
+        'days_from_booking_max', 'min_value', 'max_value', 'is_active'
+      ];
+
+      for (const field of allowedFields) {
+        if (updates[field] !== undefined) {
+          setClauses.push(`${field} = $${paramCount++}`);
+          values.push(updates[field]);
+        }
+      }
+
+      if (setClauses.length === 0) {
+        throw new Error('No fields to update');
+      }
+
+      setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
+      values.push(policyId);
+
+      const result = await pool.query(
+        `UPDATE rental_policies SET ${setClauses.join(', ')} WHERE id = $${paramCount} RETURNING *`,
+        values
+      );
+
+      return result.rows[0];
+    } catch (error) {
+      console.error('Error updating policy:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get applicable policy for a specific booking product
+   * @param {string} policyType - Policy type
+   * @param {number} bookingProductId - Booking product ID
+   * @returns {Promise<Object>} - Policy details with calculated max penalty
+   */
+  async getApplicablePolicyForBookingProduct(policyType, bookingProductId) {
+    try {
+      // Get booking product to calculate days since added
+      const bpResult = await pool.query(
+        'SELECT id, rent, created_at FROM booking_products WHERE id = $1',
+        [bookingProductId]
+      );
+
+      if (bpResult.rows.length === 0) {
+        throw new Error('Booking product not found');
+      }
+
+      const bookingProduct = bpResult.rows[0];
+      const daysSince = this._getDaysSince(bookingProduct.created_at);
+
+      // Get applicable policy
+      const policy = await this.getApplicablePolicy(policyType, daysSince);
+      
+      if (!policy) {
+        return {
+          policy: null,
+          days_since_product_added: daysSince,
+          max_penalty: 0
+        };
+      }
+
+      // Calculate max penalty
+      const maxPenalty = this.calculatePenaltyAmount(policy, bookingProduct.rent);
+
+      return {
+        policy,
+        value: policy.value,
+        value_type: policy.value_type,
+        days_since_product_added: daysSince,
+        max_penalty: maxPenalty
+      };
+    } catch (error) {
+      console.error('Error getting applicable policy for booking product:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Calculate days since a date
    * @param {Date|string} date
    * @returns {number}

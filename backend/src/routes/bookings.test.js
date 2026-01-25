@@ -16,7 +16,7 @@ describe('Bookings Routes', () => {
   beforeAll(async () => {
     // Create test product
     const productResult = await pool.query(
-      `INSERT INTO products (code, name, rent_per_day, security_deposit, category)
+      `INSERT INTO products (code, name, rent, security_deposit, category)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id`,
       ['TEST-BOOK-001', 'Test Booking Product', 50000, 20000, 'test']
@@ -368,6 +368,199 @@ describe('Bookings Routes', () => {
         .send({
           discount_amount: 5000,
           applied_by: 'test-user'
+        });
+
+      expect(response.status).toBe(404);
+    });
+  });
+
+  describe('POST /bookings/:id/finalize', () => {
+    let finalizeTestBookingId;
+    let finalizeTestProductId;
+
+    beforeEach(async () => {
+      // Create a booking for finalization tests
+      const booking = await bookingService.createBooking({
+        customerName: 'Finalize Test Customer',
+        customerPhone: 'TEST-ROUTE',
+        customerEmail: 'finalize@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 5000,
+        createdBy: 'test-user'
+      });
+      finalizeTestBookingId = booking.booking_id;
+
+      // Confirm booking
+      await bookingService.confirmBooking(finalizeTestBookingId, 'test-user');
+
+      // Get booking product ID
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [finalizeTestBookingId]
+      );
+      finalizeTestProductId = bpResult.rows[0].id;
+
+      // Complete all products
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE booking_id = $2',
+        ['completed', finalizeTestBookingId]
+      );
+    });
+
+    // Test: Finalize with balance due (customer owes money)
+    it('should finalize booking with balance due (collect scenario)', async () => {
+      // Pay partial amount (only rent 50000, leaving transport 5000 + security 20000)
+      await chargeAccountingService.applyPayment(
+        finalizeTestBookingId,
+        50000,
+        'Cash',
+        'test-user',
+        'Partial payment'
+      );
+
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: 5000,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.settlement.action).toBe('collect');
+      expect(response.body.settlement.final_discount).toBe(5000);
+      // Balance = (50000 + 5000 + 20000) - 50000 - 5000 = 20000 to collect
+      expect(response.body.settlement.amount).toBe(20000);
+
+      // Verify booking status updated to completed
+      const bookingCheck = await pool.query(
+        'SELECT status, final_discount FROM bookings WHERE id = $1',
+        [finalizeTestBookingId]
+      );
+      expect(bookingCheck.rows[0].status).toBe('completed');
+      expect(bookingCheck.rows[0].final_discount).toBe(5000);
+    });
+
+    // Test: Finalize with overpayment (refund scenario)
+    it('should finalize booking with overpayment (refund scenario)', async () => {
+      // Pay more than total due
+      await chargeAccountingService.applyPayment(
+        finalizeTestBookingId,
+        80000, // Total due is 75000, so 5000 overpayment
+        'Cash',
+        'test-user',
+        'Overpayment'
+      );
+
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: 3000,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.settlement.action).toBe('refund');
+      expect(response.body.settlement.final_discount).toBe(3000);
+      // Refund = overpayment + discount = 5000 + 3000 = 8000
+      expect(response.body.settlement.amount).toBe(8000);
+    });
+
+    // Test: Finalize with perfect balance (none scenario)
+    it('should finalize booking with perfect balance', async () => {
+      // Pay exact amount
+      await chargeAccountingService.applyPayment(
+        finalizeTestBookingId,
+        75000, // Exact total: 50000 rent + 5000 transport + 20000 security
+        'Cash',
+        'test-user',
+        'Full payment'
+      );
+
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: 0,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.settlement.action).toBe('none');
+      expect(response.body.settlement.amount).toBe(0);
+    });
+
+    // Test: Finalize with discount turning balance to refund
+    it('should finalize with discount converting balance due to refund', async () => {
+      // Pay exact amount
+      await chargeAccountingService.applyPayment(
+        finalizeTestBookingId,
+        75000,
+        'Cash',
+        'test-user',
+        'Full payment'
+      );
+
+      // Apply discount larger than 0 balance
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: 5000,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.settlement.action).toBe('refund');
+      expect(response.body.settlement.amount).toBe(5000);
+    });
+
+    // Test: Cannot finalize if products still active
+    it('should return 400 if products not all completed/cancelled', async () => {
+      // Set product back to in_progress
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE booking_id = $2',
+        ['in_progress', finalizeTestBookingId]
+      );
+
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: 0,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('still active');
+    });
+
+    // Test: Returns 400 if negative discount
+    it('should return 400 if final_discount is negative', async () => {
+      const response = await request(app)
+        .post(`/bookings/${finalizeTestBookingId}/finalize`)
+        .send({
+          final_discount: -1000,
+          finalized_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('must be >= 0');
+    });
+
+    // Test: Returns 404 if booking not found
+    it('should return 404 if booking does not exist', async () => {
+      const response = await request(app)
+        .post('/bookings/999999/finalize')
+        .send({
+          final_discount: 0,
+          finalized_by: 'test-user'
         });
 
       expect(response.status).toBe(404);

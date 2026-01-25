@@ -128,6 +128,42 @@ router.put('/:id/confirm', async (req, res) => {
   }
 });
 
+// POST finalize booking with optional final discount
+router.post('/:id/finalize', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { final_discount, finalized_by } = req.body;
+
+    const finalDiscount = final_discount || 0;
+
+    if (finalDiscount < 0) {
+      return res.status(400).json({
+        error: 'final_discount must be >= 0'
+      });
+    }
+
+    const result = await bookingService.finalizeBooking(
+      parseInt(id),
+      finalDiscount,
+      finalized_by || 'system'
+    );
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message.includes('Cannot finalize')) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error finalizing booking:', error);
+    res.status(500).json({ error: 'Failed to finalize booking', details: error.message });
+  }
+});
+
 // PUT update booking status (check if should be completed/cancelled)
 router.put('/:id/status', async (req, res) => {
   try {

@@ -8,14 +8,14 @@ describe('BookingService', () => {
   beforeAll(async () => {
     // Create test products
     const product1 = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent_per_day, security_deposit)
+      `INSERT INTO products (name, code, category, size, rent, security_deposit)
        VALUES ('Test Product 1', 'BOOK001', 'Test', 'M', 500, 1000)
        RETURNING id`
     );
     testProductId1 = product1.rows[0].id;
     
     const product2 = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent_per_day, security_deposit)
+      `INSERT INTO products (name, code, category, size, rent, security_deposit)
        VALUES ('Test Product 2', 'BOOK002', 'Test', 'L', 800, 1500)
        RETURNING id`
     );

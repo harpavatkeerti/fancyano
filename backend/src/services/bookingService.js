@@ -523,6 +523,115 @@ class BookingService {
       client.release();
     }
   }
+
+  /**
+   * Finalize booking with optional final discount
+   * Calculates settlement (collect/refund/none) and updates booking status to completed
+   * @param {number} bookingId - Booking ID
+   * @param {number} finalDiscount - Optional final discount amount (default 0)
+   * @param {string} finalizedBy - User finalizing the booking
+   * @returns {Promise<Object>} - Settlement details
+   */
+  async finalizeBooking(bookingId, finalDiscount = 0, finalizedBy) {
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+
+      // Get current booking status
+      const bookingCheck = await client.query(
+        'SELECT status FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+
+      if (bookingCheck.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+
+      const currentStatus = bookingCheck.rows[0].status;
+
+      // Only allow finalization if all products are completed or cancelled
+      const productsCheck = await client.query(
+        `SELECT COUNT(*) as active_count 
+         FROM booking_products 
+         WHERE booking_id = $1 AND status NOT IN ('completed', 'cancelled', 'exchanged')`,
+        [bookingId]
+      );
+
+      if (parseInt(productsCheck.rows[0].active_count) > 0) {
+        throw new Error('Cannot finalize booking: Some products are still active (not completed or cancelled)');
+      }
+
+      // Get payment summary
+      const summary = await chargeAccountingService.getPaymentSummary(bookingId);
+      const totalDue = summary.totals.total_due;
+      const totalPaid = summary.totals.total_paid;
+      // Raw balance accounts for overpayment (negative balance means overpayment)
+      const rawBalance = (totalDue - totalPaid) - (summary.overpayment || 0);
+
+      // Calculate final settlement
+      const finalAmount = rawBalance - finalDiscount;
+      
+      let action;
+      let amount;
+      
+      if (finalAmount > 0) {
+        action = 'collect';
+        amount = finalAmount;
+      } else if (finalAmount < 0) {
+        action = 'refund';
+        amount = Math.abs(finalAmount);
+      } else {
+        action = 'none';
+        amount = 0;
+      }
+
+      // Update booking with final discount and completed status
+      await client.query(
+        `UPDATE bookings 
+         SET final_discount = $1, status = 'completed', updated_at = CURRENT_TIMESTAMP 
+         WHERE id = $2`,
+        [finalDiscount, bookingId]
+      );
+
+      // Log activity
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          bookingId,
+          'booking_finalized',
+          JSON.stringify({
+            final_discount: finalDiscount,
+            settlement_action: action,
+            settlement_amount: amount
+          }),
+          finalizedBy
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        booking_id: bookingId,
+        settlement: {
+          total_due: totalDue,
+          total_paid: totalPaid,
+          raw_balance: rawBalance,
+          final_discount: finalDiscount,
+          action,
+          amount
+        },
+        finalized_by: finalizedBy,
+        finalized_at: new Date()
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 module.exports = new BookingService();
