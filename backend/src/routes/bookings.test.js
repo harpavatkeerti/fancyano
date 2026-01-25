@@ -566,4 +566,109 @@ describe('Bookings Routes', () => {
       expect(response.status).toBe(404);
     });
   });
+
+  // Test suite: GET /bookings/:id/activity-log
+  describe('GET /bookings/:id/activity-log', () => {
+    let activityLogTestBookingId;
+    let activityLogProductId;
+
+    beforeEach(async () => {
+      // Create a booking using the service (which properly initializes charges)
+      const booking = await bookingService.createBooking({
+        customerName: 'Activity Log Test',
+        customerPhone: '1234567890',
+        customerEmail: 'activitylog@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: '2024-05-01',
+          bookedTo: '2024-05-05',
+          rent: 10000,
+          securityDeposit: 5000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      activityLogTestBookingId = booking.booking_id;
+
+      // Get booking_product_id
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [activityLogTestBookingId]
+      );
+      activityLogProductId = bpResult.rows[0].id;
+
+      // Confirm the booking
+      await bookingService.confirmBooking(activityLogTestBookingId, 'test-user');
+
+      // Create some activity log entries
+      await pool.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES 
+         ($1, 'payment_applied', $2, 'test-user'),
+         ($1, 'product_picked_up', $3, 'test-user')`,
+        [
+          activityLogTestBookingId,
+          JSON.stringify({ amount: 5000, method: 'Cash' }),
+          JSON.stringify({ booking_product_id: activityLogProductId })
+        ]
+      );
+    });
+
+    // Test: Retrieve activity log successfully
+    it('should return activity log for a booking', async () => {
+      const response = await request(app)
+        .get(`/bookings/${activityLogTestBookingId}/activity-log`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.booking_id).toBe(activityLogTestBookingId);
+      expect(response.body.activities).toBeInstanceOf(Array);
+      expect(response.body.activities.length).toBeGreaterThanOrEqual(2); // At least 2 entries created in beforeEach
+      expect(response.body.count).toBeGreaterThanOrEqual(2);
+
+      // Check first activity entry structure
+      const firstActivity = response.body.activities[0];
+      expect(firstActivity).toHaveProperty('id');
+      expect(firstActivity).toHaveProperty('booking_id');
+      expect(firstActivity).toHaveProperty('event_type');
+      expect(firstActivity).toHaveProperty('details');
+      expect(firstActivity).toHaveProperty('performed_by');
+      expect(firstActivity).toHaveProperty('created_at');
+
+      // Verify at least one of our manual entries exists
+      const eventTypes = response.body.activities.map(a => a.event_type);
+      expect(eventTypes).toContain('payment_applied');
+      expect(eventTypes).toContain('product_picked_up');
+    });
+
+    // Test: Returns 404 for non-existent booking
+    it('should return 404 for non-existent booking', async () => {
+      const response = await request(app)
+        .get('/bookings/999999/activity-log');
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toBe('Booking not found');
+    });
+
+    // Test: Returns empty array for booking with no activities
+    it('should return empty array for booking with no activity log', async () => {
+      // Create a booking without any activity log entries
+      const emptyBookingResult = await pool.query(
+        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+         VALUES ('Empty Activity Test', '9876543210', CURRENT_DATE, 'pending', 'test-user')
+         RETURNING id`
+      );
+      const emptyBookingId = emptyBookingResult.rows[0].id;
+
+      const response = await request(app)
+        .get(`/bookings/${emptyBookingId}/activity-log`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.activities).toBeInstanceOf(Array);
+      expect(response.body.activities.length).toBe(0);
+      expect(response.body.count).toBe(0);
+    });
+  });
 });

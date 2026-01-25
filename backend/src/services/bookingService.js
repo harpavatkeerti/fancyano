@@ -632,6 +632,47 @@ class BookingService {
       client.release();
     }
   }
+
+  /**
+   * Get activity log for a booking
+   * Returns chronological list of all events related to the booking
+   * @param {number} bookingId - Booking ID
+   * @returns {Promise<Array>} - Array of activity log entries
+   */
+  async getActivityLog(bookingId) {
+    try {
+      // Verify booking exists
+      const bookingCheck = await pool.query(
+        'SELECT id FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+
+      if (bookingCheck.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+
+      // Fetch all activity log entries for this booking
+      const result = await pool.query(
+        `SELECT 
+          id,
+          booking_id,
+          event_type,
+          event_reference_id,
+          details,
+          performed_by,
+          created_at
+        FROM booking_activity_log
+        WHERE booking_id = $1
+        ORDER BY created_at ASC, id ASC`,
+        [bookingId]
+      );
+
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching activity log:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new BookingService();

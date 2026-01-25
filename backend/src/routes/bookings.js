@@ -250,4 +250,26 @@ router.post('/:id/final-discount', async (req, res) => {
   }
 });
 
+// GET activity log for a booking
+router.get('/:id/activity-log', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const activityLog = await bookingService.getActivityLog(parseInt(id));
+    
+    res.json({
+      success: true,
+      booking_id: parseInt(id),
+      activities: activityLog,
+      count: activityLog.length
+    });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error fetching activity log:', error);
+    res.status(500).json({ error: 'Failed to fetch activity log', details: error.message });
+  }
+});
+
 module.exports = router;
