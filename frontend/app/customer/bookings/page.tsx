@@ -196,10 +196,8 @@ export default function CustomerBookings() {
   }
 
   function isPending(booking: Booking): boolean {
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
-    return paidAmount === 0 && booking.status === 'pending';
+    // A booking is pending if its status is 'pending'
+    return booking.status === 'pending';
   }
 
   function calculateTimeRemaining(booking: Booking): { minutes: number; seconds: number } | null {
@@ -393,9 +391,11 @@ export default function CustomerBookings() {
                       </p>
                     </div>
                     <div>
-                      <p className="text-sm text-gray-500">Total Amount</p>
+                      <p className="text-sm text-gray-500">Total Rent</p>
                       <p className="font-bold text-red-600 text-lg">
-                        ₹{Math.floor(booking.total_amount || 0).toLocaleString('en-IN')}
+                        ₹{Math.floor(
+                          ((booking as any).total_rent || 0) + ((booking as any).transport_charge || 0)
+                        ).toLocaleString('en-IN')}
                       </p>
                     </div>
                     {booking.security_deposit && (

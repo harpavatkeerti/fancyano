@@ -96,7 +96,7 @@ export default function CartPage() {
     try {
       const cart = JSON.parse(localStorage.getItem('customer_cart') || '[]');
       // Validate cart items have required product data
-      const validCart = cart.filter((item: any) => item?.product && item?.product?.rent_per_day !== undefined);
+      const validCart = cart.filter((item: any) => item?.product && item?.product?.rent !== undefined);
       setCartItems(validCart);
       if (validCart.length !== cart.length) {
         // Update localStorage with valid items only
@@ -161,7 +161,7 @@ export default function CartPage() {
   function calculateSubtotal() {
     if (!cartItems || cartItems.length === 0) return 0;
     return cartItems.reduce((sum, item) => {
-      const rentPerDay = item?.product?.rent_per_day || 0;
+      const rentPerDay = item?.product?.rent || 0;
       return sum + (typeof rentPerDay === 'number' ? rentPerDay : parseFloat(rentPerDay) || 0);
     }, 0);
   }
@@ -424,10 +424,9 @@ export default function CartPage() {
           booked_from: item.dateFrom,
           booked_to: item.dateTo
         })),
-        total_amount: calculateSubtotal(), // Rental amount only (subtotal without transportation)
-        security_deposit: totalSecurityDeposit,
-        transportation_opted: transportationRequired === 'yes',
-        other_charges: 0, // Salesman will set transportation charges later
+        // Backend calculates total_rent and total_security from products
+        // Note: transport_charge will be set by salesman; 0 means no transport opted yet
+        transport_charge: 0, // Salesman will set transportation charges later
         status: 'pending', // Customer bookings start as pending until salesman confirms payment
         special_requirements: '',
       } as any);
@@ -532,7 +531,7 @@ export default function CartPage() {
                     <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {item.product.code}</p>
                   )}
                 </div>
-                <p className="text-sm text-gray-600 mt-1">₹{Math.floor(item.product.rent_per_day || 0)} / Day</p>
+                <p className="text-sm text-gray-600 mt-1">₹{Math.floor(item.product.rent || 0)} / Day</p>
                 <p className="text-sm text-red-600 mt-2">
                   Dates: {new Date(item.dateFrom).toLocaleDateString('en-GB')} To{' '}
                   {new Date(item.dateTo).toLocaleDateString('en-GB')}

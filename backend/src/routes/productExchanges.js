@@ -4,6 +4,22 @@ const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
 
+// GET exchange eligibility check for a booking product
+router.get('/eligibility/:booking_product_id', async (req, res) => {
+  try {
+    const { booking_product_id } = req.params;
+    
+    const eligibility = await productLifecycleService.validateExchangeEligibility(
+      parseInt(booking_product_id)
+    );
+    
+    res.json(eligibility);
+  } catch (error) {
+    console.error('Error checking exchange eligibility:', error);
+    res.status(500).json({ error: 'Failed to check eligibility', details: error.message });
+  }
+});
+
 // POST exchange product(s) in a booking
 router.post('/', async (req, res) => {
   try {

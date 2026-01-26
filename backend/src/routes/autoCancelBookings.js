@@ -13,11 +13,12 @@ router.post('/check', async (req, res) => {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     
     const result = await client.query(
-      `SELECT id, customer_name, created_at 
-       FROM bookings 
-       WHERE status = 'pending' 
-       AND paid_amount = 0 
-       AND created_at < $1`,
+      `SELECT b.id, b.customer_name, b.created_at 
+       FROM bookings b
+       LEFT JOIN payment_transactions pt ON pt.booking_id = b.id AND pt.type = 'payment'
+       WHERE b.status = 'pending' 
+       AND pt.id IS NULL
+       AND b.created_at < $1`,
       [fiveMinutesAgo]
     );
 

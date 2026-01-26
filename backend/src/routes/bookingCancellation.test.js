@@ -243,4 +243,94 @@ describe('Booking Cancellation Routes', () => {
       expect(response.status).toBe(404);
     });
   });
+
+  describe('GET /cancellation/info/:booking_product_id', () => {
+    let infoTestBookingId;
+    let infoTestBPId;
+
+    beforeEach(async () => {
+      // Create test booking
+      const booking = await bookingService.createBooking({
+        customerName: 'Cancellation Info Customer',
+        customerPhone: 'CANCEL-INFO-TEST',
+        customerEmail: 'cancel-info@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      infoTestBookingId = booking.booking_id;
+
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [infoTestBookingId]
+      );
+      infoTestBPId = bpResult.rows[0].id;
+
+      // Confirm booking
+      await bookingService.confirmBooking(infoTestBookingId, 'test-user');
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [infoTestBookingId]);
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id = $1', [infoTestBPId]);
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [infoTestBPId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [infoTestBookingId]);
+    });
+
+    it('should return cancellation info with max penalty for confirmed product', async () => {
+      const response = await request(app).get(`/cancellation/info/${infoTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(true);
+      expect(response.body.reason).toBe('Product is eligible for cancellation');
+      expect(response.body.product).toBeDefined();
+      expect(response.body.max_penalty).toBeGreaterThanOrEqual(0);
+      expect(response.body.policy).toBeDefined();
+    });
+
+    it('should return eligible=false for cancelled product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['cancelled', infoTestBPId]);
+
+      const response = await request(app).get(`/cancellation/info/${infoTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toContain('Cannot cancel product with status: cancelled');
+    });
+
+    it('should return eligible=false for completed product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', infoTestBPId]);
+
+      const response = await request(app).get(`/cancellation/info/${infoTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toContain('Cannot cancel product with status: completed');
+    });
+
+    it('should return eligible=false for in_progress product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', infoTestBPId]);
+
+      const response = await request(app).get(`/cancellation/info/${infoTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toContain('Cannot cancel product with status: in_progress');
+    });
+
+    it('should return eligible=false for non-existent product', async () => {
+      const response = await request(app).get('/cancellation/info/999999');
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toBe('Booking product not found');
+    });
+  });
 });

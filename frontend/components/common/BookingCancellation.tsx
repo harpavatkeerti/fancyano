@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { bookingCancellationApi } from '@/lib/bookingCancellationApi';
+import { bookingCancellationApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
 interface Product {
@@ -25,6 +25,8 @@ interface CancellationPreview {
   products_to_cancel: ProductPenalty[];
   total_cancelled_rent_required?: number;
   total_cancelled_security_required?: number;
+  total_cancelled_rent?: number;  // Actual paid rent for cancelled products
+  total_cancelled_security?: number;  // Actual paid security for cancelled products
   total_penalty_amount: number;
   difference_of_amount_paid?: number;
   remaining_rent_required?: number;

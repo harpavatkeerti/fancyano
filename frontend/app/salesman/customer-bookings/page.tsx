@@ -159,10 +159,8 @@ export default function CustomerBookingsPage() {
   }
 
   function isPending(booking: Booking): boolean {
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
-    return paidAmount === 0 && booking.status === 'pending';
+    // A booking is pending if its status is 'pending'
+    return booking.status === 'pending';
   }
 
   function getStatusIcon(status: string, booking: Booking) {
@@ -198,20 +196,14 @@ export default function CustomerBookingsPage() {
       );
     }
 
-    // Calculate actual status based on payments
-    const totalAmount = typeof booking.total_amount === 'number'
-      ? booking.total_amount
-      : parseFloat(booking.total_amount || '0') || 0;
-    const securityDeposit = typeof booking.security_deposit === 'number'
-      ? booking.security_deposit
-      : parseFloat(booking.security_deposit || '0') || 0;
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
+    // Calculate actual status based on payments using backend-provided totals
+    const totalRent = booking.total_rent || 0;
+    const totalSecurity = booking.total_security || 0;
+    const totalPaid = booking.total_paid || 0;
 
-    const totalRequired = totalAmount + securityDeposit;
-    const isFullyPaid = paidAmount >= totalRequired;
-    const hasRentalPayment = paidAmount > 0;
+    const totalRequired = totalRent + totalSecurity;
+    const isFullyPaid = totalPaid >= totalRequired;
+    const hasRentalPayment = totalPaid > 0;
 
     // Determine actual status
     let actualStatus = status;
@@ -404,7 +396,9 @@ export default function CustomerBookingsPage() {
                         Phone: {booking.customer_phone}
                       </p>
                       <p className="text-sm text-gray-600">
-                        Total: ₹{Math.floor(booking.total_amount || 0)}
+                        Total: ₹{Math.floor(
+                          ((booking as any).total_rent || 0) + ((booking as any).transport_charge || 0)
+                        )}
                       </p>
                     </div>
 

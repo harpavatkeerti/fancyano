@@ -57,9 +57,8 @@ export default function BookingsPage() {
     booking_date: new Date().toISOString().split('T')[0],
     booked_from: '', // Not used anymore, kept for compatibility
     booked_to: '', // Not used anymore, kept for compatibility
-    products: [] as { id: number; name: string; rent_per_day: number; code: string; size?: string; booked_from: string; booked_to: string }[],
-    total_amount: 0,
-    transportation_opted: false,
+    products: [] as { id: number; name: string; rent: number; code: string; size?: string; booked_from: string; booked_to: string }[],
+    transport_charge: 0,
     discount_type: null as 'percentage' | 'amount' | null,
     discount_value: 0,
   });
@@ -582,8 +581,9 @@ export default function BookingsPage() {
       booked_from: '',
       booked_to: '',
       products: [],
-      total_amount: 0,
-      transportation_opted: false,
+      transport_charge: 0,
+      discount_type: null,
+      discount_value: 0,
     });
     setPhoneNumberError('');
     setProductSearchCode('');
@@ -602,7 +602,7 @@ export default function BookingsPage() {
         name: product.name,
         code: product.code,
         size: product.size,
-        rent_per_day: product.rent_per_day,
+        rent: product.rent,
       });
       setShowDateConfirmModal(true);
     } else {
@@ -614,7 +614,7 @@ export default function BookingsPage() {
           name: product.name,
           code: product.code,
           size: product.size,
-          rent_per_day: product.rent_per_day,
+          rent: product.rent,
           booked_from: '',
           booked_to: '',
         }],
@@ -787,7 +787,7 @@ export default function BookingsPage() {
   // Calculate subtotal
   function calculateSubtotal() {
     const total = addFormData.products.reduce((sum, product) => {
-      return sum + Math.floor(product.rent_per_day);
+      return sum + Math.floor(product.rent);
     }, 0);
     return Math.floor(total);
   }
@@ -795,7 +795,7 @@ export default function BookingsPage() {
   // Calculate final total (subtotal + transportation if opted)
   function calculateTotal() {
     const subtotal = calculateSubtotal();
-    const transport = addFormData.transportation_opted ? Math.floor(transportationCharge) : 0;
+    const transport = addFormData.transport_charge > 0 ? Math.floor(addFormData.transport_charge) : 0;
     
     // Calculate discount on subtotal only (not including transportation)
     let discount = 0;
@@ -1048,8 +1048,7 @@ export default function BookingsPage() {
       booking_date: addFormData.booking_date,
       products: addFormData.products,
       finalTotal,
-      transportation_opted: addFormData.transportation_opted,
-      other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+      transport_charge: addFormData.transport_charge,
       discount_type: addFormData.discount_type,
       discount_value: addFormData.discount_value,
       discount_amount: discountAmount,
@@ -1084,9 +1083,7 @@ export default function BookingsPage() {
             booked_from: p.booked_from,
             booked_to: p.booked_to
           })),
-          total_amount: finalTotal,
-          transportation_opted: addFormData.transportation_opted,
-          other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+          transport_charge: addFormData.transport_charge,
           discount_type: addFormData.discount_type,
           discount_value: addFormData.discount_value,
           discount_amount: discountAmount,
@@ -1119,9 +1116,7 @@ export default function BookingsPage() {
           booked_from: p.booked_from,
           booked_to: p.booked_to
         })),
-        total_amount: pendingBookingData.finalTotal,
-        transportation_opted: pendingBookingData.transportation_opted,
-        other_charges: pendingBookingData.other_charges,
+        transport_charge: pendingBookingData.transport_charge || 0,
         discount_type: pendingBookingData.discount_type,
         discount_value: pendingBookingData.discount_value,
         discount_amount: pendingBookingData.discount_amount,
@@ -1179,11 +1174,9 @@ export default function BookingsPage() {
             newStatus
           });
           
-          // Update booking status and paid amount
+          // Update booking status (payments are tracked separately in payment_transactions)
           await bookingsApi.update(newBookingId, {
-            status: newStatus,
-            paid_amount: paidAmount,
-            security_deposit: securityDeposit
+            status: newStatus
           });
           console.log(`✅ Booking status updated to ${newStatus}`);
         } catch (paymentError: any) {
@@ -2068,7 +2061,7 @@ export default function BookingsPage() {
                                       </p>
                                     </div>
                                     <div className="text-right ml-3">
-                                      <p className="font-bold text-green-600">₹{Math.floor(product.rent_per_day)}</p>
+                                      <p className="font-bold text-green-600">₹{Math.floor(product.rent)}</p>
                                       <p className="text-xs text-gray-500">/day</p>
                                     </div>
                                   </div>
@@ -2142,7 +2135,7 @@ export default function BookingsPage() {
                                 <div>
                                   <p className="font-semibold text-gray-900">{product.name}</p>
                                   <p className="text-sm text-gray-500 font-mono">{product.code}</p>
-                                  <p className="text-xs text-gray-400">₹{Math.floor(product.rent_per_day)}/day</p>
+                                  <p className="text-xs text-gray-400">₹{Math.floor(product.rent)}/day</p>
                                 </div>
                               </td>
                               <td className="px-4 py-4 text-center">
@@ -2186,7 +2179,7 @@ export default function BookingsPage() {
                                 />
                               </td>
                               <td className="px-4 py-4 text-right">
-                                <p className="font-bold text-gray-900">₹{Math.floor(product.rent_per_day)}</p>
+                                <p className="font-bold text-gray-900">₹{Math.floor(product.rent)}</p>
                               </td>
                               <td className="px-4 py-4 text-center">
                                 <button
@@ -2225,9 +2218,9 @@ export default function BookingsPage() {
                             <input
                               type="radio"
                               name="transportation"
-                              checked={!addFormData.transportation_opted}
+                              checked={addFormData.transport_charge === 0}
                               onChange={() => {
-                                setAddFormData({ ...addFormData, transportation_opted: false });
+                                setAddFormData({ ...addFormData, transport_charge: 0 });
                                 setCustomTransportationCharge('');
                                 setTransportationCharge(0);
                               }}
@@ -2239,8 +2232,8 @@ export default function BookingsPage() {
                             <input
                               type="radio"
                               name="transportation"
-                              checked={addFormData.transportation_opted}
-                              onChange={() => setAddFormData({ ...addFormData, transportation_opted: true })}
+                              checked={addFormData.transport_charge > 0}
+                              onChange={() => setAddFormData({ ...addFormData, transport_charge: transportationCharge })}
                               className="w-5 h-5 text-blue-600"
                             />
                             <span className="font-medium text-gray-700">Yes</span>
@@ -2249,7 +2242,7 @@ export default function BookingsPage() {
                       </div>
                       
                       {/* Transportation Charge Input - Shows when Yes is selected */}
-                      {addFormData.transportation_opted && (
+                      {addFormData.transport_charge > 0 && (
                         <div className="mt-3 pl-12">
                           <label className="block text-sm font-medium text-gray-700 mb-1">
                             Enter Local Transportation Charge*
@@ -2375,9 +2368,9 @@ export default function BookingsPage() {
                       <div className="flex justify-between items-center">
                         <div>
                           <p className="text-sm text-green-100 uppercase tracking-wide">Total Rental Amount</p>
-                          {addFormData.transportation_opted && (
+                          {addFormData.transport_charge > 0 && (
                             <p className="text-xs text-green-200 mt-1">
-                              (Includes local transportation charge: ₹{Math.floor(transportationCharge)})
+                              (Includes local transportation charge: ₹{Math.floor(addFormData.transport_charge)})
                             </p>
                           )}
                           {calculateDiscount() > 0 && (
@@ -2648,8 +2641,8 @@ export default function BookingsPage() {
                             {product.size && (
                               <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
                             )}
-                            {product.rent_per_day && (
-                              <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent_per_day)}/day</span></p>
+                            {product.rent && (
+                              <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent)}/day</span></p>
                             )}
                               <div className="mt-2 pt-2 border-t border-gray-200">
                                 <div className="grid grid-cols-2 gap-2">
@@ -2687,28 +2680,34 @@ export default function BookingsPage() {
                   Payment Information
                 </h3>
                 <div className="grid grid-cols-2 gap-4">
+                  {/* Payment amounts are now tracked in payment_transactions */}
                   <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-yellow-200">
-                    <p className="text-sm text-gray-600 mb-1">Total Amount</p>
-                    <p className="text-2xl font-bold text-gray-900">₹{Math.floor(viewingBooking.total_amount || 0)}</p>
+                    <p className="text-sm text-gray-600 mb-1">Total Rent</p>
+                    <p className="text-2xl font-bold text-gray-900">₹{Math.floor(
+                      ((viewingBooking as any).total_rent || 0) + ((viewingBooking as any).transport_charge || 0)
+                    )}</p>
+                    <p className="text-xs text-gray-500 mt-1">Click "View Details" for full payment info</p>
                   </div>
                   <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-green-200">
                     <p className="text-sm text-gray-600 mb-1">Paid Amount</p>
-                    <p className="text-2xl font-bold text-green-600">₹{Math.floor(viewingBooking.paid_amount || 0)}</p>
+                    <p className="text-2xl font-bold text-green-600">₹{Math.floor((viewingBooking as any).total_paid || 0)}</p>
+                    <p className="text-xs text-gray-500 mt-1">Use Payment Summary for accurate totals</p>
                   </div>
                   <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-red-200">
-                    <p className="text-sm text-gray-600 mb-1">Due Amount</p>
-                    <p className="text-2xl font-bold text-red-600">₹{Math.floor(viewingBooking.due_amount || viewingBooking.total_amount || 0)}</p>
+                    <p className="text-sm text-gray-600 mb-1">Security Deposit</p>
+                    <p className="text-2xl font-bold text-red-600">₹{Math.floor((viewingBooking as any).total_security || 0)}</p>
+                    <p className="text-xs text-gray-500 mt-1">Use Payment Summary for accurate totals</p>
                   </div>
                   <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-blue-200">
                     <p className="text-sm text-gray-600 mb-1">Payment Status</p>
                     <span className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full ${
-                      viewingBooking.payment_status === 'paid'
+                      (viewingBooking as any).payment_status === 'paid'
                         ? 'bg-green-100 text-green-800'
-                        : viewingBooking.payment_status === 'partial'
+                        : (viewingBooking as any).payment_status === 'partial'
                         ? 'bg-yellow-100 text-yellow-800'
                         : 'bg-red-100 text-red-800'
                     }`}>
-                      {viewingBooking.payment_status === 'paid' ? '✓ Paid' : viewingBooking.payment_status === 'partial' ? '⚠ Partial' : '✗ Unpaid'}
+                      {(viewingBooking as any).payment_status === 'paid' ? '✓ Paid' : (viewingBooking as any).payment_status === 'partial' ? '⚠ Partial' : '✗ Unpaid'}
                     </span>
                   </div>
                   {viewingBooking.payment_method && (
@@ -2722,10 +2721,8 @@ export default function BookingsPage() {
 
               {/* Transportation (Special Requirements are shown in Measurements section) */}
               {(() => {
-                const isTransportationOpted = viewingBooking.transportation_opted === true || 
-                                              viewingBooking.transportation_opted === 'true' || 
-                                              viewingBooking.transportation_opted === 1;
-                const transportationCharge = parseFloat(viewingBooking.other_charges || '0') || 0;
+                const isTransportationOpted = (viewingBooking.transport_charge || 0) > 0;
+                const transportationCharge = viewingBooking.transport_charge || 0;
                 
                 if (isTransportationOpted) {
                   return (
@@ -3122,8 +3119,7 @@ export default function BookingsPage() {
                     booking_date: addFormData.booking_date,
                     products: addFormData.products,
                     finalTotal,
-                    transportation_opted: addFormData.transportation_opted,
-                    other_charges: addFormData.transportation_opted ? transportationCharge : 0,
+                    transport_charge: addFormData.transport_charge,
                   });
                   setPaymentAmount('');
                   setPaymentMethod('Cash');

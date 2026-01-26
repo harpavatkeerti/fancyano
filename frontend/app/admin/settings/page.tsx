@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { settingsApi } from '@/lib/settingsApi';
+import { policiesApi } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import { toast } from '@/lib/toast';
 
@@ -70,10 +71,9 @@ export default function SettingsPage() {
   const [lateCharges, setLateCharges] = useState<string>('');
   const [exchangeCharges, setExchangeCharges] = useState<string>('');
   
-  // Delayed charges settings
-  const [delayedChargesEnabled, setDelayedChargesEnabled] = useState<boolean>(false);
-  const [delayedChargesType, setDelayedChargesType] = useState<'fixed' | 'percentage'>('fixed');
-  const [delayedChargesValue, setDelayedChargesValue] = useState<string>('');
+  // Late fee policy (from rental_policies table)
+  const [lateFeePolicy, setLateFeePolicy] = useState<any>(null);
+  const [lateFeeValue, setLateFeeValue] = useState<string>('200');
 
   useEffect(() => {
     fetchSettings();
@@ -167,17 +167,16 @@ export default function SettingsPage() {
         console.log('Exchange charges not found');
       }
 
-      // Fetch delayed charges settings
+      // Fetch late fee policy from rental_policies table
       try {
-        const delayedData = await settingsApi.getByKey('delayed_charges_settings');
-        if (delayedData.data?.setting_value) {
-          const parsed = JSON.parse(delayedData.data.setting_value);
-          setDelayedChargesEnabled(parsed.enabled || false);
-          setDelayedChargesType(parsed.type || 'fixed');
-          setDelayedChargesValue(parsed.value?.toString() || '');
+        const policiesResponse = await policiesApi.getAll('late_fee');
+        if (policiesResponse.data && policiesResponse.data.length > 0) {
+          const policy = policiesResponse.data[0];
+          setLateFeePolicy(policy);
+          setLateFeeValue(policy.value?.toString() || '200');
         }
       } catch (error) {
-        console.log('Delayed charges settings not found');
+        console.log('Late fee policy not found, using defaults');
       }
     } catch (error) {
       console.error('Error fetching settings:', error);
@@ -227,17 +226,6 @@ export default function SettingsPage() {
           category: 'charges',
           description: 'Exchange charges',
         },
-        {
-          key: 'delayed_charges_settings',
-          value: JSON.stringify({
-            enabled: delayedChargesEnabled,
-            type: delayedChargesType,
-            value: delayedChargesValue ? parseFloat(delayedChargesValue) : 0,
-          }),
-          type: 'json',
-          category: 'charges',
-          description: 'Delayed return charges configuration (fixed amount or percentage of product rent)',
-        },
       ];
 
       for (const setting of settingsToSave) {
@@ -263,6 +251,30 @@ export default function SettingsPage() {
             console.error(`Error creating setting ${setting.key}:`, createError);
           }
         }
+      }
+
+      // Save late fee policy to rental_policies table
+      try {
+        const lateFeeData = {
+          policy_key: lateFeePolicy?.policy_key || 'late_fee_default',
+          policy_name: lateFeePolicy?.policy_name || 'Default Late Fee',
+          policy_type: 'late_fee' as const,
+          value_type: 'fixed' as const,
+          value: lateFeeValue ? parseFloat(lateFeeValue) : 200,
+          days_from_booking_min: null,
+          days_from_booking_max: null,
+        };
+
+        if (lateFeePolicy?.id) {
+          // Update existing policy
+          await policiesApi.update(lateFeePolicy.id, lateFeeData);
+        } else {
+          // Create new policy
+          await policiesApi.upsert(lateFeeData);
+        }
+      } catch (error) {
+        console.error('Error saving late fee policy:', error);
+        throw error;
       }
 
       toast.success('Settings saved successfully!');
@@ -672,85 +684,43 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Delayed Charges Section */}
+      {/* Late Fee Policy Section */}
       <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <div className="flex justify-between items-center mb-5">
-          <h2 className="text-xl font-semibold text-gray-800">Delayed Return Charges</h2>
-          <button
-            onClick={() => setDelayedChargesEnabled(!delayedChargesEnabled)}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
-              delayedChargesEnabled ? 'bg-red-600' : 'bg-gray-300'
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                delayedChargesEnabled ? 'translate-x-6' : 'translate-x-1'
-              }`}
-            />
-          </button>
+        <div className="mb-5">
+          <h2 className="text-xl font-semibold text-gray-800">Late Fee Policy</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Configure the late fee charged per day when products are returned after their scheduled return date
+          </p>
         </div>
         
-        {delayedChargesEnabled && (
-          <div className="space-y-5 mt-5">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-3">
-                Charge Type*
-              </label>
-              <div className="flex gap-6">
-                <label className="flex items-center">
-                  <input
-                    type="radio"
-                    name="delayedChargesType"
-                    value="fixed"
-                    checked={delayedChargesType === 'fixed'}
-                    onChange={(e) => setDelayedChargesType(e.target.value as 'fixed' | 'percentage')}
-                    className="mr-2 text-red-600 focus:ring-red-500"
-                  />
-                  <span className="text-sm text-gray-700">Fixed Amount (per day)</span>
-                </label>
-                <label className="flex items-center">
-                  <input
-                    type="radio"
-                    name="delayedChargesType"
-                    value="percentage"
-                    checked={delayedChargesType === 'percentage'}
-                    onChange={(e) => setDelayedChargesType(e.target.value as 'fixed' | 'percentage')}
-                    className="mr-2 text-red-600 focus:ring-red-500"
-                  />
-                  <span className="text-sm text-gray-700">Percentage of Product Rent (per day)</span>
-                </label>
-              </div>
+        <div className="space-y-5">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Late Fee per Day (₹)*
+            </label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">₹</span>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={lateFeeValue}
+                onChange={(e) => setLateFeeValue(e.target.value)}
+                placeholder="Enter amount"
+                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+              />
             </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {delayedChargesType === 'fixed' ? 'Fixed Amount per Day (₹)*' : 'Percentage per Day (%)*'}
-              </label>
-              <div className="relative">
-                {delayedChargesType === 'fixed' && (
-                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">₹</span>
-                )}
-                {delayedChargesType === 'percentage' && (
-                  <span className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">%</span>
-                )}
-                <input
-                  type="number"
-                  min="0"
-                  step={delayedChargesType === 'fixed' ? '0.01' : '0.1'}
-                  value={delayedChargesValue}
-                  onChange={(e) => setDelayedChargesValue(e.target.value)}
-                  placeholder={delayedChargesType === 'fixed' ? 'Enter amount' : 'Enter percentage'}
-                  className={`w-full ${delayedChargesType === 'fixed' ? 'pl-8 pr-4' : 'pl-4 pr-8'} py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500`}
-                />
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                {delayedChargesType === 'fixed' 
-                  ? 'Fixed amount charged per day for delayed returns (e.g., ₹100/day)'
-                  : 'Percentage of product rental amount charged per day for delayed returns (e.g., 10% of rent per day)'}
-              </p>
-            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Fixed amount charged per day for late returns (e.g., ₹200/day). This fee is automatically calculated and applied by the system when products are returned after their scheduled date.
+            </p>
           </div>
-        )}
+          
+          <div className="bg-blue-50 border-l-4 border-blue-400 p-3">
+            <p className="text-xs text-blue-800">
+              <strong>Note:</strong> Late fees are automatically calculated by the backend when products are returned. The system multiplies this daily rate by the number of days delayed.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Save Button */}

@@ -463,7 +463,7 @@ export default function ProductDetailPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">{product.name}</h1>
           <p className="text-2xl font-bold text-gray-900 mb-1">
-            ₹{Math.floor(product.rent_per_day)} / Day & ₹2000 (Deposit)
+            ₹{Math.floor(product.rent)} / Day & ₹2000 (Deposit)
           </p>
           <p className="text-gray-600 mb-6">
             Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor

@@ -143,23 +143,20 @@ class InvoiceGenerator {
         .text(`₹${calculatedSubtotal.toFixed(2)}`, 450, currentY);
 
       // Show Transportation Charges only if transportation was opted AND charge > 0
-      // Check both transportation_opted flag and ensure other_charges is actually set
-      const isTransportationOpted = bookingData.transportation_opted === true || 
-                                    bookingData.transportation_opted === 'true' || 
-                                    bookingData.transportation_opted === 1;
-      const transportationCharge = isTransportationOpted ? parseFloat(bookingData.other_charges || 0) : 0;
+      const transportCharge = parseFloat(bookingData.transport_charge || 0);
+      const isTransportOpted = transportCharge > 0;
       
-      if (isTransportationOpted && transportationCharge > 0) {
+      if (isTransportOpted && transportCharge > 0) {
         currentY += 25;
         doc.font('Helvetica')
           .text('Local Transportation Charges', 300, currentY, { width: 140 })
-          .text(`₹${transportationCharge.toFixed(2)}`, 450, currentY);
+          .text(`₹${transportCharge.toFixed(2)}`, 450, currentY);
       }
 
       currentY += 25;
       doc.font('Helvetica-Bold')
         .text('Total Rent', 300, currentY)
-        .text(`₹${(calculatedSubtotal + transportationCharge).toFixed(2)}`, 450, currentY);
+        .text(`₹${(calculatedSubtotal + transportCharge).toFixed(2)}`, 450, currentY);
 
       // Payment Details Section
       currentY += 50;
@@ -167,8 +164,13 @@ class InvoiceGenerator {
         .text('PAYMENT DETAILS:', 50, currentY);
 
       currentY += 20;
-      const totalRent = parseFloat(bookingData.total_amount || 0);
-      const securityDeposit = parseFloat(bookingData.security_deposit || 0);
+      // Use paymentSummary if available, otherwise calculate from subtotal + transport
+      const totalRent = paymentSummary.totals?.rent_due ? 
+        paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid :
+        (calculatedSubtotal + transportCharge);
+      const securityDeposit = paymentSummary.totals?.security_due ?
+        paymentSummary.totals.security_due + paymentSummary.totals.security_paid :
+        products.reduce((sum, p) => sum + parseFloat(p.security_deposit || 0), 0);
       const totalRequired = totalRent + securityDeposit;
       
       // Calculate Advance Paid (sum of all payment transactions only, excluding refunds and adjustments)
@@ -176,7 +178,7 @@ class InvoiceGenerator {
         ? transactions
             .filter(t => t.type === 'payment')
             .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0)
-        : parseFloat(bookingData.paid_amount || 0);
+        : (paymentSummary.totals?.total_paid || 0);
       
       doc.fontSize(10).font('Helvetica-Bold')
         .text('Subtotal (Rent):', 50, currentY)

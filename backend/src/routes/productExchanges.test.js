@@ -280,4 +280,82 @@ describe('Product Exchanges Routes', () => {
       expect(response.status).toBe(404);
     });
   });
+
+  describe('GET /exchanges/eligibility/:booking_product_id', () => {
+    let eligibilityTestBookingId;
+    let eligibilityTestBPId;
+
+    beforeEach(async () => {
+      // Create test booking
+      const booking = await bookingService.createBooking({
+        customerName: 'Exchange Eligibility Customer',
+        customerPhone: 'EXCH-ELIG-TEST',
+        customerEmail: 'exch-eligibility@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProduct1Id,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      eligibilityTestBookingId = booking.booking_id;
+
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [eligibilityTestBookingId]
+      );
+      eligibilityTestBPId = bpResult.rows[0].id;
+
+      // Confirm booking
+      await bookingService.confirmBooking(eligibilityTestBookingId, 'test-user');
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [eligibilityTestBookingId]);
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id = $1', [eligibilityTestBPId]);
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [eligibilityTestBPId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [eligibilityTestBookingId]);
+    });
+
+    it('should return eligible=true for confirmed product', async () => {
+      const response = await request(app).get(`/exchanges/eligibility/${eligibilityTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(true);
+      expect(response.body.reason).toBe('Product is eligible for exchange');
+      expect(response.body.product).toBeDefined();
+    });
+
+    it('should return eligible=false for in_progress product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', eligibilityTestBPId]);
+
+      const response = await request(app).get(`/exchanges/eligibility/${eligibilityTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toContain('Cannot exchange product with status: in_progress');
+    });
+
+    it('should return eligible=false for completed product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', eligibilityTestBPId]);
+
+      const response = await request(app).get(`/exchanges/eligibility/${eligibilityTestBPId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toContain('Cannot exchange product with status: completed');
+    });
+
+    it('should return eligible=false for non-existent product', async () => {
+      const response = await request(app).get('/exchanges/eligibility/999999');
+
+      expect(response.status).toBe(200);
+      expect(response.body.eligible).toBe(false);
+      expect(response.body.reason).toBe('Booking product not found');
+    });
+  });
 });

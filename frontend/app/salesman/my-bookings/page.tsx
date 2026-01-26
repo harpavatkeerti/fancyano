@@ -234,10 +234,8 @@ export default function MyBookingsPage() {
   }
 
   function isPending(booking: Booking): boolean {
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
-    return paidAmount === 0 && booking.status === 'pending';
+    // A booking is pending if its status is 'pending'
+    return booking.status === 'pending';
   }
 
   function getStatusIcon(status: string, booking: Booking) {
@@ -273,49 +271,12 @@ export default function MyBookingsPage() {
       );
     }
 
-    // Calculate actual status based on payments
-    const totalAmount = typeof booking.total_amount === 'number'
-      ? booking.total_amount
-      : parseFloat(booking.total_amount || '0') || 0;
-    const securityDeposit = typeof booking.security_deposit === 'number'
-      ? booking.security_deposit
-      : parseFloat(booking.security_deposit || '0') || 0;
-    const paidAmount = typeof booking.paid_amount === 'number'
-      ? booking.paid_amount
-      : parseFloat(booking.paid_amount || '0') || 0;
-
-    const totalRequired = totalAmount + securityDeposit;
-    const isFullyPaid = paidAmount >= totalRequired;
-    const hasRentalPayment = paidAmount > 0;
-
-    // Determine actual status
-    let actualStatus = status;
-    if (!hasRentalPayment) {
-      actualStatus = 'pending';
-    } else if (isFullyPaid) {
-      // Check if multiple products with different dates
-      const products = Array.isArray(booking.products) ? booking.products : [];
-      if (products.length > 1) {
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          actualStatus = 'in_progress'; // Partially Completed
-        } else {
-          actualStatus = 'in_progress'; // Under Process
-        }
-      } else {
-        actualStatus = 'in_progress'; // Under Process
-      }
-    } else if (hasRentalPayment) {
-      actualStatus = 'confirmed';
-    }
-
+    // Use the booking status from backend - backend updates status based on product states and payments
+    // Simplified logic: trust the backend status
+    let displayStatus = status;
+    
     // Check if refund exists (completed)
-    // Note: We'd need to fetch transactions to check, but for now use status
-    if (status === 'completed' || actualStatus === 'completed') {
+    if (status === 'completed' || displayStatus === 'completed') {
       return (
         <div className="flex items-center text-blue-600">
           <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -556,7 +517,9 @@ export default function MyBookingsPage() {
                         Customer: {booking.customer_name}
                       </p>
                       <p className="text-sm text-gray-600">
-                        Total: ₹{Math.floor(booking.total_amount || 0)}
+                        Total: ₹{Math.floor(
+                          ((booking as any).total_rent || 0) + ((booking as any).transport_charge || 0)
+                        )}
                       </p>
                     </div>
                   </div>

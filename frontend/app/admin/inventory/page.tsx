@@ -32,7 +32,7 @@ export default function InventoryPage() {
     name: '',
     code: '',
     purchase_price: '',
-    rent_per_day: '',
+    rent: '',
     security_deposit: '',
     category: '',
     gender: '', // Male or Female
@@ -135,7 +135,7 @@ export default function InventoryPage() {
       const dataToSubmit = {
         ...formData,
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
-        rent_per_day: Math.round(parseFloat(formData.rent_per_day)), // Ensure it's a whole number
+        rent: Math.round(parseFloat(formData.rent)), // Ensure it's a whole number
         security_deposit: Math.round((parseFloat(formData.security_deposit) || 0) / 100) * 100, // Round to nearest ₹100
         // Set gender to null for Fancy Costumes (uses age-based sizes instead), or if empty for Other
         // Set size to null for Artificial Jewelleries or if empty for Other
@@ -203,7 +203,7 @@ export default function InventoryPage() {
       name: product.name,
       code: product.code,
       purchase_price: (product as any).purchase_price?.toString() || '',
-      rent_per_day: product.rent_per_day.toString(),
+      rent: product.rent.toString(),
       security_deposit: product.security_deposit?.toString() || '',
       category: product.category || '',
       gender: (product as any).gender || '',
@@ -232,7 +232,7 @@ export default function InventoryPage() {
       name: '',
       code: '',
       purchase_price: '',
-      rent_per_day: '',
+      rent: '',
       security_deposit: '',
       category: '',
       gender: '',
@@ -259,7 +259,7 @@ export default function InventoryPage() {
     setFormData({
       ...formData,
       purchase_price: value,
-      rent_per_day: calculatedRent,
+      rent: calculatedRent,
     });
   }
 
@@ -683,7 +683,7 @@ export default function InventoryPage() {
                   </div>
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  ₹{product.rent_per_day}
+                  ₹{product.rent}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
                   <button
@@ -935,8 +935,8 @@ export default function InventoryPage() {
                   label="Rent per Day (₹)*"
                   type="number"
                   step="100"
-                  value={formData.rent_per_day}
-                  onChange={(e) => setFormData({ ...formData, rent_per_day: e.target.value })}
+                  value={formData.rent}
+                  onChange={(e) => setFormData({ ...formData, rent: e.target.value })}
                   required
                 />
                 <p className="text-xs text-gray-500 mt-1">
@@ -1169,7 +1169,7 @@ export default function InventoryPage() {
                 </div>
                 <div className="bg-gray-50 p-3 rounded-lg">
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Rent per Day</p>
-                  <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.rent_per_day}</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.rent}</p>
                   <p className="text-xs text-blue-600 mt-1">
                     {(viewingProduct as any).rental_policy === '24_hours' 
                       ? '⏰ 24-hour rental' 

@@ -416,15 +416,34 @@ class BookingService {
         b.customer_phone,
         b.customer_email,
         b.booking_date,
+        b.booked_from,
+        b.booked_to,
         b.status,
         b.transport_charge,
+        b.transport_paid,
         b.created_at,
-        COUNT(bp.id) as product_count,
-        COALESCE(SUM(bp.rent), 0) as total_rent,
-        COALESCE(SUM(bp.security_deposit), 0) as total_security
+        COUNT(bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
+        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
+        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
+        COALESCE(SUM(pc.paid_amount), 0) as total_paid,
+        json_agg(
+          json_build_object(
+            'id', bp.id,
+            'product_id', p.id,
+            'name', p.name,
+            'code', p.code,
+            'image', p.image,
+            'rent', bp.rent,
+            'security_deposit', bp.security_deposit,
+            'status', bp.status,
+            'booked_from', bp.booked_from,
+            'booked_to', bp.booked_to
+          ) ORDER BY bp.id
+        ) FILTER (WHERE p.id IS NOT NULL) as products
       FROM bookings b
-      LEFT JOIN booking_products bp ON b.id = bp.booking_id 
-        AND bp.status NOT IN ('exchanged', 'cancelled')
+      LEFT JOIN booking_products bp ON b.id = bp.booking_id
+      LEFT JOIN products p ON bp.product_id = p.id
+      LEFT JOIN product_charges pc ON bp.id = pc.booking_product_id
       WHERE 1=1
     `;
     

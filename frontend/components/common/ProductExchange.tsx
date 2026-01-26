@@ -1,8 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { productExchangesApi } from '@/lib/productExchangesApi';
-import { productsApi, bookingsApi } from '@/lib/api';
+import { productExchangesApi, productsApi, bookingsApi } from '@/lib/api';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
@@ -137,12 +136,12 @@ export function ProductExchange({
     else if (daysDiff <= days[2]) penaltyPercentage = penalties[2];
     else penaltyPercentage = penalties[3];
 
-    const originalRent = parseFloat(originalProduct.rent_per_day) || 0;
-    const newRent = parseFloat(exchangedProduct.rent_per_day) || 0;
+    const originalRent = parseFloat(String(originalProduct.rent)) || 0;
+    const newRent = parseFloat(String(exchangedProduct.rent)) || 0;
     
     const additionalRent = additionalProducts.reduce((sum, productId) => {
       const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
     }, 0);
     
     const totalNewRent = newRent + additionalRent;
@@ -247,13 +246,13 @@ export function ProductExchange({
     }
     
     // Calculate new total as sum of all products (after exchange)
-    const originalRent = parseFloat(originalProduct.rent_per_day) || 0;
-    const newRent = parseFloat(exchangedProduct.rent_per_day) || 0;
+    const originalRent = parseFloat(String(originalProduct.rent)) || 0;
+    const newRent = parseFloat(String(exchangedProduct.rent)) || 0;
     
     // Calculate additional products rent and security
     const additionalRent = additionalProducts.reduce((sum, productId) => {
       const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
     }, 0);
     
     const additionalSecurity = additionalProducts.reduce((sum, productId) => {
@@ -263,7 +262,7 @@ export function ProductExchange({
     
     // Sum of all products' rent (remove old, add new + additional)
     const currentTotalRent = currentProducts.reduce((sum, p) => {
-      return sum + (parseFloat(p.rent_per_day) || 0);
+      return sum + (parseFloat(String(p.rent)) || 0);
     }, 0);
     const totalNewRent = newRent + additionalRent;
     const newTotalRent = currentTotalRent - originalRent + totalNewRent;
@@ -456,13 +455,13 @@ export function ProductExchange({
       return;
     }
 
-    const originalRent = parseFloat(originalProduct.rent_per_day || '0') || 0;
-    const newRent = parseFloat(exchangedProduct.rent_per_day || '0') || 0;
+    const originalRent = parseFloat(String(originalProduct.rent || '0')) || 0;
+    const newRent = parseFloat(String(exchangedProduct.rent || '0')) || 0;
     
     // Calculate total rent of all selected products (main + additional)
     const additionalRent = additionalProducts.reduce((sum, productId) => {
       const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
     }, 0);
     const totalNewRent = newRent + additionalRent;
 
@@ -1036,7 +1035,7 @@ export function ProductExchange({
                   <option value="">Select product to exchange</option>
                   {currentProducts.map((product) => (
                     <option key={product.id} value={product.id}>
-                      {product.name} ({product.code}) - ₹{product.rent_per_day}/day
+                      {product.name} ({product.code}) - ₹{product.rent}/day
                     </option>
                   ))}
                 </select>
@@ -1077,7 +1076,7 @@ export function ProductExchange({
                       <option value="">Select replacement product</option>
                       {availableProducts.map((product) => (
                         <option key={product.id} value={product.id}>
-                          {product.name} ({product.code}) - ₹{product.rent_per_day}/day
+                          {product.name} ({product.code}) - ₹{product.rent}/day
                         </option>
                       ))}
                     </select>
@@ -1193,7 +1192,7 @@ export function ProductExchange({
                                     </div>
                                     <div className="ml-3 text-right">
                                       <p className="text-sm font-semibold text-gray-900">
-                                        ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}
+                                        ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}
                                       </p>
                                       <p className="text-xs text-gray-500">per day</p>
                                     </div>
@@ -1223,7 +1222,7 @@ export function ProductExchange({
                               </div>
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-semibold text-gray-900">
-                                  ₹{parseFloat(product.rent_per_day || '0').toLocaleString('en-IN')}/day
+                                  ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
                                 </span>
                                 <button
                                   type="button"
@@ -1253,7 +1252,7 @@ export function ProductExchange({
                           <span>Total Additional Rent:</span>
                           <span>₹{additionalProducts.reduce((sum, productId) => {
                             const product = availableProducts.find(p => p.id === productId);
-                            return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+                            return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
                           }, 0).toLocaleString('en-IN')}</span>
                         </div>
                       </div>
@@ -1266,13 +1265,13 @@ export function ProductExchange({
 
               {/* Selected Products Preview */}
               {selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
-                const originalRent = parseFloat(originalProduct.rent_per_day || '0') || 0;
-                const newRent = parseFloat(exchangedProduct.rent_per_day || '0') || 0;
+                const originalRent = parseFloat(String(originalProduct.rent || '0')) || 0;
+                const newRent = parseFloat(String(exchangedProduct.rent || '0')) || 0;
                 
                 // Calculate total rent including additional products
                 const additionalRent = additionalProducts.reduce((sum, productId) => {
                   const product = availableProducts.find(p => p.id === productId);
-                  return sum + (product ? parseFloat(product.rent_per_day || '0') || 0 : 0);
+                  return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
                 }, 0);
                 const totalNewRent = newRent + additionalRent;
                 
@@ -1298,7 +1297,7 @@ export function ProductExchange({
                     {/* Products List */}
                     <div className="space-y-3">
                       {allSelectedProducts.map((product, index) => {
-                        const productRent = parseFloat(product.rent_per_day || '0') || 0;
+                        const productRent = parseFloat(String(product.rent || '0')) || 0;
                         const productSecurity = parseFloat(product.security_deposit || '0') || 0;
                         
                         return (
@@ -1422,7 +1421,7 @@ export function ProductExchange({
                       <div className="space-y-2 text-sm text-blue-800">
                         <div className="flex justify-between">
                           <span>Current Total Rent:</span>
-                          <span className="font-semibold">₹{currentProducts.reduce((sum, p) => sum + (parseFloat(p.rent_per_day) || 0), 0).toLocaleString('en-IN')}</span>
+                          <span className="font-semibold">₹{currentProducts.reduce((sum, p) => sum + (parseFloat(String(p.rent)) || 0), 0).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex justify-between">
                           <span>After Exchange:</span>

@@ -21,6 +21,7 @@ interface Product {
   code: string;
   name: string;
   security_deposit: number;
+  rent: number;
 }
 
 export function PaymentManagement({
@@ -124,14 +125,16 @@ export function PaymentManagement({
     }
   }
 
-  // Calculate booking status based on payments and refunds (same logic as salesman portal)
+  // Calculate booking status based on payments and refunds
   async function calculateAndUpdateBookingStatus() {
     try {
-      // Fetch latest booking and transactions
+      // Fetch latest booking, transactions, and payment summary
       const bookingResponse = await bookingsApi.getById(bookingId);
       const currentBooking = bookingResponse.data;
       const transactionsResponse = await paymentTransactionsApi.getByBookingId(bookingId);
       const currentTransactions = transactionsResponse.data || [];
+      const summaryResponse = await bookingsApi.getPaymentSummary(bookingId);
+      const paymentSummary = summaryResponse.data;
 
       // ⚠️ CRITICAL: Don't update status if booking is cancelled or partially cancelled
       if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_cancelled') {
@@ -139,15 +142,10 @@ export function PaymentManagement({
         return;
       }
 
-      const totalAmount = typeof currentBooking.total_amount === 'number'
-        ? currentBooking.total_amount
-        : parseFloat(currentBooking.total_amount || '0') || 0;
-      const securityDeposit = typeof currentBooking.security_deposit === 'number'
-        ? currentBooking.security_deposit
-        : parseFloat(currentBooking.security_deposit || '0') || 0;
-      const paidAmount = typeof currentBooking.paid_amount === 'number'
-        ? currentBooking.paid_amount
-        : parseFloat(currentBooking.paid_amount || '0') || 0;
+      // Use payment summary for accurate totals
+      const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+      const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+      const totalPaid = paymentSummary.totals.total_paid;
 
       // Check for per-item refunds
       // Filter out cancelled products
@@ -179,38 +177,32 @@ export function PaymentManagement({
           return sum + amount;
         }, 0);
       
-      // Check if refund process is complete:
-      // 1. All products have refunds recorded, OR
-      // 2. Fully paid (rent + security) AND any refund transaction exists
-      //    This covers cases where product is damaged and 100% security is deducted (refund = ₹0 or partial)
-      //    The key is: a refund decision was made and recorded, regardless of amount
+      // Check if refund process is complete
       const hasRefundTransaction = refundTransactions.filter((t: any) => 
         String(t.method || '').toLowerCase().trim() !== 'lapsed_refund'
       ).length > 0;
       
       // Calculate total required
-      const totalRequired = totalAmount + securityDeposit;
-      const isFullyPaid = paidAmount >= totalRequired;
-      const hasRentalPayment = paidAmount > 0;
+      const totalRequired = totalRent + totalSecurity;
+      const isFullyPaid = totalPaid >= totalRequired;
+      const hasRentalPayment = totalPaid > 0;
       
       // Refund process is complete if:
       // - All products have refunds, OR
       // - Fully paid AND has at least one refund transaction
-      // Once a refund is recorded, it means the admin has settled with the customer
-      // The amount deducted (for damage/loss) is the admin's decision - booking is complete
       const refundProcessComplete = allProductsHaveRefunds || 
                                     (isFullyPaid && hasRefundTransaction);
       
       // Debug logging for PaymentManagement status calculation
       console.log('📊 PaymentManagement Status Calculation:', {
         bookingId: currentBooking.id,
-        totalAmount,
-        securityDeposit,
+        totalRent,
+        totalSecurity,
         totalRequired,
-        paidAmount,
+        totalPaid,
         isFullyPaid,
         hasRentalPayment,
-        calculation: `${paidAmount} >= ${totalRequired} = ${isFullyPaid}`,
+        calculation: `${totalPaid} >= ${totalRequired} = ${isFullyPaid}`,
         currentStatus: currentBooking.status
       });
 
@@ -875,8 +867,8 @@ export function PaymentManagement({
           }, 0);
           
           // CRITICAL: Total Required = Rent + Security + Penalties
-          // totalAmountNum already has discount applied (if any) - it's booking.total_amount
-          // securityDepositNum is calculated from products and NEVER includes discount
+          // totalAmountNum is calculated from paymentSummary totals (includes applied discount)
+          // securityDepositNum is calculated from paymentSummary and NEVER includes discount
           // totalPenalties includes all penalty charges (exchange, downgrade, cancellation)
           const totalRequired = totalAmountNum + securityDepositNum + totalPenalties;
           
@@ -1355,9 +1347,9 @@ export function PaymentManagement({
                                 
                                 if (isCancellationRefund) {
                                   // For cancellation refunds, base amount is the product RENT (not security)
-                                  baseAmount = typeof product.rent_per_day === 'number'
-                                    ? product.rent_per_day
-                                    : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                  baseAmount = typeof product.rent === 'number'
+                                    ? product.rent
+                                    : parseFloat(String(product.rent || '0')) || 0;
                                 } else {
                                   // For normal security refunds, base amount is the security deposit
                                   baseAmount = typeof product.security_deposit === 'number'
@@ -1479,9 +1471,9 @@ export function PaymentManagement({
                                   matchedProduct = product;
                                   
                                   if (isCancellationRefund) {
-                                    baseAmount = typeof product.rent_per_day === 'number'
-                                      ? product.rent_per_day
-                                      : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                    baseAmount = typeof product.rent === 'number'
+                                      ? product.rent
+                                      : parseFloat(String(product.rent || '0')) || 0;
                                   } else {
                                     baseAmount = typeof product.security_deposit === 'number'
                                       ? product.security_deposit
@@ -1580,9 +1572,9 @@ export function PaymentManagement({
                                   matchedProduct = product;
                                   
                                   if (isCancellationRefund) {
-                                    baseAmount = typeof product.rent_per_day === 'number'
-                                      ? product.rent_per_day
-                                      : parseFloat(String(product.rent_per_day || '0')) || 0;
+                                    baseAmount = typeof product.rent === 'number'
+                                      ? product.rent
+                                      : parseFloat(String(product.rent || '0')) || 0;
                                   } else {
                                     baseAmount = typeof product.security_deposit === 'number'
                                       ? product.security_deposit

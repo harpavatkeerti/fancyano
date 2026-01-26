@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi } from '@/lib/api';
-import { Booking } from '@/types';
+import { Booking, PaymentSummary } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { ComplaintForm, FeedbackForm } from '@/components/common';
 
@@ -11,6 +11,7 @@ export default function CustomerOrderDetailsPage() {
   const params = useParams();
   const router = useRouter();
   const [booking, setBooking] = useState<Booking | null>(null);
+  const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
@@ -50,13 +51,15 @@ export default function CustomerOrderDetailsPage() {
 
   async function fetchBooking() {
     try {
-      const [bookingResponse, transactionsResponse] = await Promise.all([
+      const [bookingResponse, transactionsResponse, summaryResponse] = await Promise.all([
         bookingsApi.getById(Number(params.id)),
         paymentTransactionsApi.getByBookingId(Number(params.id)),
+        bookingsApi.getPaymentSummary(Number(params.id)),
       ]);
       
       setBooking(bookingResponse.data);
       setTransactions(transactionsResponse.data || []);
+      setPaymentSummary(summaryResponse.data);
     } catch (error) {
       console.error('Error fetching booking:', error);
       alert('Failed to load order details');
@@ -186,10 +189,10 @@ export default function CustomerOrderDetailsPage() {
   }
 
   const products = Array.isArray(booking.products) ? booking.products : [];
-  const paidAmount = parseFloat(String(booking.paid_amount || 0));
-  const totalAmount = parseFloat(String(booking.total_amount || 0));
-  const securityDeposit = parseFloat(String(booking.security_deposit || 0));
-  const balanceDue = Math.max(0, totalAmount - paidAmount);
+  const totalRent = paymentSummary?.totals.rent_due || 0;
+  const securityDeposit = paymentSummary?.totals.security_due || 0;
+  const totalPaid = paymentSummary?.totals.total_paid || 0;
+  const balanceDue = Math.max(0, paymentSummary?.totals.balance || 0);
   
   // Get set of product IDs that have refunds
   const productsWithRefunds = getProductsWithRefunds();

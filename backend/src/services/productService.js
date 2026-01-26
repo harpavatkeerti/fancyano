@@ -78,17 +78,14 @@ class ProductService {
       images
     } = productData;
 
-    // Determine rental policy based on product type
-    const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
-
     // Process images
     const imageData = await this._processImages(images, image, code);
 
     const result = await pool.query(
       `INSERT INTO products 
-        (name, code, purchase_price, rent, security_deposit, rental_policy, 
+        (name, code, purchase_price, rent, security_deposit, 
          category, gender, size, description, availability, image) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
        RETURNING *`,
       [
         name,
@@ -96,7 +93,6 @@ class ProductService {
         purchase_price || null,
         rent,
         security_deposit || 0,
-        rental_policy,
         category || null,
         gender || null,
         size || null,
@@ -142,9 +138,6 @@ class ProductService {
       throw new Error('Product not found');
     }
 
-    // Determine rental policy
-    const rental_policy = name === 'Fancy Costumes' ? '24_hours' : '3_days';
-
     // Delete old images if new images are provided
     if (images || image) {
       await this._deleteOldImages(existingProduct.rows[0].image);
@@ -156,10 +149,10 @@ class ProductService {
     const result = await pool.query(
       `UPDATE products 
        SET name = $1, code = $2, purchase_price = $3, rent = $4, 
-           security_deposit = $5, rental_policy = $6, category = $7, gender = $8, 
-           size = $9, description = $10, availability = $11, image = $12, 
+           security_deposit = $5, category = $6, gender = $7, 
+           size = $8, description = $9, availability = $10, image = $11, 
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $13 
+       WHERE id = $12 
        RETURNING *`,
       [
         name,
@@ -167,7 +160,6 @@ class ProductService {
         purchase_price,
         rent,
         security_deposit || 0,
-        rental_policy,
         category,
         gender,
         size,

@@ -131,7 +131,7 @@ export default function CustomerHome() {
               </div>
               <div className="p-4">
                 <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
-                <p className="text-red-600 font-bold">₹{Math.floor(product.rent_per_day)} / Day</p>
+                <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
               </div>
             </Link>
           ))}
@@ -163,7 +163,7 @@ export default function CustomerHome() {
               </div>
               <div className="p-4">
                 <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
-                <p className="text-red-600 font-bold">₹{Math.floor(product.rent_per_day)} / Day</p>
+                <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
               </div>
             </Link>
           ))}

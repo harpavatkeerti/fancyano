@@ -112,21 +112,8 @@ describe('ProductService', () => {
       expect(product.code).toBe('TEST-PROD-NEW-001');
       expect(product.name).toBe('Test New Product');
       expect(product.rent).toBe(10000);
-      expect(product.rental_policy).toBe('3_days');
     });
 
-    it('should create a product with 24_hours rental policy for Fancy Costumes', async () => {
-      const productData = {
-        name: 'Fancy Costumes',
-        code: 'TEST-PROD-FANCY-001',
-        rent: 10000,
-        security_deposit: 5000
-      };
-
-      const product = await productService.createProduct(productData);
-      
-      expect(product.rental_policy).toBe('24_hours');
-    });
 
     it('should create a product with image', async () => {
       const productData = {

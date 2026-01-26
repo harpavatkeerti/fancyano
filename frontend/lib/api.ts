@@ -6,13 +6,31 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 // Create API instance using shared package
 export const api = createApi({ baseURL: API_URL });
 
-// Export APIs for convenience
+// Export specific APIs for convenience
 export const productsApi = api.products;
 export const bookingsApi = api.bookings;
 export const usersApi = api.users;
 export const paymentTransactionsApi = api.paymentTransactions;
 export const availabilityApi = api.availability;
+export const lifecycleApi = api.lifecycle;
+export const policiesApi = api.policies;
+export const productExchangesApi = api.productExchanges;
+export const bookingCancellationApi = api.bookingCancellation;
 
-// Re-export types
-export type { Product, Booking, User, PaymentTransaction, PaymentSummary } from '@rental/shared';
+// Re-export types from shared
+export type {
+  Product,
+  Booking,
+  BookingProduct,
+  User,
+  PaymentTransaction,
+  PaymentSummary,
+  ProductCharge,
+  RentalPolicy,
+  BookingActivityLog,
+  BookingExchangeHistory,
+  BookingCancellationHistory,
+} from '@rental/shared';
+
 export type { AvailabilityCheckRequest, AvailabilityResponse, AvailabilityConflict } from '@rental/shared';
+

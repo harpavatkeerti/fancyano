@@ -662,4 +662,173 @@ describe('ProductLifecycleService', () => {
       ).rejects.toThrow('Booking product not found');
     });
   });
+
+  describe('validateExchangeEligibility', () => {
+    // Test: Returns eligible=true for confirmed product
+    test('should return eligible for confirmed product', async () => {
+      const result = await productLifecycleService.validateExchangeEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(true);
+      expect(result.reason).toBe('Product is eligible for exchange');
+      expect(result.product).toBeDefined();
+      expect(result.product.status).toBe('confirmed');
+    });
+
+    // Test: Returns eligible=false for non-existent product
+    test('should return ineligible for non-existent product', async () => {
+      const result = await productLifecycleService.validateExchangeEligibility(999999);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toBe('Booking product not found');
+      expect(result.product).toBeNull();
+    });
+
+    // Test: Returns eligible=false for in_progress product
+    test('should return ineligible for in_progress product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateExchangeEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot exchange product with status: in_progress');
+    });
+
+    // Test: Returns eligible=false for exchanged product
+    test('should return ineligible for exchanged product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['exchanged', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateExchangeEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot exchange product with status: exchanged');
+    });
+
+    // Test: Returns eligible=false for completed product
+    test('should return ineligible for completed product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateExchangeEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot exchange product with status: completed');
+    });
+  });
+
+  describe('validateCancellationEligibility', () => {
+    // Test: Returns eligible=true for confirmed product with penalty calculation
+    test('should return eligible for confirmed product', async () => {
+      const result = await productLifecycleService.validateCancellationEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(true);
+      expect(result.reason).toBe('Product is eligible for cancellation');
+      expect(result.product).toBeDefined();
+      expect(result.max_penalty).toBeGreaterThan(0);
+      expect(result.policy).toBeDefined();
+    });
+
+    // Test: Returns eligible=false for non-existent product
+    test('should return ineligible for non-existent product', async () => {
+      const result = await productLifecycleService.validateCancellationEligibility(999999);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toBe('Booking product not found');
+      expect(result.product).toBeNull();
+      expect(result.max_penalty).toBe(0);
+    });
+
+    // Test: Returns eligible=false for cancelled product
+    test('should return ineligible for cancelled product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['cancelled', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateCancellationEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot cancel product with status: cancelled');
+    });
+
+    // Test: Returns eligible=false for in_progress product
+    test('should return ineligible for in_progress product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateCancellationEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot cancel product with status: in_progress');
+    });
+
+    // Test: Returns eligible=false for completed product
+    test('should return ineligible for completed product', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+      
+      const result = await productLifecycleService.validateCancellationEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('Cannot cancel product with status: completed');
+    });
+  });
+
+  describe('updateBookingDateRange', () => {
+    // Test: Updates booking date range based on active products only
+    test('should update booking date range from active products', async () => {
+      // Add second product with extended date range
+      const laterDate = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const bp2 = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, $3, 'confirmed', 1500, 800, 1500)
+         RETURNING id`,
+        [testBookingId, testProductId2, laterDate]
+      );
+      
+      await productLifecycleService.updateBookingDateRange(testBookingId);
+      
+      const booking = await pool.query('SELECT booked_to FROM bookings WHERE id = $1', [testBookingId]);
+      expect(new Date(booking.rows[0].booked_to).toISOString().split('T')[0]).toBe(laterDate);
+      
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [bp2.rows[0].id]);
+    });
+
+    // Test: Excludes cancelled products from date range calculation
+    test('should exclude cancelled products from date range', async () => {
+      const originalBooking = await pool.query('SELECT booked_to FROM bookings WHERE id = $1', [testBookingId]);
+      const originalDate = new Date(originalBooking.rows[0].booked_to).toISOString().split('T')[0];
+      
+      // Add cancelled product with later date - should NOT affect booking date range
+      const laterDate = new Date(Date.now() + 15 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const bp2 = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, $3, 'cancelled', 1500, 800, 1500)
+         RETURNING id`,
+        [testBookingId, testProductId2, laterDate]
+      );
+      
+      await productLifecycleService.updateBookingDateRange(testBookingId);
+      
+      const booking = await pool.query('SELECT booked_to FROM bookings WHERE id = $1', [testBookingId]);
+      expect(new Date(booking.rows[0].booked_to).toISOString().split('T')[0]).toBe(originalDate);
+      
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [bp2.rows[0].id]);
+    });
+
+    // Test: Excludes exchanged products from date range calculation
+    test('should exclude exchanged products from date range', async () => {
+      const originalBooking = await pool.query('SELECT booked_to FROM bookings WHERE id = $1', [testBookingId]);
+      const originalDate = new Date(originalBooking.rows[0].booked_to).toISOString().split('T')[0];
+      
+      // Add exchanged product with later date - should NOT affect booking date range
+      const laterDate = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const bp2 = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, $3, 'exchanged', 1500, 800, 1500)
+         RETURNING id`,
+        [testBookingId, testProductId2, laterDate]
+      );
+      
+      await productLifecycleService.updateBookingDateRange(testBookingId);
+      
+      const booking = await pool.query('SELECT booked_to FROM bookings WHERE id = $1', [testBookingId]);
+      expect(new Date(booking.rows[0].booked_to).toISOString().split('T')[0]).toBe(originalDate);
+      
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [bp2.rows[0].id]);
+    });
+  });
 });

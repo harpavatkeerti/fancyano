@@ -129,9 +129,9 @@ export default function ProductsPage() {
   // Sort products
   const sortedProducts = [...filteredProducts].sort((a, b) => {
     if (sortBy === 'price-low-high') {
-      return a.rent_per_day - b.rent_per_day;
+      return a.rent - b.rent;
     } else if (sortBy === 'price-high-low') {
-      return b.rent_per_day - a.rent_per_day;
+      return b.rent - a.rent;
     } else if (sortBy === 'name-asc') {
       return a.name.localeCompare(b.name);
     } else if (sortBy === 'name-desc') {
@@ -300,7 +300,7 @@ export default function ProductsPage() {
                   <p className="text-xs text-gray-600 mb-1">
                     {(product as any).gender ? `For ${(product as any).gender}` : ''}
                   </p>
-                  <p className="text-red-600 font-bold">₹{Math.floor(product.rent_per_day)} / Day</p>
+                  <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
                 </div>
               </Link>
             ))}

@@ -4,6 +4,22 @@ const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
 
+// GET cancellation eligibility/info for a booking product
+router.get('/info/:booking_product_id', async (req, res) => {
+  try {
+    const { booking_product_id } = req.params;
+    
+    const info = await productLifecycleService.validateCancellationEligibility(
+      parseInt(booking_product_id)
+    );
+    
+    res.json(info);
+  } catch (error) {
+    console.error('Error getting cancellation info:', error);
+    res.status(500).json({ error: 'Failed to get cancellation info', details: error.message });
+  }
+});
+
 // POST cancel product(s) in a booking
 router.post('/', async (req, res) => {
   try {

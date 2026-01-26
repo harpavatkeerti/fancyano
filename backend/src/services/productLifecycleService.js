@@ -599,6 +599,133 @@ class ProductLifecycleService {
       throw error;
     }
   }
+
+  /**
+   * Validate if a product is eligible for exchange
+   * @param {number} bookingProductId - Booking product ID
+   * @returns {Promise<Object>} - {eligible: boolean, reason: string, product: Object}
+   */
+  async validateExchangeEligibility(bookingProductId) {
+    try {
+      const result = await pool.query(
+        `SELECT bp.*, p.name as product_name, p.code as product_code
+         FROM booking_products bp
+         JOIN products p ON bp.product_id = p.id
+         WHERE bp.id = $1`,
+        [bookingProductId]
+      );
+
+      if (result.rows.length === 0) {
+        return { eligible: false, reason: 'Booking product not found', product: null };
+      }
+
+      const product = result.rows[0];
+
+      // Cannot exchange products that are already exchanged, cancelled, completed, or in_progress
+      if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(product.status)) {
+        return {
+          eligible: false,
+          reason: `Cannot exchange product with status: ${product.status}. Only confirmed products can be exchanged.`,
+          product
+        };
+      }
+
+      return {
+        eligible: true,
+        reason: 'Product is eligible for exchange',
+        product
+      };
+    } catch (error) {
+      console.error('Error validating exchange eligibility:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Validate if a product is eligible for cancellation
+   * @param {number} bookingProductId - Booking product ID
+   * @returns {Promise<Object>} - {eligible: boolean, reason: string, max_penalty: number, policy: Object, product: Object}
+   */
+  async validateCancellationEligibility(bookingProductId) {
+    try {
+      const result = await pool.query(
+        `SELECT bp.*, p.name as product_name, p.code as product_code
+         FROM booking_products bp
+         JOIN products p ON bp.product_id = p.id
+         WHERE bp.id = $1`,
+        [bookingProductId]
+      );
+
+      if (result.rows.length === 0) {
+        return { eligible: false, reason: 'Booking product not found', product: null, max_penalty: 0, policy: null };
+      }
+
+      const product = result.rows[0];
+
+      // Cannot cancel products that are already cancelled, exchanged, or completed
+      if (['in_progress', 'cancelled', 'exchanged', 'completed'].includes(product.status)) {
+        return {
+          eligible: false,
+          reason: `Cannot cancel product with status: ${product.status}`,
+          product,
+          max_penalty: 0,
+          policy: null
+        };
+      }
+
+      // Get cancellation penalty policy
+      const penaltyResult = await policyService.calculateCancellationPenalty(
+        product.rent,
+        product.created_at
+      );
+
+      return {
+        eligible: true,
+        reason: 'Product is eligible for cancellation',
+        product,
+        max_penalty: penaltyResult.amount,
+        policy: penaltyResult.policy
+      };
+    } catch (error) {
+      console.error('Error validating cancellation eligibility:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update booking date range based on active products
+   * Calculates min(booked_from) and max(booked_to) from non-cancelled/exchanged products
+   * @param {number} bookingId - Booking ID
+   * @param {Object} client - Optional database client for transactions
+   */
+  async updateBookingDateRange(bookingId, client = null) {
+    const db = client || pool;
+
+    try {
+      // Calculate date range from active products
+      const result = await db.query(
+        `SELECT MIN(booked_from) as min_from, MAX(booked_to) as max_to
+         FROM booking_products
+         WHERE booking_id = $1 AND status NOT IN ('cancelled', 'exchanged')`,
+        [bookingId]
+      );
+
+      const { min_from, max_to } = result.rows[0];
+
+      // Only update if there are active products
+      if (min_from && max_to) {
+        await db.query(
+          `UPDATE bookings 
+           SET booked_from = $1, booked_to = $2, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $3`,
+          [min_from, max_to, bookingId]
+        );
+      }
+    } catch (error) {
+      console.error('Error updating booking date range:', error);
+      throw error;
+    }
+  }
 }
 
 module.exports = new ProductLifecycleService();
