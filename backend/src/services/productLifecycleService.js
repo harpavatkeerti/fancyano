@@ -46,9 +46,9 @@ class ProductLifecycleService {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
       }
       
-      // Calculate exchange penalty based on when product was added
+      // Calculate exchange penalty based on EFFECTIVE rent (after discount)
       const penaltyResult = await policyService.calculateExchangePenalty(
-        oldBookingProduct.rent,
+        oldBookingProduct.effective_rent,  // Use effective_rent instead of rent
         oldBookingProduct.created_at
       );
       
@@ -73,9 +73,9 @@ class ProductLifecycleService {
       // Calculate total new rent
       const newTotalRent = newProducts.reduce((sum, p) => sum + p.rent, 0);
       
-      // Use shared calculation logic
+      // Use shared calculation logic with EFFECTIVE rent
       const { downgradePenalty } = this._calculateExchangePenalties(
-        oldBookingProduct.rent,
+        oldBookingProduct.effective_rent,  // Use effective_rent instead of rent
         penaltyResult.amount,
         newTotalRent
       );
@@ -87,7 +87,7 @@ class ProductLifecycleService {
           'downgrade_penalty',
           downgradePenalty,
           null,
-          `Downgrade: old rent ₹${oldBookingProduct.rent} vs new total ₹${newTotalRent}`,
+          `Downgrade: old effective rent ₹${oldBookingProduct.effective_rent} vs new total ₹${newTotalRent}`,
           client
         );
       }
@@ -509,7 +509,7 @@ class ProductLifecycleService {
    */
   async getCancellationPenaltySuggestion(bookingProductId) {
     const result = await pool.query(
-      'SELECT rent, created_at FROM booking_products WHERE id = $1',
+      'SELECT effective_rent, created_at FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
     
@@ -517,9 +517,9 @@ class ProductLifecycleService {
       throw new Error('Booking product not found');
     }
     
-    const { rent, created_at } = result.rows[0];
+    const { effective_rent, created_at } = result.rows[0];
     
-    return await policyService.calculateCancellationPenalty(rent, created_at);
+    return await policyService.calculateCancellationPenalty(effective_rent, created_at);
   }
 
   /**
@@ -529,7 +529,7 @@ class ProductLifecycleService {
    */
   async getExchangePenaltySuggestion(bookingProductId) {
     const result = await pool.query(
-      'SELECT rent, created_at FROM booking_products WHERE id = $1',
+      'SELECT effective_rent, created_at FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
     
@@ -537,9 +537,9 @@ class ProductLifecycleService {
       throw new Error('Booking product not found');
     }
     
-    const { rent, created_at } = result.rows[0];
+    const { effective_rent, created_at } = result.rows[0];
     
-    return await policyService.calculateExchangePenalty(rent, created_at);
+    return await policyService.calculateExchangePenalty(effective_rent, created_at);
   }
 
   /**
@@ -687,9 +687,9 @@ class ProductLifecycleService {
         };
       }
 
-      // Get cancellation penalty policy
+      // Get cancellation penalty policy using EFFECTIVE rent
       const penaltyResult = await policyService.calculateCancellationPenalty(
-        product.rent,
+        product.effective_rent,
         product.created_at
       );
 
@@ -766,6 +766,7 @@ class ProductLifecycleService {
 
       const oldProduct = bpResult.rows[0];
       const originalRent = parseFloat(oldProduct.rent) || 0;
+      const effectiveRent = parseFloat(oldProduct.effective_rent) || 0;  // Use effective rent for calculations
       const originalSecurity = parseFloat(oldProduct.security_deposit) || 0;
 
       // Get new product details
@@ -805,8 +806,8 @@ class ProductLifecycleService {
         }
       }
 
-      // Get exchange penalty from policy
-      const penaltyData = await policyService.calculateExchangePenalty(originalRent, oldProduct.created_at);
+      // Get exchange penalty from policy using EFFECTIVE rent
+      const penaltyData = await policyService.calculateExchangePenalty(effectiveRent, oldProduct.created_at);
       const exchangePenalty = penaltyData.amount || 0;
 
       // Calculate totals
@@ -814,10 +815,10 @@ class ProductLifecycleService {
       const totalNewSecurity = newSecurity + additionalSecurity;
 
       // Use shared calculation logic - NO DUPLICATION!
-      const { downgradePenalty } = this._calculateExchangePenalties(originalRent, exchangePenalty, totalNewRent);
+      const { downgradePenalty } = this._calculateExchangePenalties(effectiveRent, exchangePenalty, totalNewRent);
 
-      // Total payment due = exchange_penalty + downgrade_penalty + new_total_rent - original_rent
-      const totalPaymentDue = exchangePenalty + downgradePenalty + totalNewRent - originalRent;
+      // Total payment due = exchange_penalty + downgrade_penalty + new_total_rent - effective_rent
+      const totalPaymentDue = exchangePenalty + downgradePenalty + totalNewRent - effectiveRent;
 
       // Calculate security difference
       const securityDifference = totalNewSecurity - originalSecurity;
@@ -828,6 +829,9 @@ class ProductLifecycleService {
           product_id: oldProduct.product_id,
           name: oldProduct.product_name,
           rent: originalRent,
+          effective_rent: effectiveRent,
+          discount_amount: parseFloat(oldProduct.discount_amount) || 0,
+          discount_type: oldProduct.discount_type || null,
           security_deposit: originalSecurity
         },
         new_product: {
@@ -839,6 +843,7 @@ class ProductLifecycleService {
         additional_products: additionalProducts,
         calculations: {
           original_rent: originalRent,
+          effective_rent: effectiveRent,
           original_security: originalSecurity,
           new_rent: newRent,
           additional_rent: additionalRent,

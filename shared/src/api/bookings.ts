@@ -42,6 +42,33 @@ export function createBookingsApi(api: AxiosInstance) {
     // Get bookings for a product (for calendar/availability display)
     getByProductId: (productId: number) => 
       api.get<Booking[]>(`/bookings/by-product/${productId}`),
+    
+    // Preview booking calculation (no data persistence)
+    getPreview: (data: {
+      products: Array<{
+        id: number;
+        discountType?: 'percentage' | 'fixed' | null;
+        discountValue?: number;
+      }>;
+      transport_charge?: number;
+      booking_discount_type?: 'percentage' | 'amount' | null;
+      booking_discount_value?: number;
+    }) => api.post<{
+      products: Array<{
+        id: number;
+        name: string;
+        code: string;
+        rent: number;
+        effective_rent: number;
+        discount_amount: number;
+        discount_type: string | null;
+        security_deposit: number;
+      }>;
+      subtotal: number;
+      transport_charge: number;
+      booking_discount_amount: number;
+      total: number;
+    }>('/booking-preview/preview', data),
   };
 }
 

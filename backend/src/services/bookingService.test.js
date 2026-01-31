@@ -137,7 +137,227 @@ describe('BookingService', () => {
       expect(result.status).toBe('pending');
     });
     
-    // Test: Stores optional fields like measurements and special requirements
+    // Test: Creates booking with percentage discount on products
+    test('should create booking with percentage discount', async () => {
+      const bookingData = {
+        customerName: 'Discount Customer',
+        customerPhone: '1111111111',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 5000,
+            securityDeposit: 2000,
+            discountType: 'percentage',
+            discountValue: 10,  // 10% discount
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      const result = await bookingService.createBooking(bookingData);
+      
+      // Verify booking product has discount applied
+      const product = await pool.query(
+        'SELECT * FROM booking_products WHERE id = $1',
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(product.rows[0].rent).toBe(5000);  // Original rent
+      expect(product.rows[0].discount_amount).toBe(500);  // 10% of 5000
+      expect(product.rows[0].discount_type).toBe('percentage');
+      expect(product.rows[0].effective_rent).toBe(4500);  // 5000 - 500
+      
+      // Verify rent charge uses effective_rent
+      const charges = await pool.query(
+        `SELECT * FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(charges.rows[0].due_amount).toBe(4500);  // Uses effective_rent
+    });
+    
+    // Test: Creates booking with fixed discount on products
+    test('should create booking with fixed discount', async () => {
+      const bookingData = {
+        customerName: 'Fixed Discount Customer',
+        customerPhone: '2222222222',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId2,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 6000,
+            securityDeposit: 2500,
+            discountType: 'fixed',
+            discountValue: 1000,  // Fixed ₹1000 discount
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      const result = await bookingService.createBooking(bookingData);
+      
+      // Verify booking product has discount applied
+      const product = await pool.query(
+        'SELECT * FROM booking_products WHERE id = $1',
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(product.rows[0].rent).toBe(6000);  // Original rent
+      expect(product.rows[0].discount_amount).toBe(1000);  // Fixed discount
+      expect(product.rows[0].discount_type).toBe('fixed');
+      expect(product.rows[0].effective_rent).toBe(5000);  // 6000 - 1000
+      
+      // Verify rent charge uses effective_rent
+      const charges = await pool.query(
+        `SELECT * FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(charges.rows[0].due_amount).toBe(5000);  // Uses effective_rent
+    });
+    
+    // Test: Creates booking without discount (backward compatibility)
+    test('should create booking without discount (backward compatibility)', async () => {
+      const bookingData = {
+        customerName: 'No Discount Customer',
+        customerPhone: '3333333333',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 3000,
+            securityDeposit: 1500,
+            // No discount fields
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      const result = await bookingService.createBooking(bookingData);
+      
+      // Verify booking product has no discount
+      const product = await pool.query(
+        'SELECT * FROM booking_products WHERE id = $1',
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(product.rows[0].rent).toBe(3000);
+      expect(product.rows[0].discount_amount).toBe(0);
+      expect(product.rows[0].discount_type).toBeNull();
+      expect(product.rows[0].effective_rent).toBe(3000);  // Same as rent
+      
+      // Verify rent charge uses full rent
+      const charges = await pool.query(
+        `SELECT * FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [result.booking_product_ids[0]]
+      );
+      
+      expect(charges.rows[0].due_amount).toBe(3000);
+    });
+    
+    // Test: Rejects invalid discount type
+    test('should reject invalid discount type', async () => {
+      const bookingData = {
+        customerName: 'Invalid Discount',
+        customerPhone: '4444444444',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 5000,
+            securityDeposit: 2000,
+            discountType: 'invalid',
+            discountValue: 10,
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      await expect(bookingService.createBooking(bookingData)).rejects.toThrow();
+    });
+    
+    // Test: Rejects fixed discount > rent
+    test('should reject fixed discount exceeding rent', async () => {
+      const bookingData = {
+        customerName: 'Excessive Discount',
+        customerPhone: '5555555555',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 3000,
+            securityDeposit: 1000,
+            discountType: 'fixed',
+            discountValue: 5000,  // Exceeds rent!
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      await expect(bookingService.createBooking(bookingData)).rejects.toThrow('cannot exceed rent');
+    });
+    
+    // Test: Stores discount details in activity log
+    test('should include discount details in activity log', async () => {
+      const bookingData = {
+        customerName: 'Log Discount Customer',
+        customerPhone: '6666666666',
+        bookingDate: new Date('2024-01-15'),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2024-01-20'),
+            bookedTo: new Date('2024-01-25'),
+            rent: 4000,
+            securityDeposit: 1500,
+            discountType: 'percentage',
+            discountValue: 15,
+            quantity: 1
+          }
+        ],
+        transportCharge: 0,
+        createdBy: 'admin'
+      };
+      
+      const result = await bookingService.createBooking(bookingData);
+      
+      // Verify activity log includes discount info
+      const log = await pool.query(
+        'SELECT details FROM booking_activity_log WHERE booking_id = $1',
+        [result.booking_id]
+      );
+      
+      const details = log.rows[0].details;
+      expect(details.products[0].effective_rent).toBe(3400);  // 4000 - 600
+      expect(details.products[0].discount_amount).toBe(600);
+      expect(details.products[0].discount_type).toBe('percentage');
+    });
+    
+    // Test: Handles optional fields like measurements and special requirements
     test('should handle optional product fields', async () => {
       const bookingData = {
         customerName: 'Test User',

@@ -1,5 +1,6 @@
 const pool = require('../database/connection');
 const chargeAccountingService = require('./chargeAccountingService');
+const DiscountCalculator = require('../utils/discountCalculator');
 
 class BookingService {
   /**
@@ -80,20 +81,30 @@ class BookingService {
           securityDeposit, 
           quantity = 1,
           measurements,
-          specialRequirements
+          specialRequirements,
+          discountType,    // NEW: 'percentage' or 'fixed'
+          discountValue    // NEW: discount value
         } = product;
         
         if (!productId || !bookedFrom || !bookedTo || rent === undefined || securityDeposit === undefined) {
           throw new Error('Each product must have productId, bookedFrom, bookedTo, rent, and securityDeposit');
         }
         
-        // Create booking_product entry
+        // Calculate effective rent with discount
+        const { effectiveRent, discountAmount } = DiscountCalculator.calculateEffectiveRent(
+          rent,
+          discountType,
+          discountValue
+        );
+        
+        // Create booking_product entry with discount information
         const bpResult = await client.query(
           `INSERT INTO booking_products (
             booking_id, product_id, quantity, booked_from, booked_to,
             status, rent, security_deposit, effective_rent,
+            discount_amount, discount_type,
             measurements, special_requirements
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
           RETURNING id`,
           [
             bookingId,
@@ -104,7 +115,9 @@ class BookingService {
             'pending',
             rent,
             securityDeposit,
-            rent, // effective_rent initially equals rent
+            effectiveRent,        // Use calculated effective rent
+            discountAmount,       // Store calculated discount amount
+            discountType || null, // Store discount type (null if no discount)
             measurements ? JSON.stringify(measurements) : null,
             specialRequirements || null
           ]
@@ -113,10 +126,10 @@ class BookingService {
         const bookingProductId = bpResult.rows[0].id;
         bookingProductIds.push(bookingProductId);
         
-        // Initialize charges for this product using ChargeAccountingService
+        // Initialize charges for this product using EFFECTIVE RENT (after discount)
         await chargeAccountingService.initializeProductCharges(
           bookingProductId,
-          rent,
+          effectiveRent,  // Use effective rent, not original rent
           securityDeposit,
           client
         );
@@ -133,6 +146,9 @@ class BookingService {
           name: productInfo.rows[0]?.name,
           code: productInfo.rows[0]?.code,
           rent,
+          effective_rent: effectiveRent,
+          discount_amount: discountAmount,
+          discount_type: discountType || null,
           security_deposit: securityDeposit
         });
       }
@@ -374,8 +390,10 @@ class BookingService {
             'booked_to', bp.booked_to,
             'status', bp.status,
             'rent', bp.rent,
-            'security_deposit', bp.security_deposit,
             'effective_rent', bp.effective_rent,
+            'discount_amount', bp.discount_amount,
+            'discount_type', bp.discount_type,
+            'security_deposit', bp.security_deposit,
             'measurements', bp.measurements,
             'special_requirements', bp.special_requirements,
             'picked_up_at', bp.picked_up_at,
@@ -424,6 +442,7 @@ class BookingService {
         b.created_at,
         COUNT(bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
         COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
+        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
         COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
         COALESCE(SUM(pc.paid_amount), 0) as total_paid,
         json_agg(
@@ -434,6 +453,9 @@ class BookingService {
             'code', p.code,
             'image', p.image,
             'rent', bp.rent,
+            'effective_rent', bp.effective_rent,
+            'discount_amount', bp.discount_amount,
+            'discount_type', bp.discount_type,
             'security_deposit', bp.security_deposit,
             'status', bp.status,
             'booked_from', bp.booked_from,

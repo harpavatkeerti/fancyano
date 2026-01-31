@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bookingService = require('../services/bookingService');
 const chargeAccountingService = require('../services/chargeAccountingService');
+const bookingCalculationService = require('../services/bookingCalculationService');
 
 // GET all bookings
 router.get('/', async (req, res) => {
@@ -48,24 +49,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// GET payment summary for a booking
-router.get('/:id/payment-summary', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const bookingId = parseInt(id);
-    
-    const paymentSummary = await chargeAccountingService.getPaymentSummary(bookingId);
-    
-    res.json(paymentSummary);
-  } catch (error) {
-    if (error.message === 'Booking not found') {
-      return res.status(404).json({ error: 'Booking not found' });
-    }
-    console.error('Error fetching payment summary:', error);
-    res.status(500).json({ error: 'Failed to fetch payment summary' });
-  }
-});
-
 // POST create booking
 router.post('/', async (req, res) => {
   try {
@@ -88,19 +71,34 @@ router.post('/', async (req, res) => {
       });
     }
     
-    // Transform product data from request format to service format
-    const transformedProducts = products.map(p => ({
-      productId: p.id || p.product_id,
-      bookedFrom: p.booked_from,
-      bookedTo: p.booked_to,
-      rent: p.rent,
-      securityDeposit: p.security_deposit,
-      quantity: p.quantity || 1,
-      measurements: p.measurements,
-      specialRequirements: p.special_requirements
-    }));
+    // Fetch product details and calculate discounts using shared service
+    const productIds = products.map(p => p.id || p.product_id);
+    const productMap = await bookingCalculationService.fetchProductDetails(productIds);
     
-    // Create booking using service
+    // Transform product data with fetched details and calculated discounts
+    const transformedProducts = products.map(p => {
+      const productId = p.id || p.product_id;
+      const productDetails = productMap[productId];
+      
+      if (!productDetails) {
+        throw new Error(`Product with id ${productId} not found`);
+      }
+      
+      return {
+        productId,
+        bookedFrom: p.booked_from,
+        bookedTo: p.booked_to,
+        rent: parseFloat(productDetails.rent),
+        securityDeposit: parseFloat(productDetails.security_deposit),
+        quantity: p.quantity || 1,
+        measurements: p.measurements,
+        specialRequirements: p.special_requirements,
+        discountType: p.discountType || null,
+        discountValue: p.discountValue || 0
+      };
+    });
+    
+    // Create booking using service (it will call DiscountCalculator internally)
     const result = await bookingService.createBooking({
       customerName: customer_name,
       customerPhone: customer_phone,
@@ -118,6 +116,11 @@ router.post('/', async (req, res) => {
     res.status(201).json(booking);
   } catch (error) {
     console.error('Error creating booking:', error);
+    
+    if (error.message.includes('not found')) {
+      return res.status(404).json({ error: error.message });
+    }
+    
     res.status(500).json({ 
       error: 'Failed to create booking',
       details: error.message

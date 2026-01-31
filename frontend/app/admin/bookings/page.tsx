@@ -57,7 +57,17 @@ export default function BookingsPage() {
     booking_date: new Date().toISOString().split('T')[0],
     booked_from: '', // Not used anymore, kept for compatibility
     booked_to: '', // Not used anymore, kept for compatibility
-    products: [] as { id: number; name: string; rent: number; code: string; size?: string; booked_from: string; booked_to: string }[],
+    products: [] as { 
+      id: number; 
+      name: string; 
+      rent: number; 
+      code: string; 
+      size?: string; 
+      booked_from: string; 
+      booked_to: string;
+      discountType?: 'percentage' | 'fixed' | null;
+      discountValue?: number;
+    }[],
     transport_charge: 0,
     discount_type: null as 'percentage' | 'amount' | null,
     discount_value: 0,
@@ -118,6 +128,8 @@ export default function BookingsPage() {
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
+  const [bookingPreview, setBookingPreview] = useState<any>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
 
   useEffect(() => {
     fetchBookings();
@@ -126,6 +138,38 @@ export default function BookingsPage() {
     fetchDateChangeChargeSettings();
     fetchAllTransactions(); // Fetch transactions for delay detection
   }, []);
+
+  // Fetch booking preview whenever products, discounts, or transport changes
+  useEffect(() => {
+    async function fetchPreview() {
+      if (addFormData.products.length === 0) {
+        setBookingPreview(null);
+        return;
+      }
+
+      setLoadingPreview(true);
+      try {
+        const response = await bookingsApi.getPreview({
+          products: addFormData.products.map(p => ({
+            id: p.id,
+            discountType: p.discountType || null,
+            discountValue: p.discountValue || 0
+          })),
+          transport_charge: addFormData.transport_charge || 0,
+          booking_discount_type: addFormData.discount_type,
+          booking_discount_value: addFormData.discount_value || 0
+        });
+        setBookingPreview(response.data);
+      } catch (error) {
+        console.error('Error fetching booking preview:', error);
+        setBookingPreview(null);
+      } finally {
+        setLoadingPreview(false);
+      }
+    }
+
+    fetchPreview();
+  }, [addFormData.products, addFormData.transport_charge, addFormData.discount_type, addFormData.discount_value]);
 
   async function fetchDateChangeChargeSettings() {
     try {
@@ -784,41 +828,20 @@ export default function BookingsPage() {
     setShowQRScanner(false);
   }
 
-  // Calculate subtotal
+  // Calculate subtotal (uses backend preview if available)
+  // Get subtotal from backend preview
   function calculateSubtotal() {
-    const total = addFormData.products.reduce((sum, product) => {
-      return sum + Math.floor(product.rent);
-    }, 0);
-    return Math.floor(total);
+    return bookingPreview?.subtotal || 0;
   }
 
-  // Calculate final total (subtotal + transportation if opted)
+  // Get total from backend preview
   function calculateTotal() {
-    const subtotal = calculateSubtotal();
-    const transport = addFormData.transport_charge > 0 ? Math.floor(addFormData.transport_charge) : 0;
-    
-    // Calculate discount on subtotal only (not including transportation)
-    let discount = 0;
-    if (addFormData.discount_type === 'percentage' && addFormData.discount_value > 0) {
-      discount = Math.floor((subtotal * addFormData.discount_value) / 100);
-    } else if (addFormData.discount_type === 'amount' && addFormData.discount_value > 0) {
-      discount = Math.floor(addFormData.discount_value);
-    }
-    
-    // Final Total = Subtotal - Discount + Transportation
-    return Math.floor(subtotal - discount + transport);
+    return bookingPreview?.total || 0;
   }
 
+  // Get discount from backend preview
   function calculateDiscount() {
-    const subtotal = calculateSubtotal();
-    
-    // Discount applies only on product rent (subtotal), not transportation
-    if (addFormData.discount_type === 'percentage' && addFormData.discount_value > 0) {
-      return Math.floor((subtotal * addFormData.discount_value) / 100);
-    } else if (addFormData.discount_type === 'amount' && addFormData.discount_value > 0) {
-      return Math.floor(addFormData.discount_value);
-    }
-    return 0;
+    return bookingPreview?.booking_discount_amount || 0;
   }
 
   function handleRemoveProduct(productId: number) {
@@ -1081,7 +1104,9 @@ export default function BookingsPage() {
           products: addFormData.products.map(p => ({ 
             id: p.id, 
             booked_from: p.booked_from,
-            booked_to: p.booked_to
+            booked_to: p.booked_to,
+            discountType: p.discountType || null,
+            discountValue: p.discountValue || 0
           })),
           transport_charge: addFormData.transport_charge,
           discount_type: addFormData.discount_type,
@@ -1114,7 +1139,9 @@ export default function BookingsPage() {
         products: pendingBookingData.products.map((p: any) => ({ 
           id: p.id, 
           booked_from: p.booked_from,
-          booked_to: p.booked_to
+          booked_to: p.booked_to,
+          discountType: p.discountType || null,
+          discountValue: p.discountValue || 0
         })),
         transport_charge: pendingBookingData.transport_charge || 0,
         discount_type: pendingBookingData.discount_type,
@@ -2082,6 +2109,7 @@ export default function BookingsPage() {
                             <th className="px-4 py-3 text-left text-xs font-semibold text-gray-700 uppercase">Product Details</th>
                             <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase w-24">Size</th>
                             <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase w-64">Rental Dates*</th>
+                            <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase w-48">Discount</th>
                             <th className="px-4 py-3 text-right text-xs font-semibold text-gray-700 uppercase w-32">Price</th>
                             <th className="px-4 py-3 text-center text-xs font-semibold text-gray-700 uppercase w-20">Action</th>
                           </tr>
@@ -2144,8 +2172,86 @@ export default function BookingsPage() {
                                   compact={true}
                                 />
                               </td>
+                              {/* Discount Column */}
+                              <td className="px-4 py-4">
+                                <div className="flex flex-col gap-2">
+                                  <select
+                                    value={product.discountType || ''}
+                                    onChange={(e) => {
+                                      const discountType = e.target.value as 'percentage' | 'fixed' | '';
+                                      setAddFormData(prev => {
+                                        const updated = [...prev.products];
+                                        updated[index] = { 
+                                          ...updated[index], 
+                                          discountType: discountType || null,
+                                          discountValue: discountType ? (updated[index].discountValue || 0) : 0
+                                        };
+                                        return { ...prev, products: updated };
+                                      });
+                                    }}
+                                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  >
+                                    <option value="">No Discount</option>
+                                    <option value="percentage">Percentage %</option>
+                                    <option value="fixed">Fixed ₹</option>
+                                  </select>
+                                  {product.discountType && (
+                                    <div className="flex items-center gap-1">
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        max={product.discountType === 'percentage' ? 100 : product.rent}
+                                        step={product.discountType === 'percentage' ? 1 : 10}
+                                        value={product.discountValue || 0}
+                                        onChange={(e) => {
+                                          const value = parseFloat(e.target.value) || 0;
+                                          setAddFormData(prev => {
+                                            const updated = [...prev.products];
+                                            updated[index] = { 
+                                              ...updated[index], 
+                                              discountValue: value
+                                            };
+                                            return { ...prev, products: updated };
+                                          });
+                                        }}
+                                        placeholder="0"
+                                        className="w-20 px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-green-500"
+                                      />
+                                      <span className="text-xs text-gray-600">
+                                        {product.discountType === 'percentage' ? '%' : '₹'}
+                                      </span>
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
                               <td className="px-4 py-4 text-right">
-                                <p className="font-bold text-gray-900">₹{Math.floor(product.rent)}</p>
+                                {(() => {
+                                  // Use backend preview if available
+                                  const previewProduct = bookingPreview?.products?.find((p: any) => p.id === product.id);
+                                  if (previewProduct) {
+                                    const hasDiscount = previewProduct.discount_amount > 0;
+                                    return (
+                                      <div>
+                                        {hasDiscount ? (
+                                          <>
+                                            <p className="text-xs text-gray-400 line-through">₹{Math.floor(previewProduct.rent)}</p>
+                                            <p className="font-bold text-green-600">₹{Math.floor(previewProduct.effective_rent)}</p>
+                                            <p className="text-xs text-green-600">
+                                              {previewProduct.discount_type === 'percentage' 
+                                                ? `${product.discountValue}% off` 
+                                                : `-₹${previewProduct.discount_amount}`}
+                                            </p>
+                                          </>
+                                        ) : (
+                                          <p className="font-bold text-gray-900">₹{Math.floor(previewProduct.rent)}</p>
+                                        )}
+                                      </div>
+                                    );
+                                  }
+                                  
+                                  // Fallback display (before preview loads)
+                                  return <p className="font-bold text-gray-900">₹{Math.floor(product.rent)}</p>;
+                                })()}
                               </td>
                               <td className="px-4 py-4 text-center">
                                 <button
@@ -3086,6 +3192,9 @@ export default function BookingsPage() {
                     products: addFormData.products,
                     finalTotal,
                     transport_charge: addFormData.transport_charge,
+                    discount_type: addFormData.discount_type,
+                    discount_value: addFormData.discount_value,
+                    discount_amount: calculateDiscount(),
                   });
                   setPaymentAmount('');
                   setPaymentMethod('Cash');

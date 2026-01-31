@@ -13,6 +13,8 @@ interface CartItem {
   dateFrom: string;
   dateTo: string;
   specialNotes: string;
+  discountType?: 'percentage' | 'fixed' | null;
+  discountValue?: number;
 }
 
 export default function CartPage() {
@@ -20,6 +22,8 @@ export default function CartPage() {
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [transportationRequired, setTransportationRequired] = useState<'yes' | 'no'>('no');
   const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
+  const [bookingPreview, setBookingPreview] = useState<any>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
   
   // Customer details
   const [customerName, setCustomerName] = useState('');
@@ -127,6 +131,38 @@ export default function CartPage() {
     return () => clearInterval(intervalId);
   }, []);
 
+  // Fetch booking preview whenever cart, discounts, or transport changes
+  useEffect(() => {
+    async function fetchPreview() {
+      if (cartItems.length === 0) {
+        setBookingPreview(null);
+        return;
+      }
+
+      setLoadingPreview(true);
+      try {
+        const response = await bookingsApi.getPreview({
+          products: cartItems.map(item => ({
+            id: item.product.id,
+            discountType: item.discountType || null,
+            discountValue: item.discountValue || 0
+          })),
+          transport_charge: transportationRequired === 'yes' ? transportationCharge : 0,
+          booking_discount_type: discountType,
+          booking_discount_value: discountValue
+        });
+        setBookingPreview(response.data);
+      } catch (error) {
+        console.error('Error fetching booking preview:', error);
+        setBookingPreview(null);
+      } finally {
+        setLoadingPreview(false);
+      }
+    }
+
+    fetchPreview();
+  }, [cartItems, transportationRequired, transportationCharge, discountType, discountValue]);
+
   function removeFromCart(index: number) {
     const newCart = cartItems.filter((_, i) => i !== index);
     setCartItems(newCart);
@@ -142,12 +178,9 @@ export default function CartPage() {
     window.dispatchEvent(new Event('cartUpdated'));
   }
 
+  // Get subtotal from backend preview
   function calculateSubtotal() {
-    if (!cartItems || cartItems.length === 0) return 0;
-    return cartItems.reduce((sum, item) => {
-      const rentPerDay = item?.product?.rent || 0;
-      return sum + (typeof rentPerDay === 'number' ? rentPerDay : parseFloat(rentPerDay) || 0);
-    }, 0);
+    return bookingPreview?.subtotal || 0;
   }
 
   function calculateDeliveryFee() {
@@ -162,32 +195,14 @@ export default function CartPage() {
     }, 0);
   }
 
+  // Get total from backend preview
   function calculateTotal() {
-    const subtotal = calculateSubtotal();
-    const deliveryFee = calculateDeliveryFee();
-    
-    // Calculate discount on subtotal only (not including delivery fee)
-    let discount = 0;
-    if (discountType === 'percentage' && discountValue > 0) {
-      discount = Math.floor((subtotal * discountValue) / 100);
-    } else if (discountType === 'amount' && discountValue > 0) {
-      discount = Math.floor(discountValue);
-    }
-    
-    // Final Total = Subtotal - Discount + Delivery Fee
-    return Math.floor(subtotal - discount + deliveryFee);
+    return bookingPreview?.total || 0;
   }
 
+  // Get discount from backend preview
   function calculateDiscount() {
-    const subtotal = calculateSubtotal();
-    
-    // Discount applies only on product rent (subtotal), not delivery fee
-    if (discountType === 'percentage' && discountValue > 0) {
-      return Math.floor((subtotal * discountValue) / 100);
-    } else if (discountType === 'amount' && discountValue > 0) {
-      return Math.floor(discountValue);
-    }
-    return 0;
+    return bookingPreview?.booking_discount_amount || 0;
   }
 
   // Check availability for all cart items before checkout
@@ -438,7 +453,9 @@ export default function CartPage() {
         products: cartItems.map(item => ({
           id: item.product.id,
           booked_from: item.dateFrom,
-          booked_to: item.dateTo
+          booked_to: item.dateTo,
+          discountType: item.discountType || null,
+          discountValue: item.discountValue || 0
         })),
         // Backend calculates total_rent and total_security from products
         transport_charge: transportationRequired === 'yes' ? transportationCharge : 0,
@@ -569,45 +586,129 @@ export default function CartPage() {
         {/* Cart Items */}
         <div className="col-span-2 space-y-4">
           {cartItems.map((item, index) => (
-            <div key={index} className="bg-white border border-gray-200 rounded-lg p-4 flex gap-4">
-              <div className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
-                {getImageUrl(item.product.image) ? (
-                  <img
-                    src={getImageUrl(item.product.image)!}
-                    alt={item.product.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <span className="text-2xl">👔</span>
-                  </div>
-                )}
-              </div>
-              <div className="flex-1">
-                <div className="mb-1">
-                  <h3 className="font-semibold text-gray-900 text-lg">{item.product.name}</h3>
-                  {item.product.code && (
-                    <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {item.product.code}</p>
+            <div key={index} className="bg-white border border-gray-200 rounded-lg p-4">
+              <div className="flex gap-4">
+                <div className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
+                  {getImageUrl(item.product.image) ? (
+                    <img
+                      src={getImageUrl(item.product.image)!}
+                      alt={item.product.name}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <span className="text-2xl">👔</span>
+                    </div>
                   )}
                 </div>
-                <p className="text-sm text-gray-600 mt-1">₹{Math.floor(item.product.rent || 0)} / Day</p>
-                <p className="text-sm text-red-600 mt-2">
-                  Dates: {new Date(item.dateFrom).toLocaleDateString('en-GB')} To{' '}
-                  {new Date(item.dateTo).toLocaleDateString('en-GB')}
-                </p>
+                <div className="flex-1">
+                  <div className="mb-1">
+                    <h3 className="font-semibold text-gray-900 text-lg">{item.product.name}</h3>
+                    {item.product.code && (
+                      <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {item.product.code}</p>
+                    )}
+                  </div>
+                  <div className="text-sm text-gray-600 mt-1">
+                    {(() => {
+                      // Use backend preview if available
+                      const previewProduct = bookingPreview?.products?.find((p: any) => p.id === item.product.id);
+                      if (previewProduct) {
+                        const hasDiscount = previewProduct.discount_amount > 0;
+                        return (
+                          <div>
+                            {hasDiscount ? (
+                              <div className="flex items-center gap-2">
+                                <span className="line-through text-gray-400">₹{Math.floor(previewProduct.rent)}</span>
+                                <span className="font-semibold text-green-600">₹{Math.floor(previewProduct.effective_rent)}</span>
+                                <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
+                                  {previewProduct.discount_type === 'percentage' 
+                                    ? `${item.discountValue}% off` 
+                                    : `-₹${previewProduct.discount_amount}`}
+                                </span>
+                              </div>
+                            ) : (
+                              <span>₹{Math.floor(previewProduct.rent)}</span>
+                            )}
+                          </div>
+                        );
+                      }
+                      // Fallback display (before preview loads)
+                      return <span>₹{Math.floor(item.product.rent || 0)}</span>;
+                    })()}
+                  </div>
+                  <p className="text-sm text-red-600 mt-2">
+                    Dates: {new Date(item.dateFrom).toLocaleDateString('en-GB')} To{' '}
+                    {new Date(item.dateTo).toLocaleDateString('en-GB')}
+                  </p>
+                </div>
+                <button
+                  onClick={() => removeFromCart(index)}
+                  className="text-red-600 hover:text-red-800 flex-shrink-0"
+                >
+                  <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                    <path
+                      fillRule="evenodd"
+                      d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
+                      clipRule="evenodd"
+                    />
+                  </svg>
+                </button>
               </div>
-              <button
-                onClick={() => removeFromCart(index)}
-                className="text-red-600 hover:text-red-800 flex-shrink-0"
-              >
-                <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                  <path
-                    fillRule="evenodd"
-                    d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-                    clipRule="evenodd"
-                  />
-                </svg>
-              </button>
+              
+              {/* Per-Product Discount Controls */}
+              <div className="mt-4 pt-4 border-t border-gray-200">
+                <label className="block text-xs font-medium text-gray-700 mb-2">
+                  💰 Product Discount (Optional)
+                </label>
+                <div className="flex gap-2 items-center">
+                  <select
+                    value={item.discountType || ''}
+                    onChange={(e) => {
+                      const newType = e.target.value as 'percentage' | 'fixed' | '';
+                      const updatedItems = [...cartItems];
+                      updatedItems[index] = {
+                        ...updatedItems[index],
+                        discountType: newType || null,
+                        discountValue: newType ? (updatedItems[index].discountValue || 0) : 0
+                      };
+                      setCartItems(updatedItems);
+                      localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                    }}
+                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                  >
+                    <option value="">No Discount</option>
+                    <option value="percentage">Percentage %</option>
+                    <option value="fixed">Fixed ₹</option>
+                  </select>
+                  
+                  {item.discountType && (
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max={item.discountType === 'percentage' ? 100 : item.product.rent}
+                        step={item.discountType === 'percentage' ? 1 : 10}
+                        value={item.discountValue || 0}
+                        onChange={(e) => {
+                          const value = parseFloat(e.target.value) || 0;
+                          const updatedItems = [...cartItems];
+                          updatedItems[index] = {
+                            ...updatedItems[index],
+                            discountValue: value
+                          };
+                          setCartItems(updatedItems);
+                          localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                        }}
+                        placeholder="0"
+                        className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                      />
+                      <span className="text-sm text-gray-600">
+                        {item.discountType === 'percentage' ? '%' : '₹'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             </div>
           ))}
 

@@ -74,6 +74,113 @@ describe('Bookings Routes', () => {
       testBookingId = response.body.id;
     });
 
+    it('should create booking with per-product percentage discount', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          customer_name: 'Discount Test Customer',
+          customer_phone: 'TEST-DISCOUNT',
+          customer_email: 'discount@example.com',
+          customer_address: '123 Test St',
+          booking_date: '2024-01-01',
+          products: [
+            {
+              id: testProductId,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
+              discountType: 'percentage',
+              discountValue: 10
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body).toHaveProperty('id');
+      expect(response.body.products).toHaveLength(1);
+      expect(response.body.products[0].discount_type).toBe('percentage');
+      expect(response.body.products[0].discount_amount).toBeGreaterThan(0);
+      expect(response.body.products[0].effective_rent).toBeLessThan(response.body.products[0].rent);
+    });
+
+    it('should create booking with per-product fixed discount', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          customer_name: 'Fixed Discount Customer',
+          customer_phone: 'TEST-FIXED-DISCOUNT',
+          customer_email: 'fixed@example.com',
+          customer_address: '123 Test St',
+          booking_date: '2024-01-01',
+          products: [
+            {
+              id: testProductId,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
+              discountType: 'fixed',
+              discountValue: 5000
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body).toHaveProperty('id');
+      expect(response.body.products[0].discount_type).toBe('fixed');
+      expect(response.body.products[0].discount_amount).toBe(5000);
+    });
+
+    it('should fetch product details from database when rent/security not provided', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          customer_name: 'Auto Fetch Customer',
+          customer_phone: 'TEST-AUTO-FETCH',
+          customer_email: 'autofetch@example.com',
+          customer_address: '123 Test St',
+          booking_date: '2024-01-01',
+          products: [
+            {
+              id: testProductId,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05'
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.products[0].rent).toBeGreaterThan(0);
+      expect(response.body.products[0].security_deposit).toBeGreaterThan(0);
+    });
+
+    it('should return 404 if product not found', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          customer_name: 'Test Customer',
+          customer_phone: 'TEST-NOT-FOUND',
+          customer_email: 'test@example.com',
+          customer_address: '123 Test St',
+          booking_date: '2024-01-01',
+          products: [
+            {
+              id: 999999,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05'
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(404);
+      expect(response.body.error).toContain('not found');
+    });
+
     it('should return 400 if required fields are missing', async () => {
       const response = await request(app)
         .post('/bookings')
