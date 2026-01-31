@@ -15,8 +15,8 @@ export function createBookingsApi(api: AxiosInstance) {
     confirm: (id: number, data: { confirmed_by: string }) => 
       api.put(`/bookings/${id}/confirm`, data),
     
-    updateStatus: (id: number, data: { status: string; updated_by: string }) => 
-      api.put(`/bookings/${id}/status`, data),
+    updateStatus: (id: number) => 
+      api.put(`/bookings/${id}/status`),
     
     // Final discount
     applyFinalDiscount: (id: number, data: { 
@@ -35,9 +35,9 @@ export function createBookingsApi(api: AxiosInstance) {
     getActivityLog: (id: number) => 
       api.get<BookingActivityLog[]>(`/bookings/${id}/activity-log`),
     
-    // Payment summary
+    // Payment summary (uses payment-transactions service)
     getPaymentSummary: (id: number) => 
-      api.get<PaymentSummary>(`/bookings/${id}/payment-summary`),
+      api.get<PaymentSummary>(`/payment-transactions/summary/${id}`),
     
     // Get bookings for a product (for calendar/availability display)
     getByProductId: (productId: number) => 

@@ -125,189 +125,14 @@ export function PaymentManagement({
     }
   }
 
-  // Calculate booking status based on payments and refunds
+  // Update booking status - backend calculates the correct status
   async function calculateAndUpdateBookingStatus() {
     try {
-      // Fetch latest booking, transactions, and payment summary
-      const bookingResponse = await bookingsApi.getById(bookingId);
-      const currentBooking = bookingResponse.data;
-      const transactionsResponse = await paymentTransactionsApi.getByBookingId(bookingId);
-      const currentTransactions = transactionsResponse.data || [];
-      const summaryResponse = await bookingsApi.getPaymentSummary(bookingId);
-      const paymentSummary = summaryResponse.data;
-
-      // ⚠️ CRITICAL: Don't update status if booking is cancelled or partially cancelled
-      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_cancelled') {
-        console.log('⚠️ Booking is cancelled/partially_cancelled - skipping automatic status update');
-        return;
-      }
-
-      // Use payment summary for accurate totals
-      const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-      const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
-      const totalPaid = paymentSummary.totals.total_paid;
-
-      // Check for per-item refunds
-      // Filter out cancelled products
-      const products = Array.isArray(currentBooking.products) 
-        ? currentBooking.products.filter((p: any) => p.status !== 'cancelled')
-        : [];
-      const refundTransactions = currentTransactions.filter((t: any) => t.type === 'refund');
-      
-      // Count how many products have refunds by checking transaction notes
-      const productsWithRefunds = new Set<number>();
-      refundTransactions.forEach((transaction: any) => {
-        const notes = transaction.notes || '';
-        products.forEach((product: any) => {
-          // Check if transaction notes contain product code
-          if (notes.includes(`(${product.code})`)) {
-            productsWithRefunds.add(product.id);
-          }
-        });
-      });
-      
-      const allProductsHaveRefunds = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
-      const hasAnyRefund = productsWithRefunds.size > 0;
-      
-      // Calculate total refunds (excluding lapsed_refund)
-      const totalRefundsProcessed = refundTransactions
-        .filter((t: any) => String(t.method || '').toLowerCase().trim() !== 'lapsed_refund')
-        .reduce((sum: number, t: any) => {
-          const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-          return sum + amount;
-        }, 0);
-      
-      // Check if refund process is complete
-      const hasRefundTransaction = refundTransactions.filter((t: any) => 
-        String(t.method || '').toLowerCase().trim() !== 'lapsed_refund'
-      ).length > 0;
-      
-      // Calculate total required
-      const totalRequired = totalRent + totalSecurity;
-      const isFullyPaid = totalPaid >= totalRequired;
-      const hasRentalPayment = totalPaid > 0;
-      
-      // Refund process is complete if:
-      // - All products have refunds, OR
-      // - Fully paid AND has at least one refund transaction
-      const refundProcessComplete = allProductsHaveRefunds || 
-                                    (isFullyPaid && hasRefundTransaction);
-      
-      // Debug logging for PaymentManagement status calculation
-      console.log('📊 PaymentManagement Status Calculation:', {
-        bookingId: currentBooking.id,
-        totalRent,
-        totalSecurity,
-        totalRequired,
-        totalPaid,
-        isFullyPaid,
-        hasRentalPayment,
-        calculation: `${totalPaid} >= ${totalRequired} = ${isFullyPaid}`,
-        currentStatus: currentBooking.status
-      });
-
-      let newStatus = currentBooking.status;
-
-      // Status calculation logic with per-item refund support
-      if (refundProcessComplete) {
-        // Refund process is complete (regardless of amount - could be 0% to 100% refund)
-        newStatus = 'completed';
-      } else if (hasAnyRefund) {
-        // Some products have refunds - in progress (refund phase)
-        newStatus = 'in_progress';
-      } else if (isFullyPaid) {
-        // Check if multiple products with different dates
-        if (products.length > 1) {
-          // Check if products have different dates
-          const dates = products.map((p: any) => ({
-            from: p.booked_from || currentBooking.booked_from,
-            to: p.booked_to || currentBooking.booked_to
-          }));
-          
-          const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-          if (uniqueDates.size > 1) {
-            // Multiple products with different dates - Partially Completed
-            newStatus = 'in_progress'; // Will display as "Partially Completed" or "Under Process"
-          } else {
-            // All paid, same dates - Under Process
-            newStatus = 'in_progress';
-          }
-        } else {
-          // All paid, single product - Under Process
-          newStatus = 'in_progress';
-        }
-      } else if (hasRentalPayment) {
-        // At least some rental payment recorded - Confirmed
-        newStatus = 'confirmed';
-      } else {
-        // No payment recorded - Pending
-        newStatus = 'pending';
-      }
-
-      // Debug: Log what status will be set
-      console.log('📊 PaymentManagement Status Decision:', {
-        bookingId: currentBooking.id,
-        currentStatus: currentBooking.status,
-        newStatus,
-        willUpdate: currentBooking.status !== newStatus,
-        totalRefundsProcessed,
-        securityDeposit,
-        hasRefundTransaction,
-        isFullyPaid,
-        refundProcessComplete,
-        allProductsHaveRefunds,
-        reason: refundProcessComplete ? 'refund process completed' : 
-                hasAnyRefund ? 'partial refunds' :
-                isFullyPaid ? 'fully paid' :
-                hasRentalPayment ? 'rental payment' : 'no payment'
-      });
-      
-      // Only update if status changed
-      if (currentBooking.status !== newStatus) {
-        // Check if trying to confirm a booking that has a credit note
-        if (currentBooking.status !== 'confirmed' && newStatus === 'confirmed') {
-          try {
-            const creditNotesResponse = await creditNotesApi.getByBookingId(bookingId);
-            const creditNotes = creditNotesResponse.data || [];
-            
-            if (creditNotes.length > 0) {
-              const activeCreditNote = creditNotes.find((note: any) => {
-                const validUntil = new Date(note.valid_until);
-                const now = new Date();
-                const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
-                return validUntil >= now && availableAmount > 0;
-              });
-              
-              if (activeCreditNote) {
-                toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
-                return;
-              }
-            }
-          } catch (error) {
-            console.error('Error checking credit notes:', error);
-            // Continue with update if check fails
-          }
-        }
-        
-        await bookingsApi.update(bookingId, {
-          customer_name: currentBooking.customer_name,
-          customer_phone: currentBooking.customer_phone || '',
-          customer_address: currentBooking.customer_address || '',
-          booked_from: currentBooking.booked_from?.split('T')[0] || currentBooking.booked_from || '',
-          booked_to: currentBooking.booked_to?.split('T')[0] || currentBooking.booked_to || '',
-          status: newStatus,
-        });
-        
-        console.log(`✅ Booking status updated from ${currentBooking.status} to ${newStatus}`);
-        
-        // Notify parent component of status update
-        if (onStatusUpdate) {
-          onStatusUpdate(newStatus);
-        }
-      }
-    } catch (statusError) {
-      console.error('Error updating booking status:', statusError);
-      // Don't fail the transaction if status update fails
+      // Simply call backend to recalculate and update status
+      await bookingsApi.updateStatus(bookingId);
+      console.log('✅ Booking status updated by backend');
+    } catch (error) {
+      console.error('Error updating booking status:', error);
     }
   }
 
@@ -369,45 +194,12 @@ export function PaymentManagement({
         // Calculate current totals
         const totalAmountNum = typeof totalAmount === 'number' ? totalAmount : parseFloat(String(totalAmount)) || 0;
         
-        // ALWAYS fetch current products for accurate security deposit calculation
-        let securityDepositNum = 0;
-        try {
-          const bookingResponse = await bookingsApi.getById(bookingId);
-          // Filter out cancelled products
-          const currentProducts = Array.isArray(bookingResponse.data.products) 
-            ? bookingResponse.data.products.filter((p: any) => p.status !== 'cancelled')
-            : [];
-          
-          if (currentProducts.length > 0) {
-            securityDepositNum = currentProducts.reduce((sum: number, product: any) => {
-              const productSecurity = typeof product.security_deposit === 'number'
-                ? product.security_deposit
-                : parseFloat(String(product.security_deposit || '0')) || 0;
-              return sum + productSecurity;
-            }, 0);
-          } else {
-            // Fallback only if no products at all
-            securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
-          }
-          
-          console.log('🔐 SECURITY DEPOSIT FOR VALIDATION:');
-          console.log('  Products count:', currentProducts.length);
-          console.log('  Calculated from products:', securityDepositNum);
-          console.log('  Props value (reference):', securityDeposit);
-        } catch (error) {
-          console.error('Error fetching products for validation:', error);
-          // Fallback to existing products state
-          if (products.length > 0) {
-            securityDepositNum = products.reduce((sum: number, product: any) => {
-              const productSecurity = typeof product.security_deposit === 'number'
-                ? product.security_deposit
-                : parseFloat(String(product.security_deposit || '0')) || 0;
-              return sum + productSecurity;
-            }, 0);
-          } else {
-            securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
-          }
-        }
+        // Use payment summary for security deposit - no need to calculate from products
+        const securityDepositNum = summary 
+          ? (summary.charges.security.due || 0) + (summary.charges.security.paid || 0)
+          : (typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0);
+        
+        console.log('🔐 SECURITY DEPOSIT FOR VALIDATION:', securityDepositNum);
         
         const totalRequired = totalAmountNum + securityDepositNum;
         
@@ -674,27 +466,12 @@ export function PaymentManagement({
         {(() => {
           const totalAmountNum = typeof totalAmount === 'number' ? totalAmount : parseFloat(String(totalAmount)) || 0;
           
-          // ALWAYS calculate security deposit from products to ensure accuracy
-          // CRITICAL: Security deposit is NEVER affected by discount - it's always the sum of product security deposits
-          // This prevents issues where booking.security_deposit might include transportation, discount, or other incorrect values
-          let securityDepositNum = 0;
-          if (products.length > 0) {
-            securityDepositNum = products.reduce((sum: number, product: any) => {
-              const productSecurity = typeof product.security_deposit === 'number'
-                ? product.security_deposit
-                : parseFloat(String(product.security_deposit || '0')) || 0;
-              return sum + productSecurity;
-            }, 0);
-          } else {
-            // Fallback to passed securityDeposit only if no products
-            securityDepositNum = typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0;
-          }
+          // Use payment summary for security deposit - no need to calculate from products
+          const securityDepositNum = summary 
+            ? (summary.charges.security.due || 0) + (summary.charges.security.paid || 0)
+            : (typeof securityDeposit === 'number' ? securityDeposit : parseFloat(String(securityDeposit)) || 0);
           
-          console.log('🔐 SECURITY DEPOSIT CALCULATION (Discount NOT applied):');
-          console.log('  Products count:', products.length);
-          console.log('  Calculated from products (no discount):', securityDepositNum);
-          console.log('  Props value (for reference):', securityDeposit);
-          console.log('  Note: Security deposit is NEVER affected by discount');
+          console.log('🔐 SECURITY DEPOSIT:', securityDepositNum);
           
           // Calculate netAmount excluding date_change_charge, exchange_penalty, and exchange_lapsed transactions
           // Date change charges, exchange penalties, and lapsed amounts are separate and don't affect payment calculations

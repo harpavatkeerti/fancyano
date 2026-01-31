@@ -36,9 +36,9 @@ export default function BookingsPage() {
   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);
   const [showModifyModal, setShowModifyModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [showMeasurements, setShowMeasurements] = useState<{[key: number]: boolean}>({});
-  const [parsedMeasurements, setParsedMeasurements] = useState<{[key: number]: any}>({});
-  const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{[key: number]: string}>({});
+  const [showMeasurements, setShowMeasurements] = useState<{[key: string]: boolean}>({});
+  const [parsedMeasurements, setParsedMeasurements] = useState<{[key: string]: any}>({});
+  const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{[key: string]: string}>({});
   const [formData, setFormData] = useState({
     customer_name: '',
     customer_phone: '',
@@ -1142,43 +1142,9 @@ export default function BookingsPage() {
           await axios.post(`${API_URL}/payment-transactions`, paymentData);
           console.log('✅ Payment recorded successfully');
           
-          // Calculate proper booking status based on payment
-          const paidAmount = parseFloat(paymentAmount);
-          const totalAmount = pendingBookingData.finalTotal;
-          
-          // Calculate security deposit from products
-          const securityDeposit = response.data.products?.reduce((sum: number, p: any) => {
-            return sum + (parseFloat(p.security_deposit) || 0);
-          }, 0) || 0;
-          
-          const totalRequired = totalAmount + securityDeposit;
-          const isFullyPaid = paidAmount >= totalRequired;
-          const hasRentalPayment = paidAmount > 0;
-          
-          let newStatus = 'pending';
-          if (isFullyPaid) {
-            // Full payment received (rent + security) - Order picked up
-            newStatus = 'in_progress';
-          } else if (hasRentalPayment) {
-            // At least some payment recorded - Confirmed
-            newStatus = 'confirmed';
-          }
-          
-          console.log('📊 Status calculation:', {
-            paidAmount,
-            totalAmount,
-            securityDeposit,
-            totalRequired,
-            isFullyPaid,
-            hasRentalPayment,
-            newStatus
-          });
-          
-          // Update booking status (payments are tracked separately in payment_transactions)
-          await bookingsApi.update(newBookingId, {
-            status: newStatus
-          });
-          console.log(`✅ Booking status updated to ${newStatus}`);
+          // Let backend calculate and update booking status based on payment
+          const statusResult = await bookingsApi.updateStatus(newBookingId);
+          console.log('✅ Booking status updated by backend:', statusResult.data);
         } catch (paymentError: any) {
           console.error('❌ Error recording payment:', paymentError);
           console.error('Error response:', paymentError.response?.data);
@@ -2833,13 +2799,13 @@ export default function BookingsPage() {
                   const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
                   
                   // Prioritize unique key first, then fall back to productId for backward compatibility
-                  const productMeasurements = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || parsedMeas[productId] || {};
+                  const productMeasurements = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || {};
                   const hasMeasurements = Object.keys(productMeasurements).length > 0;
-                  const isExpanded = showMeasurements[uniqueKey] || showMeasurements[productId] || false;
+                  const isExpanded = showMeasurements[uniqueKey] || showMeasurements[String(productId)] || false;
                   const isFemale = isFemaleClothing(product.name);
                   const isMale = isMaleClothing(product.name);
                   // Prioritize unique key first, then fall back to productId for backward compatibility
-                  const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || parsedSpecReqs[productId] || '';
+                  const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || '';
                   
                   // Get product image URL
                   const hasProductImage = product.image && product.image !== null && product.image !== '';

@@ -48,6 +48,24 @@ router.get('/:id', async (req, res) => {
   }
 });
 
+// GET payment summary for a booking
+router.get('/:id/payment-summary', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const bookingId = parseInt(id);
+    
+    const paymentSummary = await chargeAccountingService.getPaymentSummary(bookingId);
+    
+    res.json(paymentSummary);
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error fetching payment summary:', error);
+    res.status(500).json({ error: 'Failed to fetch payment summary' });
+  }
+});
+
 // POST create booking
 router.post('/', async (req, res) => {
   try {

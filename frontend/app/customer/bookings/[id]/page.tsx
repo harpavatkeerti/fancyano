@@ -189,8 +189,8 @@ export default function CustomerOrderDetailsPage() {
   }
 
   const products = Array.isArray(booking.products) ? booking.products : [];
-  const totalRent = paymentSummary?.totals.rent_due || 0;
-  const securityDeposit = paymentSummary?.totals.security_due || 0;
+  const totalRent = (paymentSummary?.charges.rent.due || 0) + (paymentSummary?.charges.rent.paid || 0);
+  const securityDeposit = (paymentSummary?.charges.security.due || 0) + (paymentSummary?.charges.security.paid || 0);
   const totalPaid = paymentSummary?.totals.total_paid || 0;
   const balanceDue = Math.max(0, paymentSummary?.totals.balance || 0);
   

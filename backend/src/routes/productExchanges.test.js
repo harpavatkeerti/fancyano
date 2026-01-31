@@ -358,4 +358,151 @@ describe('Product Exchanges Routes', () => {
       expect(response.body.reason).toBe('Booking product not found');
     });
   });
+
+  describe('GET /exchanges/preview/:old_booking_product_id', () => {
+    let previewTestBookingId;
+    let previewTestBPId;
+
+    beforeEach(async () => {
+      // Create test booking
+      const booking = await bookingService.createBooking({
+        customerName: 'Exchange Preview Customer',
+        customerPhone: 'TEST-EXCH-ROUTE',
+        customerEmail: 'preview@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProduct1Id,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      previewTestBookingId = booking.booking_id;
+
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [previewTestBookingId]
+      );
+      previewTestBPId = bpResult.rows[0].id;
+
+      await bookingService.confirmBooking(previewTestBookingId, 'test-user');
+    });
+
+    it('should return complete exchange preview with calculations', async () => {
+      const response = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${testProduct2Id}`
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('old_product');
+      expect(response.body).toHaveProperty('new_product');
+      expect(response.body).toHaveProperty('calculations');
+      expect(response.body).toHaveProperty('penalty_policy');
+      
+      // Verify calculations structure
+      const calc = response.body.calculations;
+      expect(calc).toHaveProperty('original_rent');
+      expect(calc).toHaveProperty('total_new_rent');
+      expect(calc).toHaveProperty('exchange_penalty');
+      expect(calc).toHaveProperty('downgrade_penalty');
+      expect(calc).toHaveProperty('total_payment_due');
+      expect(calc).toHaveProperty('security_difference');
+      expect(calc).toHaveProperty('penalty_percentage');
+    });
+
+    it('should include additional products in preview', async () => {
+      // Create another test product
+      const product3Result = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, category)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        ['TEST-EXCH-003', 'Test Exchange Product 3', 30000, 15000, 'test']
+      );
+      const product3Id = product3Result.rows[0].id;
+
+      const response = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${testProduct2Id}&additional_product_ids=${product3Id}`
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body.additional_products).toHaveLength(1);
+      expect(response.body.additional_products[0].id).toBe(product3Id);
+      expect(response.body.calculations.additional_rent).toBe(30000);
+      expect(response.body.calculations.additional_security).toBe(15000);
+
+      // Cleanup
+      await pool.query(`DELETE FROM products WHERE id = $1`, [product3Id]);
+    });
+
+    it('should calculate downgrade penalty correctly', async () => {
+      const response = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${testProduct2Id}`
+      );
+
+      expect(response.status).toBe(200);
+      const calc = response.body.calculations;
+      
+      // Verify downgrade penalty formula: max(0, original_rent - (exchange_penalty + total_new_rent))
+      const expectedDowngrade = Math.max(0, calc.original_rent - (calc.exchange_penalty + calc.total_new_rent));
+      expect(calc.downgrade_penalty).toBe(expectedDowngrade);
+    });
+
+    it('should return 400 if new_product_id is missing', async () => {
+      const response = await request(app).get(`/exchanges/preview/${previewTestBPId}`);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('new_product_id');
+    });
+
+    it('should return 500 for non-existent booking product', async () => {
+      const response = await request(app).get(
+        `/exchanges/preview/999999?new_product_id=${testProduct2Id}`
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toContain('Failed to calculate preview');
+    });
+
+    it('should return 500 for non-existent new product', async () => {
+      const response = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=999999`
+      );
+
+      expect(response.status).toBe(500);
+      expect(response.body.error).toContain('Failed to calculate preview');
+    });
+
+    it('should handle multiple additional products', async () => {
+      // Create two additional test products
+      const product3Result = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, category)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        ['TEST-EXCH-004', 'Test Exchange Product 4', 25000, 12000, 'test']
+      );
+      const product4Result = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, category)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        ['TEST-EXCH-005', 'Test Exchange Product 5', 35000, 18000, 'test']
+      );
+      const product3Id = product3Result.rows[0].id;
+      const product4Id = product4Result.rows[0].id;
+
+      const response = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${testProduct2Id}&additional_product_ids=${product3Id},${product4Id}`
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body.additional_products).toHaveLength(2);
+      expect(response.body.calculations.additional_rent).toBe(60000); // 25000 + 35000
+      expect(response.body.calculations.additional_security).toBe(30000); // 12000 + 18000
+
+      // Cleanup
+      await pool.query(`DELETE FROM products WHERE id IN ($1, $2)`, [product3Id, product4Id]);
+    });
+  });
 });

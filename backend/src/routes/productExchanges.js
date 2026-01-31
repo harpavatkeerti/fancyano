@@ -20,6 +20,33 @@ router.get('/eligibility/:booking_product_id', async (req, res) => {
   }
 });
 
+// GET exchange preview with all calculations
+router.get('/preview/:old_booking_product_id', async (req, res) => {
+  try {
+    const { old_booking_product_id } = req.params;
+    const { new_product_id, additional_product_ids } = req.query;
+    
+    if (!new_product_id) {
+      return res.status(400).json({ error: 'new_product_id query parameter is required' });
+    }
+    
+    const additionalIds = additional_product_ids 
+      ? additional_product_ids.split(',').map(id => parseInt(id)) 
+      : [];
+    
+    const preview = await productLifecycleService.calculateExchangePreview(
+      parseInt(old_booking_product_id),
+      parseInt(new_product_id),
+      additionalIds
+    );
+    
+    res.json(preview);
+  } catch (error) {
+    console.error('Error calculating exchange preview:', error);
+    res.status(500).json({ error: 'Failed to calculate preview', details: error.message });
+  }
+});
+
 // POST exchange product(s) in a booking
 router.post('/', async (req, res) => {
   try {

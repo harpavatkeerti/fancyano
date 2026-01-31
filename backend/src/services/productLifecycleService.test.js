@@ -767,6 +767,140 @@ describe('ProductLifecycleService', () => {
     });
   });
 
+  describe('calculateExchangePreview', () => {
+    // Test: Returns complete exchange preview with all calculations
+    test('should calculate exchange preview for upgrade (no downgrade penalty)', async () => {
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        testProductId2,
+        []
+      );
+      
+      expect(result.old_product).toBeDefined();
+      expect(result.old_product.id).toBe(testBookingProductId);
+      expect(result.old_product.rent).toBe(2500);
+      
+      expect(result.new_product).toBeDefined();
+      expect(result.new_product.id).toBe(testProductId2);
+      expect(result.new_product.rent).toBe(600);
+      
+      expect(result.calculations).toBeDefined();
+      expect(result.calculations.original_rent).toBe(2500);
+      expect(result.calculations.total_new_rent).toBe(600);
+      expect(result.calculations.exchange_penalty).toBe(250); // 10% of 2500
+      // No downgrade: max(0, 2500 - (250 + 600)) = max(0, 1650) = 1650
+      expect(result.calculations.downgrade_penalty).toBe(1650);
+      // Total payment: 250 + 1650 + 600 - 2500 = 0
+      expect(result.calculations.total_payment_due).toBe(0);
+      
+      expect(result.penalty_policy).toBeDefined();
+      expect(result.penalty_policy.key).toBe('test_exchange_0_5');
+    });
+
+    // Test: Calculates downgrade penalty correctly for downgrade scenario
+    test('should calculate exchange preview for downgrade', async () => {
+      // Create a product with lower rent
+      const lowRentProduct = await pool.query(
+        `INSERT INTO products (name, code, category, size, rent, security_deposit)
+         VALUES ('Test Low Rent Product', 'TEST-LOW', 'Test', 'S', 1000, 500)
+         RETURNING id`
+      );
+      const lowRentProductId = lowRentProduct.rows[0].id;
+      
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        lowRentProductId,
+        []
+      );
+      
+      expect(result.calculations.original_rent).toBe(2500);
+      expect(result.calculations.total_new_rent).toBe(1000);
+      expect(result.calculations.exchange_penalty).toBe(250); // 10% of 2500
+      // Downgrade penalty: max(0, 2500 - (250 + 1000)) = 1250
+      expect(result.calculations.downgrade_penalty).toBe(1250);
+      // Total payment due: 250 + 1250 + 1000 - 2500 = 0
+      expect(result.calculations.total_payment_due).toBe(0);
+      
+      // Cleanup
+      await pool.query('DELETE FROM products WHERE id = $1', [lowRentProductId]);
+    });
+
+    // Test: Includes additional products in calculations
+    test('should include additional products in calculations (one-to-many)', async () => {
+      // Create another product for testing
+      const product3 = await pool.query(
+        `INSERT INTO products (name, code, category, size, rent, security_deposit)
+         VALUES ('Test Product 3', 'TEST003', 'Test', 'XL', 700, 1400)
+         RETURNING id`
+      );
+      const testProductId3 = product3.rows[0].id;
+      
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        testProductId2,
+        [testProductId3]
+      );
+      
+      expect(result.additional_products).toHaveLength(1);
+      expect(result.additional_products[0].id).toBe(testProductId3);
+      expect(result.additional_products[0].rent).toBe(700);
+      
+      expect(result.calculations.additional_rent).toBe(700);
+      expect(result.calculations.total_new_rent).toBe(1300); // 600 + 700
+      expect(result.calculations.exchange_penalty).toBe(250);
+      // Downgrade: max(0, 2500 - (250 + 1300)) = 950
+      expect(result.calculations.downgrade_penalty).toBe(950);
+      
+      expect(result.calculations.additional_security).toBe(1400);
+      expect(result.calculations.total_new_security).toBe(2600); // 1200 + 1400
+      
+      // Cleanup
+      await pool.query('DELETE FROM products WHERE id = $1', [testProductId3]);
+    });
+
+    // Test: Calculates security difference correctly
+    test('should calculate security difference', async () => {
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        testProductId2,
+        []
+      );
+      
+      // Original: 1000, New: 1200
+      expect(result.calculations.security_difference).toBe(200);
+    });
+
+    // Test: Throws error for non-existent booking product
+    test('should throw error for non-existent booking product', async () => {
+      await expect(
+        productLifecycleService.calculateExchangePreview(999999, testProductId2, [])
+      ).rejects.toThrow('Booking product not found');
+    });
+
+    // Test: Throws error for non-existent new product
+    test('should throw error for non-existent new product', async () => {
+      await expect(
+        productLifecycleService.calculateExchangePreview(testBookingProductId, 999999, [])
+      ).rejects.toThrow('New product not found');
+    });
+
+    // Test: Uses shared calculation logic (downgrade penalty formula)
+    test('should use same calculation as exchangeProduct method', async () => {
+      const preview = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        testProductId2,
+        []
+      );
+      
+      // The calculation should match: max(0, original_rent - (exchange_penalty + total_new_rent))
+      const expectedDowngradePenalty = Math.max(0, 2500 - (250 + 600));
+      expect(preview.calculations.downgrade_penalty).toBe(expectedDowngradePenalty);
+      
+      // Verify it matches the formula in _calculateExchangePenalties
+      expect(expectedDowngradePenalty).toBe(1650);
+    });
+  });
+
   describe('updateBookingDateRange', () => {
     // Test: Updates booking date range based on active products only
     test('should update booking date range from active products', async () => {

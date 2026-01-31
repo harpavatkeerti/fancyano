@@ -8,6 +8,16 @@ const chargeAccountingService = require('./chargeAccountingService');
  */
 class ProductLifecycleService {
   /**
+   * Helper: Calculate exchange penalties (shared logic)
+   * @private
+   */
+  _calculateExchangePenalties(originalRent, exchangePenalty, totalNewRent) {
+    // Calculate downgrade penalty: max(0, old_rent - (exchange_penalty + new_total_rent))
+    const downgradePenalty = Math.max(0, originalRent - (exchangePenalty + totalNewRent));
+    return { downgradePenalty };
+  }
+
+  /**
    * Exchange a product in a booking (ONE-TO-MANY: one old product for multiple new products)
    * @param {number} bookingProductId - The booking product to exchange
    * @param {Array<Object>} newProducts - Array of {productId, rent, securityDeposit}
@@ -63,8 +73,12 @@ class ProductLifecycleService {
       // Calculate total new rent
       const newTotalRent = newProducts.reduce((sum, p) => sum + p.rent, 0);
       
-      // Calculate downgrade penalty: max(0, old_rent - (exchange_penalty + new_total_rent))
-      const downgradePenalty = Math.max(0, oldBookingProduct.rent - (penaltyResult.amount + newTotalRent));
+      // Use shared calculation logic
+      const { downgradePenalty } = this._calculateExchangePenalties(
+        oldBookingProduct.rent,
+        penaltyResult.amount,
+        newTotalRent
+      );
       
       // Add downgrade penalty if applicable
       if (downgradePenalty > 0) {
@@ -723,6 +737,125 @@ class ProductLifecycleService {
       }
     } catch (error) {
       console.error('Error updating booking date range:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Calculate complete exchange preview with all financial calculations
+   * @param {number} oldBookingProductId - Original booking product ID
+   * @param {number} newProductId - New product ID to exchange to
+   * @param {Array<number>} additionalProductIds - Additional product IDs (optional)
+   * @returns {Promise<Object>} - Complete preview with all calculations
+   */
+  async calculateExchangePreview(oldBookingProductId, newProductId, additionalProductIds = []) {
+    try {
+      // Get original booking product details
+      const bpResult = await pool.query(
+        `SELECT bp.*, b.id as booking_id, b.booked_from as booking_from, b.booked_to as booking_to, p.name as product_name
+         FROM booking_products bp
+         JOIN bookings b ON bp.booking_id = b.id
+         JOIN products p ON bp.product_id = p.id
+         WHERE bp.id = $1`,
+        [oldBookingProductId]
+      );
+
+      if (bpResult.rows.length === 0) {
+        throw new Error('Booking product not found');
+      }
+
+      const oldProduct = bpResult.rows[0];
+      const originalRent = parseFloat(oldProduct.rent) || 0;
+      const originalSecurity = parseFloat(oldProduct.security_deposit) || 0;
+
+      // Get new product details
+      const newProductResult = await pool.query(
+        'SELECT id, name, rent, security_deposit FROM products WHERE id = $1',
+        [newProductId]
+      );
+
+      if (newProductResult.rows.length === 0) {
+        throw new Error('New product not found');
+      }
+
+      const newProduct = newProductResult.rows[0];
+      const newRent = parseFloat(newProduct.rent) || 0;
+      const newSecurity = parseFloat(newProduct.security_deposit) || 0;
+
+      // Get additional products if any
+      let additionalRent = 0;
+      let additionalSecurity = 0;
+      const additionalProducts = [];
+
+      if (additionalProductIds.length > 0) {
+        const addResult = await pool.query(
+          'SELECT id, name, rent, security_deposit FROM products WHERE id = ANY($1::int[])',
+          [additionalProductIds]
+        );
+
+        for (const product of addResult.rows) {
+          additionalRent += parseFloat(product.rent) || 0;
+          additionalSecurity += parseFloat(product.security_deposit) || 0;
+          additionalProducts.push({
+            id: product.id,
+            name: product.name,
+            rent: parseFloat(product.rent) || 0,
+            security_deposit: parseFloat(product.security_deposit) || 0
+          });
+        }
+      }
+
+      // Get exchange penalty from policy
+      const penaltyData = await policyService.calculateExchangePenalty(originalRent, oldProduct.created_at);
+      const exchangePenalty = penaltyData.amount || 0;
+
+      // Calculate totals
+      const totalNewRent = newRent + additionalRent;
+      const totalNewSecurity = newSecurity + additionalSecurity;
+
+      // Use shared calculation logic - NO DUPLICATION!
+      const { downgradePenalty } = this._calculateExchangePenalties(originalRent, exchangePenalty, totalNewRent);
+
+      // Total payment due = exchange_penalty + downgrade_penalty + new_total_rent - original_rent
+      const totalPaymentDue = exchangePenalty + downgradePenalty + totalNewRent - originalRent;
+
+      // Calculate security difference
+      const securityDifference = totalNewSecurity - originalSecurity;
+
+      return {
+        old_product: {
+          id: oldProduct.id,
+          product_id: oldProduct.product_id,
+          name: oldProduct.product_name,
+          rent: originalRent,
+          security_deposit: originalSecurity
+        },
+        new_product: {
+          id: newProduct.id,
+          name: newProduct.name,
+          rent: newRent,
+          security_deposit: newSecurity
+        },
+        additional_products: additionalProducts,
+        calculations: {
+          original_rent: originalRent,
+          original_security: originalSecurity,
+          new_rent: newRent,
+          additional_rent: additionalRent,
+          total_new_rent: totalNewRent,
+          new_security: newSecurity,
+          additional_security: additionalSecurity,
+          total_new_security: totalNewSecurity,
+          exchange_penalty: exchangePenalty,
+          penalty_percentage: penaltyData.policy?.value || 0,
+          downgrade_penalty: downgradePenalty, // Rent difference when downgrading
+          total_payment_due: totalPaymentDue,
+          security_difference: securityDifference
+        },
+        penalty_policy: penaltyData.policy
+      };
+    } catch (error) {
+      console.error('Error calculating exchange preview:', error);
       throw error;
     }
   }

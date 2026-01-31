@@ -67,19 +67,14 @@ export function ProductExchange({
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [paymentScanned, setPaymentScanned] = useState(false);
   
-  // Exchange policy and charge preview
-  const [exchangePolicy, setExchangePolicy] = useState<any>(null);
-  const [rentDiff, setRentDiff] = useState<number>(0);
-  const [calculatedPenalty, setCalculatedPenalty] = useState<number>(0);
-  const [calculatedTotal, setCalculatedTotal] = useState<number>(0);
+  // Exchange preview from backend API
+  const [exchangePreview, setExchangePreview] = useState<any>(null);
   const [rentDifference, setRentDifference] = useState<number>(0);
   const [securityDifference, setSecurityDifference] = useState<number>(0);
   const [bookingDates, setBookingDates] = useState<{ booked_from: string; booked_to: string } | null>(null);
 
   useEffect(() => {
     fetchExchanges();
-    fetchExchangePolicy();
-    fetchExchangeCharge();
     fetchBookingDates();
   }, [bookingId]);
 
@@ -97,228 +92,77 @@ export function ProductExchange({
     }
   }
   
-  // Calculate charges when original or exchanged product is selected, or when additional products change
+  // Fetch exchange preview from backend when products are selected
   useEffect(() => {
-    if (selectedOriginalProduct && selectedExchangedProduct && exchangePolicy && bookingDate) {
-      calculateExchangeCharges();
-    }
-  }, [selectedOriginalProduct, selectedExchangedProduct, exchangePolicy, bookingDate, additionalProducts, availableProducts, rentDiff]);
-  
-  // Auto-calculate and show payment section when products are selected
-  useEffect(() => {
-    if (!selectedOriginalProduct || !selectedExchangedProduct || !exchangePolicy || !bookingDate) {
-      setTotalPaymentDue(0);
-      setPendingExchangeData(null);
-      return;
-    }
+    async function fetchExchangePreview() {
+      if (!selectedOriginalProduct || !selectedExchangedProduct) {
+        setExchangePreview(null);
+        setTotalPaymentDue(0);
+        setPendingExchangeData(null);
+        return;
+      }
 
-    const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
-    const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
-    
-    if (!originalProduct || !exchangedProduct) return;
+      const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
+      if (!originalProduct) return;
 
-    // Calculate charges using the same logic as in calculateExchangeCharges
-    const bookingDateObj = new Date(bookingDate);
-    const today = new Date();
-    const daysDiff = Math.floor((today.getTime() - bookingDateObj.getTime()) / (1000 * 60 * 60 * 24));
-    
-    let penaltyPercentage = 0;
-    const days = exchangePolicy.days || [3, 5, 7, -1];
-    const penalties = [
-      exchangePolicy.before_7_days || 0,
-      exchangePolicy.before_3_days || 0,
-      exchangePolicy.before_1_day || 0,
-      exchangePolicy.on_booking_date || 0
-    ];
-    
-    if (daysDiff <= days[0]) penaltyPercentage = penalties[0];
-    else if (daysDiff <= days[1]) penaltyPercentage = penalties[1];
-    else if (daysDiff <= days[2]) penaltyPercentage = penalties[2];
-    else penaltyPercentage = penalties[3];
+      try {
+        // Call backend API to get complete exchange preview with all calculations
+        const response = await productExchangesApi.getPreview(
+          originalProduct.id,
+          selectedExchangedProduct,
+          additionalProducts
+        );
+        
+        const preview = response.data;
+        setExchangePreview(preview);
+        
+        // Update payment due and differences from backend calculations
+        setTotalPaymentDue(preview.calculations.total_payment_due);
+        setExchangePenaltyAmount(preview.calculations.exchange_penalty);
+        setRentDifferenceAmount(preview.calculations.downgrade_penalty); // Using existing downgrade_penalty
+        setRentDifference(preview.calculations.downgrade_penalty);
+        setSecurityDifference(preview.calculations.security_difference);
 
-    const originalRent = parseFloat(String(originalProduct.rent)) || 0;
-    const newRent = parseFloat(String(exchangedProduct.rent)) || 0;
-    
-    const additionalRent = additionalProducts.reduce((sum, productId) => {
-      const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
-    }, 0);
-    
-    const totalNewRent = newRent + additionalRent;
-    const exchangePenalty = (originalRent * penaltyPercentage) / 100;
-    const calculatedRentDiff = originalRent <= (totalNewRent + exchangePenalty) 
-      ? 0 
-      : originalRent - (totalNewRent + exchangePenalty);
-    
-    const calculatedTotalPaymentDue = Math.max(0, totalNewRent + exchangePenalty + calculatedRentDiff - originalRent);
-
-    if (calculatedTotalPaymentDue > 0) {
-      setTotalPaymentDue(calculatedTotalPaymentDue);
-      setExchangePenaltyAmount(exchangePenalty);
-      setRentDifferenceAmount(calculatedRentDiff);
-      
-      // Prepare exchange data
-      const exchangeDataToCreate = {
-        booking_id: bookingId,
-        original_product_id: selectedOriginalProduct,
-        exchanged_product_id: selectedExchangedProduct,
-        exchange_reason: exchangeReason,
-        exchanged_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
-        additionalProducts: additionalProducts.map(productId => ({
-          product_id: productId,
-          booked_from: productDates[productId]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
-          booked_to: productDates[productId]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
-        })),
-        exchanged_product_dates: {
-          booked_from: productDates[selectedExchangedProduct]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
-          booked_to: productDates[selectedExchangedProduct]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+        if (calculatedTotalPaymentDue > 0) {
+          setTotalPaymentDue(calculatedTotalPaymentDue);
+          setExchangePenaltyAmount(exchangePenalty);
+          setRentDifferenceAmount(calculatedRentDiff);
+          
+          // Prepare exchange data
+          const exchangeDataToCreate = {
+            booking_id: bookingId,
+            original_product_id: selectedOriginalProduct,
+        
+        // Prepare exchange data with backend preview calculations
+        if (preview.calculations.total_payment_due > 0) {
+          const exchangeDataToCreate = {
+            booking_id: bookingId,
+            original_product_id: selectedOriginalProduct,
+            exchanged_product_id: selectedExchangedProduct,
+            exchange_reason: exchangeReason,
+            additionalProducts: additionalProducts.map(productId => ({
+              product_id: productId,
+              booked_from: productDates[productId]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+              booked_to: productDates[productId]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+            })),
+            exchanged_product_dates: {
+              booked_from: productDates[selectedExchangedProduct]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+              booked_to: productDates[selectedExchangedProduct]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+            }
+          };
+          setPendingExchangeData(exchangeDataToCreate);
+        } else {
+          setPendingExchangeData(null);
         }
-      };
-      setPendingExchangeData(exchangeDataToCreate);
-    } else {
-      setTotalPaymentDue(0);
-      setPendingExchangeData(null);
-    }
-  }, [selectedOriginalProduct, selectedExchangedProduct, exchangePolicy, bookingDate, additionalProducts, availableProducts, exchangeReason, productDates, bookingDates]);
-  
-  async function fetchExchangePolicy() {
-    try {
-      const response = await settingsApi.getByKey('refund_policy');
-      if (response.data?.setting_value) {
-        const policy = JSON.parse(response.data.setting_value);
-        setExchangePolicy(policy);
-        console.log('Exchange Policy loaded:', policy);
+      } catch (error) {
+        console.error('Error fetching exchange preview:', error);
+        setExchangePreview(null);
+        setTotalPaymentDue(0);
       }
-    } catch (error) {
-      console.error('Error fetching exchange policy:', error);
-    }
-  }
-  
-  async function fetchExchangeCharge() {
-    try {
-      const response = await settingsApi.getByKey('exchange_charges');
-      if (response.data?.setting_value) {
-        const charge = parseFloat(response.data.setting_value) || 0;
-        setRentDiff(charge);
-        console.log('Rent Diff setting loaded:', charge);
-      }
-    } catch (error) {
-      console.error('Error fetching rent diff setting:', error);
-    }
-  }
-  
-  function calculateExchangeCharges() {
-    if (!selectedOriginalProduct || !selectedExchangedProduct || !exchangePolicy || !bookingDate) return;
-    
-    const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
-    const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
-    if (!originalProduct || !exchangedProduct) return;
-    
-    // Calculate days from booking date
-    const bookingDateObj = new Date(bookingDate);
-    const today = new Date();
-    const daysDiff = Math.floor((today.getTime() - bookingDateObj.getTime()) / (1000 * 60 * 60 * 24));
-    
-    console.log('Days from booking date:', daysDiff);
-    
-    // Calculate penalty percentage based on exchange policy
-    let penaltyPercentage = 0;
-    const days = exchangePolicy.days || [3, 5, 7, -1];
-    const penalties = [
-      exchangePolicy.before_7_days || 0,
-      exchangePolicy.before_3_days || 0,
-      exchangePolicy.before_1_day || 0,
-      exchangePolicy.on_booking_date || 0
-    ];
-    
-    if (daysDiff <= days[0]) {
-      penaltyPercentage = penalties[0];
-      console.log(`Within ${days[0]} days: ${penaltyPercentage}% penalty`);
-    } else if (daysDiff <= days[1]) {
-      penaltyPercentage = penalties[1];
-      console.log(`Within ${days[1]} days: ${penaltyPercentage}% penalty`);
-    } else if (daysDiff <= days[2]) {
-      penaltyPercentage = penalties[2];
-      console.log(`Within ${days[2]} days: ${penaltyPercentage}% penalty`);
-    } else {
-      penaltyPercentage = penalties[3];
-      console.log(`After ${days[2]} days: ${penaltyPercentage}% penalty`);
     }
     
-    // Calculate new total as sum of all products (after exchange)
-    const originalRent = parseFloat(String(originalProduct.rent)) || 0;
-    const newRent = parseFloat(String(exchangedProduct.rent)) || 0;
-    
-    // Calculate additional products rent and security
-    const additionalRent = additionalProducts.reduce((sum, productId) => {
-      const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
-    }, 0);
-    
-    const additionalSecurity = additionalProducts.reduce((sum, productId) => {
-      const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(product.security_deposit || '0') || 0 : 0);
-    }, 0);
-    
-    // Sum of all products' rent (remove old, add new + additional)
-    const currentTotalRent = currentProducts.reduce((sum, p) => {
-      return sum + (parseFloat(String(p.rent)) || 0);
-    }, 0);
-    const totalNewRent = newRent + additionalRent;
-    const newTotalRent = currentTotalRent - originalRent + totalNewRent;
-    
-    // Calculate security (including additional products)
-    const originalSecurity = parseFloat(originalProduct.security_deposit) || 0;
-    const newSecurity = parseFloat(exchangedProduct.security_deposit) || 0;
-    const totalNewSecurity = newSecurity + additionalSecurity;
-    
-    const currentTotalSecurity = currentProducts.reduce((sum, p) => {
-      return sum + (parseFloat(p.security_deposit) || 0);
-    }, 0);
-    const newTotalSecurity = currentTotalSecurity - originalSecurity + totalNewSecurity;
-    
-    // NEW STREAMLINED LOGIC:
-    // 1. Exchange penalty: Always use percentage from policy (applied to original rent)
-    const exchangePenalty = (originalRent * penaltyPercentage) / 100;
-    
-    // 2. Rent Difference: 
-    //    - If original_rent <= totalNewRent + exchangePenalty: rentDiff = 0
-    //    - Else: rentDiff = original_rent - (totalNewRent + exchangePenalty)
-    const calculatedRentDiff = originalRent <= (totalNewRent + exchangePenalty) 
-      ? 0 
-      : originalRent - (totalNewRent + exchangePenalty);
-    
-    // 3. Total Payment Due = totalNewRent + exchangePenalty + rentDiff - originalRent
-    const totalPaymentDue = Math.max(0, totalNewRent + exchangePenalty + calculatedRentDiff - originalRent);
-    
-    setRentDifference(newTotalRent);
-    setSecurityDifference(newTotalSecurity);
-    setCalculatedPenalty(penaltyPercentage);
-    setCalculatedTotal(exchangePenalty); // This is the exchange penalty
-    setRentDiff(calculatedRentDiff); // Store rent difference
-    
-    console.log('Exchange calculation (streamlined):', {
-      daysDiff,
-      currentTotalRent,
-      originalRent,
-      newRent,
-      additionalRent,
-      totalNewRent,
-      newTotalRent,
-      currentTotalSecurity,
-      originalSecurity,
-      newSecurity,
-      additionalSecurity,
-      totalNewSecurity,
-      newTotalSecurity,
-      penaltyPercentage,
-      exchangePenalty,
-      calculatedRentDiff,
-      totalPaymentDue,
-      formula: `${totalNewRent} + ${exchangePenalty} + ${calculatedRentDiff} - ${originalRent} = ${totalPaymentDue}`,
-      additionalProductsCount: additionalProducts.length
-    });
-  }
+    fetchExchangePreview();
+  }, [selectedOriginalProduct, selectedExchangedProduct, additionalProducts, exchangeReason, productDates, bookingDates]);
 
   async function fetchExchanges() {
     try {
@@ -1438,7 +1282,7 @@ export function ProductExchange({
                           </div>
                         </div>
                         
-                        {/* Payment Breakdown - New Streamlined Logic */}
+                        {/* Payment Breakdown - Using Backend Preview */}
                         <div className="border-t border-blue-300 pt-2 mt-2">
                           <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-3">
                             <p className="text-xs font-semibold text-yellow-800 mb-1">Payment Calculation:</p>
@@ -1447,47 +1291,47 @@ export function ProductExchange({
                             </p>
                           </div>
                           
-                          {/* Original Rent */}
-                          <div className="flex justify-between">
-                            <span>Original Product Rent:</span>
-                            <span className="font-semibold">₹{originalRent.toLocaleString('en-IN')}</span>
-                          </div>
-                          
-                          {/* New Rent */}
-                          <div className="flex justify-between">
-                            <span>New Product(s) Rent:</span>
-                            <span className="font-semibold text-green-700">₹{totalNewRent.toLocaleString('en-IN')}</span>
-                          </div>
-                          
-                          {/* Exchange Penalty */}
-                          <div className="flex justify-between">
-                            <span>Exchange Penalty ({calculatedPenalty}%):</span>
-                            <span className="font-semibold text-orange-700">₹{Math.floor(calculatedTotal).toLocaleString('en-IN')}</span>
-                          </div>
-                          
-                          {/* Rent Difference */}
-                          <div className="flex justify-between">
-                            <span>Rent Difference:</span>
-                            <span className="font-semibold text-purple-700">₹{Math.floor(rentDiff).toLocaleString('en-IN')}</span>
-                          </div>
-                          {rentDiff > 0 && (
-                            <p className="text-xs text-purple-600 mt-1 ml-4">
-                              (Balancing amount: ₹{originalRent.toLocaleString('en-IN')} - ₹{totalNewRent.toLocaleString('en-IN')} - ₹{Math.floor(calculatedTotal).toLocaleString('en-IN')} = ₹{Math.floor(rentDiff).toLocaleString('en-IN')})
-                            </p>
+                          {exchangePreview && (
+                            <>
+                              {/* Original Rent */}
+                              <div className="flex justify-between">
+                                <span>Original Product Rent:</span>
+                                <span className="font-semibold">₹{exchangePreview.calculations.original_rent.toLocaleString('en-IN')}</span>
+                              </div>
+                              
+                              {/* New Rent */}
+                              <div className="flex justify-between">
+                                <span>New Product(s) Rent:</span>
+                                <span className="font-semibold text-green-700">₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')}</span>
+                              </div>
+                              
+                              {/* Exchange Penalty */}
+                              <div className="flex justify-between">
+                                <span>Exchange Penalty ({exchangePreview.calculations.penalty_percentage}%):</span>
+                                <span className="font-semibold text-orange-700">₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')}</span>
+                              </div>
+                              
+                              {/* Rent Difference */}
+                              <div className="flex justify-between">
+                                <span>Downgrade Penalty:</span>
+                                <span className="font-semibold text-purple-700">₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')}</span>
+                              </div>
+                              {exchangePreview.calculations.downgrade_penalty > 0 && (
+                                <p className="text-xs text-purple-600 mt-1 ml-4">
+                                  (Balancing amount when downgrading: ₹{exchangePreview.calculations.original_rent.toLocaleString('en-IN')} - ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} - ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')})
+                                </p>
+                              )}
+                            </>
                           )}
                         </div>
                         
                         {/* Total Payment Due */}
-                        {(() => {
-                          // Calculate using the formula: totalNewRent + exchangePenalty + rentDiff - originalRent
-                          const totalPaymentDue = Math.max(0, totalNewRent + calculatedTotal + rentDiff - originalRent);
-                          
-                          return (
-                            <div className="border-t-2 border-blue-400 pt-3 mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3">
-                              <div className="flex justify-between items-center mb-2">
-                                <span className="text-base font-bold text-gray-900">Total Payment Due:</span>
-                                <span className="text-2xl font-bold text-indigo-600">₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}</span>
-                              </div>
+                        {exchangePreview && (
+                          <div className="border-t-2 border-blue-400 pt-3 mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-base font-bold text-gray-900">Total Payment Due:</span>
+                              <span className="text-2xl font-bold text-indigo-600">₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}</span>
+                            </div>
                               <div className="text-xs text-gray-600 bg-white rounded p-2">
                                 <p className="font-mono">
                                   ₹{totalNewRent.toLocaleString('en-IN')} + ₹{Math.floor(calculatedTotal).toLocaleString('en-IN')} + ₹{Math.floor(rentDiff).toLocaleString('en-IN')} - ₹{originalRent.toLocaleString('en-IN')} = ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}

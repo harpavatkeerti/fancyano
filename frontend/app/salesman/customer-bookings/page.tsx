@@ -164,8 +164,11 @@ export default function CustomerBookingsPage() {
   }
 
   function getStatusIcon(status: string, booking: Booking) {
-    // If booking is cancelled, show cancelled status
-    if (status === 'cancelled' || booking.status === 'cancelled') {
+    // Use backend-provided status directly - backend calculates based on payments/refunds
+    const displayStatus = booking.status || status;
+    
+    // Cancelled
+    if (displayStatus === 'cancelled') {
       return (
         <div className="flex items-center text-red-600">
           <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -180,8 +183,8 @@ export default function CustomerBookingsPage() {
       );
     }
 
-    // If status is already completed (refund processed), show completed
-    if (status === 'completed') {
+    // Completed or Partially Completed
+    if (displayStatus === 'completed' || displayStatus === 'partially_completed') {
       return (
         <div className="flex items-center text-blue-600">
           <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -191,86 +194,13 @@ export default function CustomerBookingsPage() {
               clipRule="evenodd"
             />
           </svg>
-          Completed
+          {displayStatus === 'partially_completed' ? 'Partially Completed' : 'Completed'}
         </div>
       );
     }
 
-    // Calculate actual status based on payments using backend-provided totals
-    const totalRent = booking.total_rent || 0;
-    const totalSecurity = booking.total_security || 0;
-    const totalPaid = booking.total_paid || 0;
-
-    const totalRequired = totalRent + totalSecurity;
-    const isFullyPaid = totalPaid >= totalRequired;
-    const hasRentalPayment = totalPaid > 0;
-
-    // Determine actual status
-    let actualStatus = status;
-    if (!hasRentalPayment) {
-      actualStatus = 'pending';
-    } else if (isFullyPaid) {
-      // Check if multiple products with different dates
-      const products = Array.isArray(booking.products) ? booking.products : [];
-      if (products.length > 1) {
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          actualStatus = 'in_progress'; // Partially Completed
-        } else {
-          actualStatus = 'in_progress'; // Under Process
-        }
-      } else {
-        actualStatus = 'in_progress'; // Under Process
-      }
-    } else if (hasRentalPayment) {
-      actualStatus = 'confirmed';
-    }
-
-    // Check if refund exists (completed)
-    // Note: We'd need to fetch transactions to check, but for now use status
-    if (status === 'completed' || actualStatus === 'completed') {
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Completed
-        </div>
-      );
-    }
-
-    if (actualStatus === 'in_progress') {
-      // Check if it's partially completed (multiple products with different dates)
-      const products = Array.isArray(booking.products) ? booking.products : [];
-      if (products.length > 1) {
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          return (
-            <div className="flex items-center text-orange-600">
-              <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              Partially Completed
-            </div>
-          );
-        }
-      }
+    // In Progress / Under Process
+    if (displayStatus === 'in_progress') {
       return (
         <div className="flex items-center text-blue-600">
           <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -285,7 +215,8 @@ export default function CustomerBookingsPage() {
       );
     }
 
-    if (actualStatus === 'confirmed') {
+    // Confirmed
+    if (displayStatus === 'confirmed') {
       return (
         <div className="flex items-center text-green-600">
           <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
@@ -300,7 +231,7 @@ export default function CustomerBookingsPage() {
       );
     }
 
-    // Pending (no payment recorded)
+    // Pending (default)
     return (
       <div className="flex items-center text-gray-600">
         <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">

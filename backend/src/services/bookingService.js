@@ -473,7 +473,26 @@ class BookingService {
     params.push(offset);
     
     const result = await pool.query(query, params);
-    return result.rows;
+    
+    // Calculate payment_status for each booking (backend business logic)
+    const bookingsWithStatus = result.rows.map(booking => {
+      const totalRent = parseFloat(booking.total_rent || 0) + parseFloat(booking.transport_charge || 0);
+      const totalPaid = parseFloat(booking.total_paid || 0);
+      
+      let payment_status = 'unpaid';
+      if (totalPaid >= totalRent) {
+        payment_status = 'paid';
+      } else if (totalPaid > 0) {
+        payment_status = 'partial';
+      }
+      
+      return {
+        ...booking,
+        payment_status
+      };
+    });
+    
+    return bookingsWithStatus;
   }
 
   /**

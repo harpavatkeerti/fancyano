@@ -148,102 +148,17 @@ export default function OrderDetailsPage() {
     }
   }
 
-  // Calculate booking status based on payments and refunds (same logic as salesman portal)
-  function calculateBookingStatus(): string {
-    if (!booking || !paymentSummary) return 'pending';
-
-    // CRITICAL: Check if ALL products are cancelled - if so, booking should show as cancelled
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
-    
-    // If all products are cancelled, show booking as cancelled
-    if (products.length > 0 && activeProducts.length === 0) {
-      return 'cancelled';
-    }
-
-    // If booking is explicitly cancelled or partially cancelled, return that status
-    if (booking.status === 'cancelled' || booking.status === 'partially_cancelled') {
-      return booking.status;
-    }
-
-    // Use payment summary for accurate totals
-    const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-    const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
-    const totalPaid = paymentSummary.totals.total_paid;
-
-    // Check for per-item refunds
-    const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
-    
-    // Count how many products have refunds by checking transaction notes
-    const productsWithRefunds = new Set<number>();
-    refundTransactions.forEach((transaction: any) => {
-      const notes = transaction.notes || '';
-      products.forEach((product: any) => {
-        // Check if transaction notes contain product code
-        if (notes.includes(`(${product.code})`)) {
-          productsWithRefunds.add(product.id);
-        }
-      });
-    });
-    
-    const allProductsHaveRefunds = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
-    const hasAnyRefund = productsWithRefunds.size > 0;
-    
-    // If all products have refunds, status is completed
-    if (allProductsHaveRefunds) {
-      return 'completed';
-    }
-    
-    // If some products have refunds, status is in_progress (Partially Completed)
-    if (hasAnyRefund) {
-      return 'in_progress';
-    }
-
-    // Check if Rent + Deposit is fully received
-    const totalRequired = totalRent + totalSecurity;
-    const isFullyPaid = totalPaid >= totalRequired;
-
-    if (isFullyPaid) {
-      // Check if multiple products with different dates
-      if (products.length > 1) {
-        // Check if products have different dates
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          // Multiple products with different dates - Partially Completed
-          return 'in_progress'; // Will display as "Partially Completed" or "Under Process"
-        }
-      }
-      // All paid, single date or same dates - Under Process
-      return 'in_progress';
-    }
-
-    // Check if any rental payment has been recorded
-    const hasRentalPayment = paymentSummary.totals.rent_paid > 0;
-
-    if (hasRentalPayment) {
-      // At least some rental payment recorded - Confirmed
-      return 'confirmed';
-    }
-
-    // No payment recorded - Pending
-    return 'pending';
-  }
-
   function getStatusDisplay(status: string): { text: string; color: string } {
-    const calculatedStatus = calculateBookingStatus();
+    // Use backend-provided status directly - backend calculates based on payments/refunds/cancellations
+    const displayStatus = booking?.status || status;
     
-    switch (calculatedStatus) {
+    switch (displayStatus) {
       case 'completed':
         return { text: 'Completed', color: 'text-blue-600' };
       case 'cancelled':
         return { text: 'Cancelled', color: 'text-red-600' };
-      case 'partially_cancelled':
-        return { text: 'Partially Cancelled', color: 'text-orange-600' };
+      case 'partially_completed':
+        return { text: 'Partially Completed', color: 'text-blue-600' };
       case 'in_progress':
         return { text: 'Under Process', color: 'text-blue-600' };
       case 'confirmed':
@@ -621,7 +536,7 @@ export default function OrderDetailsPage() {
                 return (
                   <div className="mt-3 p-2 bg-teal-50 border border-teal-200 rounded">
                     <p className="text-xs text-teal-700 font-semibold">🚚 Local Transportation: Opted</p>
-                    <p className="text-xs text-teal-600">Charge: ₹{Math.floor(parseFloat(booking.other_charges || '0')).toLocaleString('en-IN')}</p>
+                    <p className="text-xs text-teal-600">Charge: ₹{Math.floor(parseFloat(booking.transport_charge || '0')).toLocaleString('en-IN')}</p>
                   </div>
                 );
               }
@@ -640,7 +555,7 @@ export default function OrderDetailsPage() {
                 <span>Subtotal</span>
                 <span>₹{(() => {
                   if (!paymentSummary) return '0';
-                  const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+                  const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
                   return Math.floor(totalRent).toLocaleString('en-IN');
                 })()}</span>
               </div>
@@ -690,8 +605,8 @@ export default function OrderDetailsPage() {
                 <span>Total</span>
                 <span>₹{(() => {
                   if (!paymentSummary) return '0';
-                  const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-                  const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+                  const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+                  const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
                   const total = totalRent + totalSecurity;
                   return Math.floor(total).toLocaleString('en-IN');
                 })()}</span>
@@ -1090,8 +1005,7 @@ export default function OrderDetailsPage() {
           
           {/* Payment Management - Show read-only for fully cancelled bookings */}
           {(() => {
-            const calculatedStatus = calculateBookingStatus();
-            const isFullyCancelled = calculatedStatus === 'cancelled';
+            const isFullyCancelled = booking?.status === 'cancelled';
             
             if (isFullyCancelled) {
               // Calculate financial summary for cancelled booking
@@ -1177,7 +1091,7 @@ export default function OrderDetailsPage() {
                 bookingId={booking.id}
                 totalAmount={(() => {
                   if (!paymentSummary) return 0;
-                  return paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+                  return (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
             })()}
             securityDeposit={(() => {
               // Calculate security deposit from products if booking.security_deposit is 0 or missing

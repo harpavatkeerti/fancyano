@@ -1002,8 +1002,8 @@ export default function OrderDetailsPage() {
       return;
     }
     
-    const totalRentDue = paymentSummary.totals.rent_due;
-    const totalSecurityDue = paymentSummary.totals.security_due;
+    const totalRentDue = paymentSummary.charges.rent.due || 0;
+    const totalSecurityDue = paymentSummary.charges.security.due || 0;
 
     // Allocate payment: first to rental, then to security deposit
     let remainingPayment = amount;
@@ -1129,99 +1129,6 @@ export default function OrderDetailsPage() {
   }
 
   // Calculate booking status based on payments and refunds
-  function calculateBookingStatus(): string {
-    if (!booking || !paymentSummary) return 'pending';
-
-    // CRITICAL: Check if ALL products are cancelled - if so, booking should show as cancelled
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
-    
-    // If all products are cancelled, show booking as cancelled
-    if (products.length > 0 && activeProducts.length === 0) {
-      return 'cancelled';
-    }
-
-    // If booking is cancelled, return that status immediately
-    if (booking.status === 'cancelled') {
-      return booking.status;
-    }
-
-    // Use payment summary for accurate totals
-    const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-    const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
-    const totalPaid = paymentSummary.totals.total_paid;
-    const totalPenalties = paymentSummary.totals.penalties_due + paymentSummary.totals.penalties_paid;
-
-    // Check if all products have refunds
-    const refundTransactions = transactions.filter((t: any) => t.type === 'refund');
-    
-    // Create set of products with refunds
-      const productsWithRefunds = new Set<number>();
-      refundTransactions.forEach((transaction: any) => {
-        const notes = transaction.notes || '';
-        products.forEach((product: any) => {
-          // First try exact pattern match: (CODE)
-          if (notes.includes(`(${product.code})`)) {
-            productsWithRefunds.add(product.id);
-            return;
-          }
-          
-          // If that doesn't match, try matching product name followed by code pattern
-          const namePattern = new RegExp(`\\b${product.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'i');
-          if (namePattern.test(notes)) {
-            productsWithRefunds.add(product.id);
-            return;
-          }
-          
-          // Last resort: check if product code appears as a whole word (not substring)
-          const codePattern = new RegExp(`\\b${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-          if (codePattern.test(notes) && notes.includes(product.name)) {
-            productsWithRefunds.add(product.id);
-          }
-        });
-      });
-    
-    // If all products have refunds, status is completed
-    if (products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id))) {
-      return 'completed';
-    }
-
-    // Check if Rent + Deposit + Penalties is fully received
-    const totalRequired = totalRent + totalSecurity + totalPenalties;
-    const isFullyPaid = totalPaid >= totalRequired;
-
-    if (isFullyPaid) {
-      // Check if multiple products with different dates
-      const products = Array.isArray(booking.products) ? booking.products : [];
-      if (products.length > 1) {
-        // Check if products have different dates
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          // Multiple products with different dates - Partially Completed
-          return 'in_progress'; // Will display as "Partially Completed" or "Under Process"
-        }
-      }
-      // All paid, single date or same dates - Under Process
-      return 'in_progress';
-    }
-
-    // Check if any rental payment has been recorded
-    const hasRentalPayment = paymentSummary.totals.rent_paid > 0;
-
-    if (hasRentalPayment) {
-      // At least some rental payment recorded - Confirmed
-      return 'confirmed';
-    }
-
-    // No payment recorded - Pending
-    return 'pending';
-  }
-
   // Update booking status in database
   async function updateBookingStatus() {
     if (!booking) return;
@@ -1239,10 +1146,10 @@ export default function OrderDetailsPage() {
       const currentSummary = summaryResponse.data;
       
       // Recalculate status with latest data
-      const totalRent = currentSummary.totals.rent_due + currentSummary.totals.rent_paid;
-      const totalSecurity = currentSummary.totals.security_due + currentSummary.totals.security_paid;
+      const totalRent = (currentSummary.charges.rent.due || 0) + (currentSummary.charges.rent.paid || 0);
+      const totalSecurity = (currentSummary.charges.security.due || 0) + (currentSummary.charges.security.paid || 0);
       const totalPaid = currentSummary.totals.total_paid;
-      const totalPenalties = currentSummary.totals.penalties_due + currentSummary.totals.penalties_paid;
+      const totalPenalties = (currentSummary.charges.penalties.due || 0) + (currentSummary.charges.penalties.paid || 0);
 
       // Check if all products have refunds
       const currentProducts = Array.isArray(currentBooking.products) ? currentBooking.products : [];
@@ -1287,13 +1194,13 @@ export default function OrderDetailsPage() {
       
       const totalRequired = totalRent + totalSecurity + totalPenalties;
       const isFullyPaid = totalPaid >= totalRequired;
-      const hasRentalPayment = currentSummary.totals.rent_paid > 0;
+      const hasRentalPayment = (currentSummary.charges.rent.paid || 0) > 0;
 
       let newStatus = currentBooking.status;
 
-      // Don't update status if booking is cancelled or partially cancelled
-      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_cancelled') {
-        console.log('⚠️ Booking is cancelled or partially cancelled - skipping status update');
+      // Don't update status if booking is cancelled or partially completed
+      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_completed') {
+        console.log('⚠️ Booking is cancelled or partially completed - skipping status update');
         return;
       }
 
@@ -1394,10 +1301,10 @@ export default function OrderDetailsPage() {
     const selectedItems = products.filter((p: any) => itemRefunds[p.id]?.selected);
     
     // Use payment summary for accurate totals
-    const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-    const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+    const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+    const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
     const totalPaid = paymentSummary.totals.total_paid;
-    const totalPenalties = paymentSummary.totals.penalties_due + paymentSummary.totals.penalties_paid;
+    const totalPenalties = (paymentSummary.charges.penalties.due || 0) + (paymentSummary.charges.penalties.paid || 0);
     
     const totalRequired = totalRent + totalSecurity + totalPenalties;
     const overpaymentAmount = Math.max(0, totalPaid - totalRequired);
@@ -1690,9 +1597,9 @@ export default function OrderDetailsPage() {
                   bgColor = 'bg-red-100';
                   textColor = 'text-red-800';
                   label = 'Cancelled';
-                } else if (status === 'partially_cancelled') {
-                  bgColor = 'bg-orange-100';
-                  textColor = 'text-orange-800';
+                } else if (status === 'partially_completed') {
+                  bgColor = 'bg-blue-100';
+                  textColor = 'text-blue-800';
                   label = 'Partially Cancelled';
                 } else if (status === 'completed') {
                   bgColor = 'bg-blue-100';
@@ -2213,8 +2120,8 @@ export default function OrderDetailsPage() {
                   ₹
                   {(() => {
                     if (!paymentSummary) return '0';
-                    const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-                    const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+                    const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+                    const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
                     const total = totalRent + totalSecurity;
                     return isNaN(total) ? '0' : Math.floor(total).toLocaleString('en-IN');
                   })()}
@@ -2231,8 +2138,7 @@ export default function OrderDetailsPage() {
             
             {/* Show Financial Summary for Fully Cancelled Bookings */}
             {(() => {
-              const calculatedStatus = calculateBookingStatus();
-              const isFullyCancelled = calculatedStatus === 'cancelled';
+              const isFullyCancelled = booking?.status === 'cancelled';
               
               if (isFullyCancelled) {
                 // Calculate financial summary
@@ -2373,22 +2279,18 @@ export default function OrderDetailsPage() {
             })()}
             
             {/* Detailed Payment Breakdown - Show before refunds start and if not fully cancelled */}
-            {!hasAnyRefund && calculateBookingStatus() !== 'cancelled' && (() => {
+            {!hasAnyRefund && booking?.status !== 'cancelled' && (() => {
               if (!paymentSummary) return null;
               
               // Use payment summary for all calculations
-              const totalRent = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
-              const totalSecurity = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+              const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
               const totalAmountNum = totalRent;
-              const securityDepositNum = totalSecurity;
-              
-              // ALWAYS calculate security deposit from ACTIVE products (source of truth, excluding cancelled)
-              const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
-              const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+              // Use payment summary for security deposit - no need to calculate
+              const securityDepositNum = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
               
               // Use payment summary for paid amounts and dues
               const paidAmountNum = paymentSummary.totals.total_paid;
-              const rentDue = paymentSummary.totals.rent_due;
+              const rentDue = paymentSummary.charges.rent.due || 0;
               
               // Check for rent difference payments specifically for logging
               const rentDiffPayments = transactions.filter((t: any) => {
@@ -2670,24 +2572,10 @@ export default function OrderDetailsPage() {
                 
                 // Use payment summary for accurate totals
                 if (!paymentSummary) return null;
-                const totalAmount = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+                const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
                 
-                // ALWAYS calculate security deposit from ACTIVE products - NEVER affected by discount
-                const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
-                let securityDeposit = 0;
-                if (activeProducts.length > 0) {
-                  securityDeposit = activeProducts.reduce((sum: number, product: any) => {
-                    const security = typeof product.security_deposit === 'number'
-                      ? product.security_deposit
-                      : parseFloat(String(product.security_deposit || '0')) || 0;
-                    return sum + security;
-                  }, 0);
-                } else {
-                  // Fallback to booking.security_deposit
-                  securityDeposit = typeof booking.security_deposit === 'number'
-                    ? booking.security_deposit
-                    : parseFloat(String(booking.security_deposit || '0')) || 0;
-                }
+                // Use payment summary for security deposit - no need to calculate
+                const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
                 
                 // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
                 const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
@@ -2789,11 +2677,11 @@ export default function OrderDetailsPage() {
             const hasRefund = transactions.some((t: any) => t.type === 'refund');
             if (!paymentSummary) return null;
             
-            const totalAmount = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+            const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
             const paidAmount = paymentSummary.totals.total_paid;
-            const securityDeposit = paymentSummary.totals.security_due + paymentSummary.totals.security_paid;
+            const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
             
-            const rentalDue = paymentSummary.totals.rent_due;
+            const rentalDue = paymentSummary.charges.rent.due || 0;
             const totalDue = paymentSummary.totals.balance;
             // Once refunds exist, payment phase is complete - we're now in refund/return phase
             const isFullyPaid = hasAnyRefund ? true : (totalDue <= 0);
@@ -4439,24 +4327,10 @@ export default function OrderDetailsPage() {
                     
                     // Use payment summary for accurate totals
                     if (!paymentSummary) return null;
-                    const totalAmount = paymentSummary.totals.rent_due + paymentSummary.totals.rent_paid;
+                    const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
                     
-                    // ALWAYS calculate security deposit from ACTIVE products - NEVER affected by discount
-                    const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
-                    let securityDeposit = 0;
-                    if (activeProducts.length > 0) {
-                      securityDeposit = activeProducts.reduce((sum: number, product: any) => {
-                        const security = typeof product.security_deposit === 'number'
-                          ? product.security_deposit
-                          : parseFloat(String(product.security_deposit || '0')) || 0;
-                        return sum + security;
-                      }, 0);
-                    } else {
-                      // Fallback to booking.security_deposit
-                      securityDeposit = typeof booking?.security_deposit === 'number'
-                        ? booking.security_deposit
-                        : parseFloat(String(booking?.security_deposit || '0')) || 0;
-                    }
+                    // Use payment summary for security deposit - no need to calculate
+                    const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
                     
                     // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
                     const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {

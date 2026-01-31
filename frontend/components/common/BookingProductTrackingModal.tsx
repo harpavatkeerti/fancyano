@@ -325,38 +325,6 @@ export function BookingProductTrackingModal({ booking, onClose }: BookingProduct
   const allReturned = returnedCount === totalCount && pickedUpCount > 0;
   const partialReturn = returnedCount > 0 && returnedCount < pickedUpCount;
 
-  // Calculate booking status based on tracking
-  function calculateBookingStatus(): string {
-    const today = new Date();
-    const pickupDate = new Date(booking.booked_from);
-    
-    // All products returned = Completed
-    if (allReturned) {
-      return 'completed';
-    }
-    
-    // Some products returned or some picked up = Partially Completed
-    if (returnedCount > 0 || partialPickup) {
-      return 'in_progress'; // We'll show as "Partially Completed" in UI
-    }
-    
-    // All picked up but none returned = In Progress
-    if (allPickedUp && returnedCount === 0) {
-      return 'in_progress';
-    }
-    
-    // Before pickup date, nothing picked up = Confirmed
-    if (today < pickupDate && pickedUpCount === 0) {
-      return 'confirmed';
-    }
-    
-    // After pickup date, nothing picked up = Pending
-    if (today >= pickupDate && pickedUpCount === 0) {
-      return 'pending';
-    }
-    
-    return booking.status;
-  }
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">

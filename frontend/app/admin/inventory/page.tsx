@@ -1170,11 +1170,6 @@ export default function InventoryPage() {
                 <div className="bg-gray-50 p-3 rounded-lg">
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Rent per Day</p>
                   <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.rent}</p>
-                  <p className="text-xs text-blue-600 mt-1">
-                    {(viewingProduct as any).rental_policy === '24_hours' 
-                      ? '⏰ 24-hour rental' 
-                      : '📅 Includes 3 days'}
-                  </p>
                 </div>
               </div>
 
