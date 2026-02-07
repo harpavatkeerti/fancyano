@@ -52,13 +52,24 @@ class InvoiceService {
   }
 
   /**
+   * Get all payment transactions
+   * @returns {Promise<Array>} - All payment transactions
+   */
+  async getAllTransactions() {
+    const result = await pool.query(
+      `SELECT *, transaction_date as created_at FROM payment_transactions ORDER BY transaction_date DESC`
+    );
+    return result.rows;
+  }
+
+  /**
    * Get payment transactions for a booking
    * @param {number} bookingId - Booking ID
    * @returns {Promise<Array>} - Payment transactions
    */
   async getPaymentTransactions(bookingId) {
     const transactionsResult = await pool.query(
-      `SELECT * FROM payment_transactions 
+      `SELECT *, transaction_date as created_at FROM payment_transactions 
        WHERE booking_id = $1 
        ORDER BY transaction_date ASC`,
       [bookingId]

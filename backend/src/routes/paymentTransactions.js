@@ -1,6 +1,18 @@
 const express = require('express');
 const router = express.Router();
 const chargeAccountingService = require('../services/chargeAccountingService');
+const invoiceService = require('../services/invoiceService');
+
+// GET all transactions
+router.get('/', async (req, res) => {
+  try {
+    const transactions = await invoiceService.getAllTransactions();
+    res.json(transactions);
+  } catch (error) {
+    console.error('Error fetching all transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+});
 
 // GET payment summary for a booking
 router.get('/summary/:bookingId', async (req, res) => {
@@ -19,6 +31,18 @@ router.get('/summary/:bookingId', async (req, res) => {
   }
 });
 
+// GET transactions for a booking (reuses invoiceService.getPaymentTransactions)
+router.get('/booking/:bookingId', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const transactions = await invoiceService.getPaymentTransactions(parseInt(bookingId));
+    res.json(transactions);
+  } catch (error) {
+    console.error('Error fetching transactions:', error);
+    res.status(500).json({ error: 'Failed to fetch transactions' });
+  }
+});
+
 // POST apply payment to a booking
 router.post('/', async (req, res) => {
   try {
@@ -26,20 +50,24 @@ router.post('/', async (req, res) => {
       booking_id, 
       amount, 
       payment_method,
+      method,
       recorded_by,
       notes 
     } = req.body;
     
-    if (!booking_id || !amount || amount <= 0 || !payment_method || !recorded_by) {
+    // Accept both 'payment_method' and 'method' for compatibility
+    const resolvedMethod = payment_method || method;
+    
+    if (!booking_id || !amount || amount <= 0 || !resolvedMethod || !recorded_by) {
       return res.status(400).json({ 
-        error: 'Missing required fields: booking_id, amount (> 0), payment_method, recorded_by' 
+        error: 'Missing required fields: booking_id, amount (> 0), payment_method/method, recorded_by' 
       });
     }
     
     const result = await chargeAccountingService.applyPayment(
       booking_id,
       amount,
-      payment_method,
+      resolvedMethod,
       recorded_by,
       notes
     );

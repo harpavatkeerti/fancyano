@@ -188,6 +188,84 @@ class BookingService {
   }
   
   /**
+   * Update booking measurements and special requirements
+   * @param {number} bookingId - Booking ID
+   * @param {Object} data - Update data
+   * @param {Object} data.measurements - Measurements keyed by "{bp_id}_{booked_from}_{booked_to}"
+   * @param {string} data.special_requirements - JSON string of special requirements keyed similarly
+   * @returns {Promise<Object>} Updated booking
+   */
+  async updateBooking(bookingId, data) {
+    const client = await pool.connect();
+
+    try {
+      await client.query('BEGIN');
+
+      // Verify booking exists
+      const bookingResult = await client.query(
+        'SELECT id FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+      if (bookingResult.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+
+      const { measurements, special_requirements } = data;
+
+      if (measurements || special_requirements) {
+        const specialReqs = special_requirements ? JSON.parse(special_requirements) : {};
+
+        // Get valid booking product IDs for this booking
+        const bpResult = await client.query(
+          'SELECT id FROM booking_products WHERE booking_id = $1',
+          [bookingId]
+        );
+        const validBpIds = new Set(bpResult.rows.map(r => r.id));
+
+        // Extract booking_product_id from keys (format: "bpId_bookedFrom_bookedTo")
+        // and update each product's measurements/special_requirements
+        const allKeys = new Set([
+          ...Object.keys(measurements || {}),
+          ...Object.keys(specialReqs)
+        ]);
+
+        for (const key of allKeys) {
+          const bpId = parseInt(key.split('_')[0]);
+          if (isNaN(bpId) || !validBpIds.has(bpId)) continue;
+
+          const productMeasurements = measurements ? measurements[key] : undefined;
+          const productSpecialReqs = specialReqs[key];
+
+          if (productMeasurements !== undefined || productSpecialReqs !== undefined) {
+            await client.query(
+              `UPDATE booking_products
+               SET measurements = COALESCE($1, measurements),
+                   special_requirements = COALESCE($2, special_requirements)
+               WHERE id = $3 AND booking_id = $4`,
+              [
+                productMeasurements ? JSON.stringify(productMeasurements) : null,
+                productSpecialReqs !== undefined ? productSpecialReqs : null,
+                bpId,
+                bookingId
+              ]
+            );
+          }
+        }
+      }
+
+      await client.query('COMMIT');
+
+      // Return updated booking
+      return await this.getBookingById(bookingId);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Update booking status to 'completed' if all products are in terminal states
    * @param {number} bookingId - Booking ID
    * @returns {Promise<Object>} Updated status info
@@ -382,9 +460,9 @@ class BookingService {
           json_build_object(
             'id', bp.id,
             'product_id', p.id,
-            'product_name', p.name,
-            'product_code', p.code,
-            'product_image', p.image,
+            'name', p.name,
+            'code', p.code,
+            'image', p.image,
             'quantity', bp.quantity,
             'booked_from', bp.booked_from,
             'booked_to', bp.booked_to,
@@ -730,6 +808,30 @@ class BookingService {
       return result.rows;
     } catch (error) {
       console.error('Error fetching activity log:', error);
+      throw error;
+    }
+  }
+  /**
+   * Get bookings for a specific product (for availability checking)
+   * Returns only active bookings with non-cancelled/exchanged products
+   */
+  async getBookingsByProductId(productId) {
+    try {
+      const result = await pool.query(
+        `SELECT DISTINCT b.id, b.booking_date, b.booked_from, b.booked_to, b.status,
+                b.customer_name, b.customer_phone,
+                bp.id as booking_product_id, bp.status as product_status
+         FROM bookings b
+         JOIN booking_products bp ON bp.booking_id = b.id
+         WHERE bp.product_id = $1
+           AND bp.status NOT IN ('cancelled', 'exchanged')
+           AND b.status NOT IN ('cancelled')
+         ORDER BY b.booked_from`,
+        [productId]
+      );
+      return result.rows;
+    } catch (error) {
+      console.error('Error fetching bookings by product:', error);
       throw error;
     }
   }

@@ -21,6 +21,18 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET bookings by product ID (for availability checking)
+router.get('/by-product/:productId', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const bookings = await bookingService.getBookingsByProductId(parseInt(productId));
+    res.json(bookings);
+  } catch (error) {
+    console.error('Error fetching bookings by product:', error);
+    res.status(500).json({ error: 'Failed to fetch bookings' });
+  }
+});
+
 // GET booking by ID with financial summary
 router.get('/:id', async (req, res) => {
   try {
@@ -125,6 +137,21 @@ router.post('/', async (req, res) => {
       error: 'Failed to create booking',
       details: error.message
     });
+  }
+});
+
+// PUT update booking (measurements, special requirements)
+router.put('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await bookingService.updateBooking(parseInt(id), req.body);
+    res.json(result);
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error updating booking:', error);
+    res.status(500).json({ error: 'Failed to update booking' });
   }
 });
 

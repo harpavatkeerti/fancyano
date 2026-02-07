@@ -4,6 +4,25 @@ const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
 
+// GET cancellation preview for a booking (all cancellable products with penalties & financials)
+router.get('/preview/:bookingId', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    
+    const preview = await productLifecycleService.calculateCancellationPreview(
+      parseInt(bookingId)
+    );
+    
+    res.json(preview);
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error getting cancellation preview:', error);
+    res.status(500).json({ error: 'Failed to get cancellation preview', details: error.message });
+  }
+});
+
 // GET cancellation eligibility/info for a booking product
 router.get('/info/:booking_product_id', async (req, res) => {
   try {

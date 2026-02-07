@@ -2,6 +2,10 @@ import { ApiClient } from './client';
 
 export function createBookingCancellationApi(api: ApiClient) {
   return {
+    // Get cancellation preview (all cancellable products with penalties & financials)
+    preview: (bookingId: number) =>
+      api.get(`/booking-cancellation/preview/${bookingId}`),
+
     // Get cancellation info (eligibility + max penalty)
     getInfo: (bookingProductId: number) => 
       api.get(`/booking-cancellation/info/${bookingProductId}`),

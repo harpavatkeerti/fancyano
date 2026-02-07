@@ -901,6 +901,175 @@ describe('ProductLifecycleService', () => {
     });
   });
 
+  describe('calculateCancellationPreview', () => {
+    // Test: Returns complete cancellation preview with all required fields for a single product
+    test('should return cancellation preview with all required fields', async () => {
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.booking_id).toBe(testBookingId);
+      expect(result.booking_date).toBeDefined();
+      expect(typeof result.days_from_booking).toBe('number');
+      expect(typeof result.penalty_percentage).toBe('number');
+      expect(result.policy).toBeDefined();
+
+      // Products
+      expect(result.all_products).toHaveLength(1);
+      expect(result.all_products[0]).toHaveProperty('product_id', testBookingProductId);
+      expect(result.all_products[0]).toHaveProperty('name');
+      expect(result.all_products[0]).toHaveProperty('code');
+      expect(result.all_products[0]).toHaveProperty('rent', 2500);
+      expect(result.all_products[0]).toHaveProperty('security_deposit', 1000);
+
+      expect(result.products_to_cancel).toHaveLength(1);
+      expect(result.products_to_cancel[0]).toHaveProperty('penalty_percentage');
+      expect(result.products_to_cancel[0]).toHaveProperty('penalty_amount');
+      expect(typeof result.products_to_cancel[0].penalty_amount).toBe('number');
+
+      // Financial totals
+      expect(result.total_cancelled_rent_required).toBe(2500);
+      expect(result.total_cancelled_security_required).toBe(1000);
+      expect(typeof result.total_penalty_amount).toBe('number');
+      expect(typeof result.base_refund).toBe('number');
+      expect(typeof result.total_paid).toBe('number');
+      expect(typeof result.total_refunded).toBe('number');
+      expect(typeof result.net_paid).toBe('number');
+      expect(typeof result.paid_rent).toBe('number');
+      expect(typeof result.paid_security_deposit).toBe('number');
+
+      // Payment action
+      expect(['none', 'refund', 'collect']).toContain(result.payment_action);
+      expect(typeof result.payment_difference).toBe('number');
+      expect(result.is_partial).toBe(false);
+    });
+
+    // Test: Calculates penalty based on policy (10% of effective rent for 0-5 days)
+    test('should calculate penalty amount from policy', async () => {
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      // Policy is 10% for 0-5 days, effective_rent = 2500
+      expect(result.products_to_cancel[0].penalty_amount).toBe(250);
+      expect(result.products_to_cancel[0].penalty_percentage).toBe(10);
+      expect(result.total_penalty_amount).toBe(250);
+    });
+
+    // Test: Excludes cancelled products from preview
+    test('should exclude cancelled products', async () => {
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE id = $2',
+        ['cancelled', testBookingProductId]
+      );
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.all_products).toHaveLength(0);
+      expect(result.products_to_cancel).toHaveLength(0);
+      expect(result.total_cancelled_rent_required).toBe(0);
+      expect(result.total_cancelled_security_required).toBe(0);
+      expect(result.total_penalty_amount).toBe(0);
+    });
+
+    // Test: Excludes exchanged products from preview
+    test('should exclude exchanged products', async () => {
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE id = $2',
+        ['exchanged', testBookingProductId]
+      );
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.all_products).toHaveLength(0);
+      expect(result.products_to_cancel).toHaveLength(0);
+    });
+
+    // Test: Excludes in_progress products from preview
+    test('should exclude in_progress products', async () => {
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE id = $2',
+        ['in_progress', testBookingProductId]
+      );
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.all_products).toHaveLength(0);
+      expect(result.products_to_cancel).toHaveLength(0);
+    });
+
+    // Test: Handles multiple cancellable products with summed totals
+    test('should handle multiple cancellable products', async () => {
+      // Add a second confirmed product
+      const bp2 = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 600, 1200, 600)
+         RETURNING id`,
+        [testBookingId, testProductId2]
+      );
+
+      // Add charges for second product
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES 
+           ($1, 'rent', 600, 0),
+           ($1, 'security', 1200, 0)`,
+        [bp2.rows[0].id]
+      );
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.all_products).toHaveLength(2);
+      expect(result.products_to_cancel).toHaveLength(2);
+      expect(result.total_cancelled_rent_required).toBe(3100); // 2500 + 600
+      expect(result.total_cancelled_security_required).toBe(2200); // 1000 + 1200
+      // Total penalty = 250 (10% of 2500) + 60 (10% of 600) = 310
+      expect(result.total_penalty_amount).toBe(310);
+    });
+
+    // Test: Correctly computes payment_action as 'refund' when net_paid > penalty
+    test('should set payment_action to refund when net_paid exceeds penalty', async () => {
+      // Simulate a payment via direct insert
+      await pool.query(
+        `INSERT INTO payment_transactions (booking_id, amount, type, method, notes, recorded_by)
+         VALUES ($1, 3000, 'payment', 'Cash', 'Test payment', 'test-user')`,
+        [testBookingId]
+      );
+      // Also update paid_amount in product_charges so getPaymentSummary reflects it
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 2500 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [testBookingProductId]
+      );
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 500 WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.total_paid).toBe(3000);
+      expect(result.net_paid).toBe(3000);
+      // penalty is 250 (10% of 2500), net_paid 3000 > 250 => refund
+      expect(result.payment_action).toBe('refund');
+      expect(result.base_refund).toBe(2750); // 3000 - 250
+      expect(result.payment_difference).toBe(2750);
+    });
+
+    // Test: payment_action is 'none' when no payments have been made
+    test('should set payment_action to none when no payments made', async () => {
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      // No payments, but penalty exists => collect
+      // Actually: net_paid = 0, penalty = 250. baseRefund = max(0, 0 - 250) = 0.
+      // Then totalPenaltyAmount (250) > netPaid (0) => collect
+      expect(result.payment_action).toBe('collect');
+      expect(result.payment_difference).toBe(250); // penalty - netPaid
+    });
+
+    // Test: Throws error for non-existent booking
+    test('should throw error for non-existent booking', async () => {
+      await expect(
+        productLifecycleService.calculateCancellationPreview(999999)
+      ).rejects.toThrow('Booking not found');
+    });
+  });
+
   describe('updateBookingDateRange', () => {
     // Test: Updates booking date range based on active products only
     test('should update booking date range from active products', async () => {

@@ -707,6 +707,146 @@ class ProductLifecycleService {
   }
 
   /**
+   * Calculate complete cancellation preview for a booking
+   * Uses existing validateCancellationEligibility + chargeAccountingService.getPaymentSummary
+   * @param {number} bookingId - Booking ID
+   * @returns {Promise<Object>} - Full preview with all products, penalties, and financial summary
+   */
+  async calculateCancellationPreview(bookingId) {
+    try {
+      // 1. Get booking info
+      const bookingResult = await pool.query(
+        'SELECT id, booking_date, created_at FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+      if (bookingResult.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+      const booking = bookingResult.rows[0];
+
+      // 2. Get all booking products with product details
+      const bpResult = await pool.query(
+        `SELECT bp.id, bp.product_id, bp.rent, bp.effective_rent, bp.security_deposit, bp.status, bp.created_at,
+                p.name, p.code
+         FROM booking_products bp
+         JOIN products p ON bp.product_id = p.id
+         WHERE bp.booking_id = $1
+         ORDER BY bp.id`,
+        [bookingId]
+      );
+
+      // 3. Filter to cancellable products (not already cancelled/exchanged/completed/in_progress)
+      const cancellableProducts = bpResult.rows.filter(p =>
+        !['cancelled', 'exchanged', 'completed', 'in_progress'].includes(p.status)
+      );
+
+      // 4. Build all_products and products_to_cancel with penalty info
+      const allProducts = [];
+      const productsToCancel = [];
+
+      for (const bp of cancellableProducts) {
+        const rent = parseFloat(bp.rent) || 0;
+        const securityDeposit = parseFloat(bp.security_deposit) || 0;
+        const effectiveRent = parseFloat(bp.effective_rent) || rent;
+
+        // Get penalty using existing policyService
+        const penaltyResult = await policyService.calculateCancellationPenalty(
+          effectiveRent,
+          bp.created_at
+        );
+
+        const productData = {
+          product_id: bp.id, // booking_product ID (used by frontend for selection)
+          code: bp.code,
+          name: bp.name,
+          rent: rent,
+          security_deposit: securityDeposit
+        };
+
+        allProducts.push(productData);
+
+        productsToCancel.push({
+          ...productData,
+          penalty_percentage: penaltyResult.policy?.value || 0,
+          penalty_amount: penaltyResult.amount || 0
+        });
+      }
+
+      // 5. Get payment summary using existing chargeAccountingService
+      const paymentSummary = await chargeAccountingService.getPaymentSummary(bookingId);
+
+      // 6. Get total refunded
+      const refundResult = await pool.query(
+        `SELECT COALESCE(SUM(amount), 0) as total_refunded
+         FROM payment_transactions
+         WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      const totalRefunded = parseFloat(refundResult.rows[0].total_refunded) || 0;
+
+      // 7. Calculate financial totals
+      const paidRent = paymentSummary.charges.rent.paid;
+      const paidSecurity = paymentSummary.charges.security.paid;
+      const totalPaid = paymentSummary.totals.total_paid;
+      const netPaid = totalPaid - totalRefunded;
+
+      const totalCancelledRentRequired = allProducts.reduce((sum, p) => sum + p.rent, 0);
+      const totalCancelledSecurityRequired = allProducts.reduce((sum, p) => sum + p.security_deposit, 0);
+      const totalPenaltyAmount = productsToCancel.reduce((sum, p) => sum + p.penalty_amount, 0);
+
+      // base_refund = what gets refunded if all cancellable products are cancelled
+      // (paid amounts minus penalties, capped at 0)
+      const baseRefund = Math.max(0, netPaid - totalPenaltyAmount);
+
+      // Days from booking
+      const bookingDate = new Date(booking.booking_date || booking.created_at);
+      const daysFromBooking = Math.floor((Date.now() - bookingDate.getTime()) / (1000 * 60 * 60 * 24));
+
+      // Common penalty percentage (from first product, for display)
+      const penaltyPercentage = productsToCancel.length > 0 ? productsToCancel[0].penalty_percentage : 0;
+
+      // Payment action
+      let paymentAction = 'none';
+      let paymentDifference = 0;
+      if (baseRefund > 0) {
+        paymentAction = 'refund';
+        paymentDifference = baseRefund;
+      } else if (totalPenaltyAmount > netPaid) {
+        paymentAction = 'collect';
+        paymentDifference = totalPenaltyAmount - netPaid;
+      }
+
+      return {
+        booking_id: bookingId,
+        booking_date: booking.booking_date || booking.created_at,
+        days_from_booking: daysFromBooking,
+        penalty_percentage: penaltyPercentage,
+        policy: productsToCancel.length > 0 ? { value: penaltyPercentage } : null,
+        all_products: allProducts,
+        products_to_cancel: productsToCancel,
+        total_cancelled_rent_required: totalCancelledRentRequired,
+        total_cancelled_security_required: totalCancelledSecurityRequired,
+        total_cancelled_rent: paidRent,
+        total_cancelled_security: paidSecurity,
+        total_penalty_amount: totalPenaltyAmount,
+        remaining_rent_required: 0, // 0 for full cancellation; frontend calculates for partial
+        base_refund: baseRefund,
+        total_paid: totalPaid,
+        total_refunded: totalRefunded,
+        net_paid: netPaid,
+        paid_rent: paidRent,
+        paid_security_deposit: paidSecurity,
+        payment_action: paymentAction,
+        payment_difference: paymentDifference,
+        is_partial: false // Frontend determines based on user selection
+      };
+    } catch (error) {
+      console.error('Error calculating cancellation preview:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Update booking date range based on active products
    * Calculates min(booked_from) and max(booked_to) from non-cancelled/exchanged products
    * @param {number} bookingId - Booking ID
