@@ -479,18 +479,11 @@ export default function CustomerOrderDetailsPage() {
           const isFullyCancelled = products.length > 0 && activeProducts.length === 0;
           
           if (isFullyCancelled) {
-            // Calculate financial summary
-            const totalPaid = transactions
-              .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
-              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-            
-            const penalties = transactions
-              .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
-              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-            
-            const refunded = transactions
-              .filter((t: any) => t.type === 'refund')
-              .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+            // Use backend payment summary for cancelled booking financial data
+            const totalDue = paymentSummary?.totals.total_due || 0;
+            const totalPaid = paymentSummary?.totals.total_paid || 0;
+            const balance = paymentSummary?.totals.balance || 0;
+            const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
             
             return (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
@@ -505,30 +498,24 @@ export default function CustomerOrderDetailsPage() {
                 <div className="bg-white rounded-lg p-3 space-y-2">
                   <h4 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h4>
                   <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                    <span className="text-xs text-gray-600">Total Rent Paid by You:</span>
+                    <span className="text-xs text-gray-600">Total Due:</span>
+                    <span className="text-sm font-bold text-gray-900">₹{Math.floor(totalDue).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                    <span className="text-xs text-gray-600">Total Paid by You:</span>
                     <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
                   </div>
                   {penalties > 0 && (
                     <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                      <span className="text-xs text-gray-600">Charges + Penalties:</span>
-                      <span className="text-sm font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                      <span className="text-xs text-gray-600">Penalties Applied:</span>
+                      <span className="text-sm font-bold text-red-600">₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
                     </div>
                   )}
-                  <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                    <span className="text-xs text-gray-600">Total Refunded:</span>
-                    <span className="text-sm font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
-                  </div>
                   <div className="flex justify-between items-center py-2 bg-gray-50 rounded px-2 mt-2">
-                    <span className="text-xs font-semibold text-gray-800">Net Amount (You Paid):</span>
-                    <span className="text-base font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="bg-blue-50 border-l-4 border-blue-400 p-2 mt-2">
-                    <p className="text-xs text-blue-800">
-                      You paid ₹{Math.floor(totalPaid).toLocaleString('en-IN')} and received ₹{Math.floor(refunded).toLocaleString('en-IN')} back (after deducting penalties ₹{Math.floor(penalties).toLocaleString('en-IN')}). 
-                      Net: ₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}
-                      {Math.floor(totalPaid - refunded) === 0 && ' (Fully settled)'}
-                      {Math.floor(totalPaid - refunded) > 0 && ' (kept for penalties & charges)'}.
-                    </p>
+                    <span className="text-xs font-semibold text-gray-800">Balance:</span>
+                    <span className={`text-base font-bold ${balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {balance <= 0 ? 'Fully Settled' : `₹${Math.floor(balance).toLocaleString('en-IN')}`}
+                    </span>
                   </div>
                 </div>
                 

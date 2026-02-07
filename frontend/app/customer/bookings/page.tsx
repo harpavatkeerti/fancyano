@@ -429,7 +429,7 @@ export default function CustomerBookings() {
                               </div>
                             )}
                             <span className="text-sm font-medium text-gray-900">
-                              {product.name || product.product_name}
+                              {product.name}
                             </span>
                           </div>
                         ))}

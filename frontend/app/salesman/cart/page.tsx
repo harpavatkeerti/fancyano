@@ -187,12 +187,12 @@ export default function CartPage() {
     return transportationRequired === 'yes' ? transportationCharge : 0;
   }
 
+  // Get security deposit from backend preview
   function calculateSecurityDeposit() {
-    if (!cartItems || cartItems.length === 0) return 0;
-    return cartItems.reduce((sum, item) => {
-      const securityDeposit = item?.product?.security_deposit || 0;
-      return sum + (typeof securityDeposit === 'number' ? securityDeposit : parseFloat(securityDeposit) || 0);
-    }, 0);
+    if (bookingPreview?.products) {
+      return bookingPreview.products.reduce((sum: number, p: any) => sum + (p.security_deposit || 0), 0);
+    }
+    return 0;
   }
 
   // Get total from backend preview

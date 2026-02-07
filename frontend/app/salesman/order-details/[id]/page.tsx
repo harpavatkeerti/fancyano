@@ -66,193 +66,6 @@ export default function OrderDetailsPage() {
   });
 
   // Helper function to calculate paid amount excluding exchange penalties
-  function calculatePaidAmountExcludingExchangePenalties(transactions: any[]): number {
-    if (!transactions || transactions.length === 0) {
-      console.log('⚠️ calculatePaidAmountExcludingExchangePenalties: No transactions provided');
-      return 0;
-    }
-    
-    console.log('🔍 calculatePaidAmountExcludingExchangePenalties called with', transactions.length, 'transactions');
-    console.log('🔍 All transactions:', transactions.map((t: any) => ({
-      id: t.id,
-      amount: t.amount,
-      type: t.type,
-      method: t.method,
-      notes: t.notes?.substring(0, 80) || 'no notes'
-    })));
-    
-    // Show all refund transactions explicitly
-    const allRefunds = transactions.filter((t: any) => t.type === 'refund');
-    if (allRefunds.length > 0) {
-      console.log('🔴 REFUND TRANSACTIONS DETECTED:', allRefunds.length);
-      allRefunds.forEach((r: any) => {
-        console.log('  - Refund ID:', r.id, 'Amount:', r.amount, 'Method:', r.method, 'Notes:', r.notes?.substring(0, 60));
-      });
-    }
-    
-    // Check specifically for exchange_upgrade transactions
-    const exchangeUpgradeTransactions = transactions.filter((t: any) => {
-      const method = String(t.method || '').toLowerCase().trim();
-      const notes = String(t.notes || '').toLowerCase().trim();
-      return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
-    });
-    console.log('🔍 Found exchange_upgrade/rent difference transactions:', exchangeUpgradeTransactions.length, exchangeUpgradeTransactions.map((t: any) => ({
-      id: t.id,
-      amount: t.amount,
-      method: t.method,
-      notes: t.notes?.substring(0, 60)
-    })));
-    
-    const excluded: any[] = [];
-    const included: any[] = [];
-    
-    const result = transactions.reduce((sum: number, t: any) => {
-      if (!t) return sum;
-      
-      console.log('🔍 Processing transaction:', t.id, 'method:', t.method, 'type:', t.type, 'amount:', t.amount, 'notes:', t.notes?.substring(0, 50));
-      
-      // Exclude date_change_charge type
-      if (t.type === 'date_change_charge') {
-        excluded.push({ ...t, reason: 'date_change_charge' });
-        return sum;
-      }
-      
-      const method = String(t.method || '').toLowerCase().trim();
-      const notes = String(t.notes || '').toLowerCase().trim();
-      const type = String(t.type || '').toLowerCase().trim();
-      
-      // Exclude only exchange_downgrade refunds (these shouldn't exist)
-      // Include other refunds as they may be legitimate corrections
-      if (t.type === 'refund' && method === 'exchange_downgrade') {
-        excluded.push({ ...t, reason: 'exchange_downgrade_refund_should_not_exist' });
-        console.log('❌ EXCLUDING exchange_downgrade REFUND:', t.id, 'amount:', t.amount);
-        return sum; // Don't subtract this refund
-      }
-      
-      if (t.type === 'refund') {
-        console.log('✅ Including REFUND transaction:', t.id, 'method:', method, 'amount:', t.amount);
-      }
-      
-      // Exclude exchange_penalty and downgrade_penalty transactions (collected separately at exchange time)
-      // These should NEVER be counted in rent or security calculations
-      const txnType = String(t.transaction_type || '').toLowerCase().trim();
-      if (method === 'exchange_penalty' || method === 'exchange' || 
-          txnType === 'exchange_penalty' || txnType === 'downgrade_penalty') {
-        excluded.push({ ...t, reason: 'exchange_or_downgrade_penalty' });
-        console.log('❌ EXCLUDING exchange/downgrade penalty:', t.id, 'transaction_type:', txnType, 'amount:', t.amount);
-        return sum;
-      }
-      
-      // IMPORTANT: Include exchange_upgrade payments - these are rent difference payments that count toward rent
-      const isRentDifferencePayment = (
-        method === 'exchange_upgrade' ||
-        notes.includes('additional rent') ||
-        notes.includes('rent difference') ||
-        (notes.includes('additional rent:') && !notes.includes('penalty'))
-      );
-      
-      if (isRentDifferencePayment) {
-        // This is a rent payment, include it
-        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-        included.push({ ...t, amount, reason: 'exchange_upgrade_rent_payment' });
-        console.log('✅ INCLUDING RENT DIFFERENCE payment:', {
-          id: t.id,
-          method: method,
-          amount: amount,
-          type: t.type,
-          notes: notes.substring(0, 80)
-        });
-        return sum + amount; // Always add (it's a payment, not a refund since we excluded refunds above)
-      }
-      
-      // AGGRESSIVE EXCLUSION: Check notes for ANY mention of exchange penalty/charge
-      // Only exception: "Additional Rent" or "Rent Difference" (these are rent payments, not penalties)
-      const isExchangePenalty = (
-        notes.includes('exchange penalty') || 
-        notes.includes('exchange charge') ||
-        (notes.includes('penalty') && notes.includes('exchange')) ||
-        (notes.includes('exchange:') && notes.includes('penalty')) ||
-        notes.startsWith('exchange penalty:') ||
-        (notes.includes('penalty') && notes.includes('%') && notes.includes('charge'))
-      );
-      
-      const isAdditionalRent = notes.includes('additional rent') || 
-                                notes.includes('rent difference');
-      
-      // If it's clearly an exchange penalty (not rent difference), exclude it
-      if (isExchangePenalty && !isAdditionalRent) {
-        excluded.push({ ...t, reason: 'notes_contain_exchange_penalty' });
-        console.log('❌ EXCLUDING by notes pattern:', t.id, 'notes:', notes.substring(0, 50));
-        return sum;
-      }
-      
-      // AGGRESSIVE: Exclude if notes contain "penalty" and "%" and "charge" (exchange penalty pattern)
-      if (notes.includes('penalty') && notes.includes('%') && notes.includes('charge') && !isAdditionalRent) {
-        excluded.push({ ...t, reason: 'pattern_matches_exchange_penalty' });
-        console.log('❌ EXCLUDING by penalty pattern:', t.id);
-        return sum;
-      }
-      
-      // AGGRESSIVE: If method is null/empty but notes mention exchange penalty, exclude it
-      if ((!method || method === 'null' || method === '') && 
-          (notes.includes('exchange penalty') || notes.includes('exchange charge')) &&
-          !isAdditionalRent) {
-        excluded.push({ ...t, reason: 'null_method_but_exchange_penalty_in_notes' });
-        console.log('❌ EXCLUDING null method with penalty notes:', t.id);
-        return sum;
-      }
-      
-      // Exclude cancellation_penalty transactions - these are penalties kept by shop, not payments for rent/security
-      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-      console.log('🔍 Checking transaction_type for transaction', t.id, ':', {
-        raw: t.transaction_type,
-        normalized: transactionType,
-        isCancellationPenalty: transactionType === 'cancellation_penalty'
-      });
-      
-      if (transactionType === 'cancellation_penalty') {
-        excluded.push({ ...t, reason: 'cancellation_penalty_transaction' });
-        console.log('❌ EXCLUDING cancellation_penalty transaction:', t.id, 'amount:', t.amount);
-        return sum;
-      }
-      
-      // Include all other payment transactions
-      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-      included.push({ ...t, amount, reason: 'regular_payment' });
-      console.log('✅ INCLUDING regular payment:', t.id, 'method:', method, 'amount:', amount);
-      
-      // CRITICAL: If this is a refund, SUBTRACT it from the sum
-      // If it's a payment, ADD it to the sum
-      if (t.type === 'refund') {
-        return sum - amount; // Subtract refunds
-      } else {
-        return sum + amount; // Add payments
-      } // Only payments reach here (refunds already excluded above)
-    }, 0);
-    
-    // Always log for debugging
-    console.log('🚫 EXCLUDED from payment calculations:', excluded.length, 'transactions');
-    if (excluded.length > 0) {
-      console.log('🚫 Excluded details:', excluded.map((t: any) => ({
-        id: t.id,
-        amount: t.amount,
-        type: t.type,
-        method: t.method,
-        reason: t.reason,
-        notes: t.notes?.substring(0, 60)
-      })));
-      const excludedTotal = excluded.reduce((sum: number, t: any) => {
-        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-        return sum + amount;
-      }, 0);
-      console.log('💰 Total EXCLUDED amount:', excludedTotal);
-    }
-    
-    console.log('✅ INCLUDED in payment calculations:', included.length, 'transactions');
-    console.log('💰 Total INCLUDED amount (result):', result);
-    
-    return result;
-  }
   
   // Transportation charges
   const [transportationCharges, setTransportationCharges] = useState('');
@@ -2141,18 +1954,11 @@ export default function OrderDetailsPage() {
               const isFullyCancelled = booking?.status === 'cancelled';
               
               if (isFullyCancelled) {
-                // Calculate financial summary
-                const totalPaid = transactions
-                  .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
-                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-                
-                const penalties = transactions
-                  .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
-                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-                
-                const refunded = transactions
-                  .filter((t: any) => t.type === 'refund')
-                  .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+                // Use backend payment summary for financial data
+                const totalDue = paymentSummary?.totals.total_due || 0;
+                const totalPaid = paymentSummary?.totals.total_paid || 0;
+                const balance = paymentSummary?.totals.balance || 0;
+                const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
                 
                 // Get individual cancellation details from cancellation_refund transactions
                 const cancellationTransactions = transactions.filter((t: any) => 
@@ -2198,9 +2004,15 @@ export default function OrderDetailsPage() {
                     <div className="bg-white rounded-lg p-3 space-y-3">
                       <h5 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h5>
                       
+                      {/* Total Due */}
+                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
+                        <span className="text-xs text-gray-600">Total Due:</span>
+                        <span className="text-sm font-bold text-gray-900">₹{Math.floor(totalDue).toLocaleString('en-IN')}</span>
+                      </div>
+                      
                       {/* Total Paid */}
                       <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                        <span className="text-xs text-gray-600">Total Rent Paid by Customer:</span>
+                        <span className="text-xs text-gray-600">Total Paid by Customer:</span>
                         <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
                       </div>
                       
@@ -2243,28 +2055,17 @@ export default function OrderDetailsPage() {
                       {/* Totals */}
                       {penalties > 0 && (
                         <div className="flex justify-between items-center py-1.5 border-t border-gray-200">
-                          <span className="text-xs text-gray-600">Total Charges + Penalties:</span>
-                          <span className="text-sm font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                          <span className="text-xs text-gray-600">Penalties Applied:</span>
+                          <span className="text-sm font-bold text-red-600">₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
                         </div>
                       )}
-                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                        <span className="text-xs text-gray-600">Total Refunded to Customer:</span>
-                        <span className="text-sm font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
-                      </div>
                       
-                      {/* Net Amount */}
+                      {/* Balance */}
                       <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-2 border border-gray-300">
-                        <span className="text-xs font-bold text-gray-800">Net Amount Left (Customer):</span>
-                        <span className="text-base font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
-                      </div>
-                      
-                      {/* Explanation */}
-                      <div className="bg-blue-50 border-l-4 border-blue-400 p-2 mt-2">
-                        <p className="text-xs text-blue-800">
-                          <strong>Summary:</strong> Customer Paid (₹{Math.floor(totalPaid).toLocaleString('en-IN')}) - Penalties ₹{Math.floor(penalties).toLocaleString('en-IN')} - Refunded ₹{Math.floor(refunded).toLocaleString('en-IN')}.
-                          {Math.floor(totalPaid - refunded) === 0 && ' Net = ₹0 (Fully settled).'}
-                          {Math.floor(totalPaid - refunded) > 0 && ` Net = ₹${Math.floor(totalPaid - refunded).toLocaleString('en-IN')} (covers penalties & remaining product charges).`}
-                        </p>
+                        <span className="text-xs font-bold text-gray-800">Balance:</span>
+                        <span className={`text-base font-bold ${balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                          {balance <= 0 ? 'Fully Settled' : `₹${Math.floor(balance).toLocaleString('en-IN')}`}
+                        </span>
                       </div>
                     </div>
                     
@@ -2278,398 +2079,119 @@ export default function OrderDetailsPage() {
               return null;
             })()}
             
-            {/* Detailed Payment Breakdown - Show before refunds start and if not fully cancelled */}
-            {!hasAnyRefund && booking?.status !== 'cancelled' && (() => {
-              if (!paymentSummary) return null;
-              
-              // Use payment summary for all calculations
-              const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-              const totalAmountNum = totalRent;
-              // Use payment summary for security deposit - no need to calculate
-              const securityDepositNum = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
-              
-              // Use payment summary for paid amounts and dues
-              const paidAmountNum = paymentSummary.totals.total_paid;
-              const rentDue = paymentSummary.charges.rent.due || 0;
-              
-              // Check for rent difference payments specifically for logging
-              const rentDiffPayments = transactions.filter((t: any) => {
-                const method = (t.method || '').toLowerCase();
-                const notes = (t.notes || '').toLowerCase();
-                return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
-              });
-              
-              const rentDiffTotal = rentDiffPayments.reduce((sum: number, t: any) => {
-                return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
-              }, 0);
-              
-              // Check for exchange penalty (should be excluded)
-              const exchangePenaltyTx = transactions.filter((t: any) => {
-                const method = (t.method || '').toLowerCase();
-                return method === 'exchange_penalty' || method === 'exchange';
-              });
-              
-              const exchangePenaltyTotal = exchangePenaltyTx.reduce((sum: number, t: any) => {
-                return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
-              }, 0);
-              
-              // Calculate total penalties (exchange_penalty + downgrade_penalty + cancellation_penalty)
-              const totalPenalties = transactions.reduce((sum: number, t: any) => {
-                const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
-                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                  return sum + amount;
-                }
-                return sum;
-              }, 0);
+            {/* Detailed Payment Breakdown - uses backend payment summary */}
+            {!hasAnyRefund && booking?.status !== 'cancelled' && paymentSummary && (
+              <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {/* Rent Section */}
+                  <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
+                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🏠 Rental Amount</p>
+                    <div className="space-y-2">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-gray-500 mb-0.5">Due</span>
+                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due + paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
+                      </div>
+                      <div className="flex flex-col pt-1 border-t border-gray-200">
+                        <span className="text-xs text-gray-500 mb-0.5">Paid</span>
+                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                  </div>
 
-              // Calculate penalty breakdown
-              const exchangePenalties = transactions.reduce((sum: number, t: any) => {
-                const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                if (txnType === 'exchange_penalty') {
-                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                  return sum + amount;
-                }
-                return sum;
-              }, 0);
+                  {/* Security Section */}
+                  <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
+                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🔒 Security Deposit</p>
+                    <div className="space-y-2">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-gray-500 mb-0.5">Due</span>
+                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due + paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
+                      </div>
+                      <div className="flex flex-col pt-1 border-t border-gray-200">
+                        <span className="text-xs text-gray-500 mb-0.5">Paid</span>
+                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                  </div>
 
-              const downgradePenalties = transactions.reduce((sum: number, t: any) => {
-                const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                if (txnType === 'downgrade_penalty') {
-                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                  return sum + amount;
-                }
-                return sum;
-              }, 0);
+                  {/* Penalties Section - Show if penalties exist */}
+                  {(paymentSummary.charges.penalties.due > 0 || paymentSummary.charges.fees.due > 0) && (
+                    <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
+                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties & Fees</p>
+                      <div className="space-y-2">
+                        {paymentSummary.charges.penalties.due > 0 && (
+                          <div className="flex flex-col">
+                            <span className="text-xs text-gray-500 mb-0.5">Penalties</span>
+                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                        {paymentSummary.charges.fees.due > 0 && (
+                          <div className="flex flex-col pt-1 border-t border-gray-200">
+                            <span className="text-xs text-gray-500 mb-0.5">Fees</span>
+                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.fees.due).toLocaleString('en-IN')}</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-              const cancellationPenalties = transactions.reduce((sum: number, t: any) => {
-                const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                if (txnType === 'cancellation_penalty') {
-                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                  return sum + amount;
-                }
-                return sum;
-              }, 0);
-              
-              console.log('========================================');
-              console.log('💰 PAYMENT BREAKDOWN CALCULATION');
-              console.log('========================================');
-              console.log('Total Rent (after exchange): ₹' + totalAmountNum.toLocaleString('en-IN'));
-              console.log('Total Paid Amount: ₹' + paidAmountNum.toLocaleString('en-IN'));
-              console.log('  - Including rent difference payment: ₹' + rentDiffTotal.toLocaleString('en-IN'));
-              console.log('  - Excluding exchange penalty: ₹' + exchangePenaltyTotal.toLocaleString('en-IN'));
-              console.log('Total Penalties (all types): ₹' + totalPenalties.toLocaleString('en-IN'));
-              console.log('Rent Due: ₹' + Math.max(0, rentDue).toLocaleString('en-IN'));
-              console.log('========================================');
-              
-              console.log('💰 Final paidAmountNum (penalties already excluded from transactions):', paidAmountNum);
-              console.log('💰 Total Rent:', totalAmountNum);
-              console.log('💰 Security Deposit:', securityDepositNum);
-              console.log('💰 Total Penalties:', totalPenalties);
-              
-              // NOTE: paidAmountNum already has cancellation penalties excluded by calculatePaidAmountExcludingExchangePenalties
-              // BUT we need to subtract ALL penalties (exchange + downgrade) from available amount
-              // because penalties are non-refundable charges that reduce available funds
-              const availableAmount = paidAmountNum - totalPenalties;
-              console.log('💰 Amount AVAILABLE for rent/security (after penalties):', availableAmount);
-              console.log('💰 Calculation: paidAmountNum - totalPenalties =', paidAmountNum, '-', totalPenalties, '=', availableAmount);
-              
-              // Security paid = min(security_deposit, max(0, available_amount - total_rent))
-              // This ensures security is only counted AFTER rent is fully paid
-              const securityPaidCalc = Math.max(0, Math.min(securityDepositNum, Math.max(0, availableAmount - totalAmountNum)));
-              console.log('💰 Security Paid calculation:', securityPaidCalc);
-              console.log('💰 Formula: min(security, max(0, available - rent)) = min(', securityDepositNum, ', max(0,', availableAmount, '-', totalAmountNum, ')) =', securityPaidCalc);
-              
-              // Check if refunds exist
-              const refundTransactions = transactions.filter((t: any) => 
-                t.type === 'refund' && 
-                !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-              );
-              const hasRefunds = refundTransactions.length > 0;
-              
-              // Calculate total required for display
-              // CRITICAL: Total Required = Rent + Security + Penalties
-              const totalRequired = totalAmountNum + securityDepositNum + totalPenalties;
-              
-              // Balance Due calculation
-              // CRITICAL: Balance Due = Total Required - Net Amount Paid
-              // This automatically accounts for rent, security, and penalties
-              // Refunds are already factored into paidAmountNum, so no special handling needed
-              const amountDue = Math.max(0, totalRequired - paidAmountNum);
-              
-              console.log('💰 Balance Due calculation:');
-              console.log('  Has Refunds:', hasRefunds);
-              console.log('  Total Required (Rent + Security + Penalties): ₹' + totalRequired.toLocaleString('en-IN'));
-              console.log('  Total Paid: ₹' + paidAmountNum.toLocaleString('en-IN'));
-              console.log('  Balance Due: ₹' + amountDue.toLocaleString('en-IN'));
-              
-              return (
-                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {/* Rent Section */}
+                  {/* Transport Section - Show if transport exists */}
+                  {paymentSummary.charges.transport.due > 0 && (
                     <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🏠 Rental Amount</p>
+                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🚚 Transport</p>
                       <div className="space-y-2">
                         <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Total Rent</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(totalAmountNum).toLocaleString('en-IN')}</span>
+                          <span className="text-xs text-gray-500 mb-0.5">Due</span>
+                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.due).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Rent Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(Math.min(paidAmountNum, totalAmountNum)).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">Rent Due</span>
-                          <span className={`font-bold text-sm break-words ${paidAmountNum >= totalAmountNum ? 'text-green-600' : 'text-red-600'}`}>
-                            {paidAmountNum >= totalAmountNum ? 'Fully Paid' : `₹${Math.floor(Math.max(0, totalAmountNum - paidAmountNum)).toLocaleString('en-IN')}`}
-                          </span>
+                          <span className="text-xs text-gray-500 mb-0.5">Paid</span>
+                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.paid).toLocaleString('en-IN')}</span>
                         </div>
                       </div>
                     </div>
+                  )}
 
-                    {/* Security Section */}
-                    <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🔒 Security Deposit</p>
-                      <div className="space-y-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Total Security</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(securityDepositNum).toLocaleString('en-IN')}</span>
-                        </div>
-                        {(() => {
-                          // Check if there are any refunds
-                          const refundTransactions = transactions.filter((t: any) => 
-                            t.type === 'refund' && 
-                            !['exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-                          );
-                          const hasRefunds = refundTransactions.length > 0;
-                          
-                          if (hasRefunds) {
-                            // Calculate security deposit refunds only (exclude overpayment refunds)
-                            const securityDepositRefunds = refundTransactions.reduce((sum: number, t: any) => {
-                              const notes = String(t.notes || '').toLowerCase();
-                              // Only count security deposit refunds, not overpayment refunds
-                              if (notes.includes('overpayment refund')) {
-                                return sum;
-                              }
-                              const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                              return sum + amount;
-                            }, 0);
-                            const deducted = securityDepositNum - securityDepositRefunds;
-                            
-                            return (
-                              <>
-                                <div className="flex flex-col pt-1 border-t border-gray-200">
-                                  <span className="text-xs text-gray-500 mb-0.5">Deductions</span>
-                                  <span className="font-bold text-red-600 text-sm break-words">
-                                    ₹{Math.floor(Math.max(0, deducted)).toLocaleString('en-IN')}
-                                  </span>
-                                </div>
-                                <div className="flex flex-col pt-1 border-t border-gray-200">
-                                  <span className="text-xs text-gray-500 mb-0.5">Refunded</span>
-                                  <span className="font-bold text-green-600 text-sm break-words">
-                                    ₹{Math.floor(securityDepositRefunds).toLocaleString('en-IN')}
-                                  </span>
-                                </div>
-                              </>
-                            );
-                          } else {
-                            // No refunds - show Security Paid and Security Due
-                            // Use availableAmount (which already has penalties subtracted) instead of paidAmountNum
-                            const securityPaid = Math.max(0, Math.min(securityDepositNum, Math.max(0, availableAmount - totalAmountNum)));
-                            const securityDue = securityDepositNum - securityPaid;
-                            
-                            return (
-                              <>
-                                <div className="flex flex-col pt-1 border-t border-gray-200">
-                                  <span className="text-xs text-gray-500 mb-0.5">Security Paid</span>
-                                  <span className="font-bold text-green-600 text-sm break-words">
-                                    ₹{Math.floor(securityPaid).toLocaleString('en-IN')}
-                                  </span>
-                                </div>
-                                <div className="flex flex-col pt-1 border-t border-gray-200">
-                                  <span className="text-xs text-gray-500 mb-0.5 font-semibold">Security Due</span>
-                                  <span className={`font-bold text-sm break-words ${securityDue <= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                    {securityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(securityDue).toLocaleString('en-IN')}`}
-                                  </span>
-                                </div>
-                              </>
-                            );
-                          }
-                        })()}
+                  {/* Total Summary */}
+                  <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
+                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">📊 Total Summary</p>
+                    <div className="space-y-2">
+                      <div className="flex flex-col">
+                        <span className="text-xs text-gray-500 mb-0.5">Grand Total</span>
+                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
                       </div>
-                    </div>
-
-                    {/* Penalties Section - Show if penalties exist */}
-                    {totalPenalties > 0 && (
-                      <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
-                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties Applied</p>
-                        <div className="space-y-2">
-                          {exchangePenalties > 0 && (
-                            <div className="flex flex-col">
-                              <span className="text-xs text-gray-500 mb-0.5">Exchange Penalty</span>
-                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(exchangePenalties).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
-                          {downgradePenalties > 0 && (
-                            <div className="flex flex-col pt-1 border-t border-gray-200">
-                              <span className="text-xs text-gray-500 mb-0.5">Downgrade Penalty</span>
-                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(downgradePenalties).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
-                          {cancellationPenalties > 0 && (
-                            <div className="flex flex-col pt-1 border-t border-gray-200">
-                              <span className="text-xs text-gray-500 mb-0.5">Cancellation Penalty</span>
-                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(cancellationPenalties).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
-                          <div className="flex flex-col pt-1 border-t border-red-200">
-                            <span className="text-xs text-gray-500 mb-0.5 font-semibold">Total Penalties</span>
-                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(totalPenalties).toLocaleString('en-IN')}</span>
-                          </div>
-                          <div className="text-xs text-gray-400 mt-1 leading-tight">
-                            Non-refundable charges that reduce available funds
-                          </div>
-                        </div>
+                      <div className="flex flex-col pt-1 border-t border-purple-200">
+                        <span className="text-xs text-gray-500 mb-0.5">Amount Paid</span>
+                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
                       </div>
-                    )}
-
-                    {/* Total Summary */}
-                    <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">📊 Total Summary</p>
-                      <div className="space-y-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Grand Total</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(totalRequired).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-purple-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Amount Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paidAmountNum).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-purple-200">
-                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">Balance Due</span>
-                          <span className={`font-bold text-sm break-words ${amountDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                            {amountDue > 0 ? `₹${Math.floor(amountDue).toLocaleString('en-IN')}` : 'Fully Paid'}
-                          </span>
-                        </div>
+                      <div className="flex flex-col pt-1 border-t border-purple-200">
+                        <span className="text-xs text-gray-500 mb-0.5 font-semibold">Balance Due</span>
+                        <span className={`font-bold text-sm break-words ${paymentSummary.totals.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          {paymentSummary.totals.balance > 0 ? `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}` : 'Fully Paid'}
+                        </span>
                       </div>
                     </div>
                   </div>
                 </div>
-              );
-            })()}
+              </div>
+            )}
 
-            {/* Balance/Overpayment warning */}
-            {(() => {
-                // Calculate total amount from products + transportation (same logic as above)
-                const products = Array.isArray(booking.products) ? booking.products : [];
-                const rentFromProducts = products.reduce((sum: number, product: any) => {
-                  const rent = typeof product.rent === 'number'
-                    ? product.rent
-                    : parseFloat(String(product.rent || '0')) || 0;
-                  return sum + rent;
-                }, 0);
-                
-                // Use payment summary for accurate totals
-                if (!paymentSummary) return null;
-                const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-                
-                // Use payment summary for security deposit - no need to calculate
-                const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
-                
-                // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
-                const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
-                  // Exclude date_change_charge type
-                  if (t.type === 'date_change_charge') return sum;
-                  
-                  // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
-                  const method = String(t.method || '').toLowerCase().trim();
-                  if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
-                    return sum;
-                  }
-                  
-                  // Exclude cancellation penalty transactions - these are kept by shop, not available for payment
-                  const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                  if (transactionType === 'cancellation_penalty') {
-                    console.log('🚫 [MAIN DISPLAY] EXCLUDING cancellation_penalty:', t.id, 'amount:', t.amount);
-                    return sum;
-                  }
-                  
-                  // Also exclude transactions with date change notes (handles old transactions)
-                  const notes = (t.notes || '').toLowerCase();
-                  if (notes.includes('date change charge') || 
-                      notes.includes('date change') || 
-                      notes.includes('modify booking') ||
-                      notes.includes('booking date change')) {
-                    return sum;
-                  }
-                  
-                  // Exclude exchange penalty notes (handles old transactions)
-                  if (notes.includes('exchange penalty') || (notes.includes('exchange:') && notes.includes('penalty'))) {
-                    return sum;
-                  }
-                  
-                  const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                  return sum + (t.type === 'refund' ? -amount : amount);
-                }, 0);
-                
-                // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
-                // So paidAmountFromTransactions already has penalties excluded
-                const paidAmount = paidAmountFromTransactions;
-                
-                // Calculate total penalties (exchange_penalty + downgrade_penalty + cancellation_penalty)
-                const totalPenalties = transactions.reduce((sum: number, t: any) => {
-                  const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                  if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
-                    const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                    return sum + amount;
-                  }
-                  return sum;
-                }, 0);
-                
-                // CRITICAL: Total Required = Rent + Security + Penalties
-                const totalRequired = totalAmount + securityDeposit + totalPenalties;
-                const overpayment = paidAmount - totalRequired;
-                
-                console.log('⚠️ OVERPAYMENT CHECK (SALESMAN):');
-                console.log('  Rent from products:', rentFromProducts);
-                console.log('  Transportation:', transportationCharges);
-                console.log('  Total Amount:', totalAmount);
-                console.log('  Security Deposit:', securityDeposit);
-                console.log('  Total Penalties:', totalPenalties);
-                console.log('  Total Required:', totalRequired);
-                console.log('  Paid Amount (penalties already excluded):', paidAmount);
-                console.log('  Overpayment:', overpayment);
-                console.log('  Transactions:', transactions.map((t: any) => ({
-                  id: t.id,
-                  type: t.type,
-                    method: t.method,
-                  amount: t.amount,
-                  included: !(
-                    t.type === 'date_change_charge' ||
-                    ['exchange_penalty', 'exchange_lapsed', 'lapsed_refund'].includes(String(t.method || '').toLowerCase().trim())
-                  )
-                })));
-                
-                if (overpayment > 0) {
-                  return (
-                    <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mt-2">
-                      <div className="flex items-start">
-                        <svg className="w-5 h-5 text-yellow-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                        </svg>
-                        <div>
-                          <p className="font-bold text-yellow-800 text-sm">Overpayment</p>
-                          <p className="text-yellow-700 text-sm">
-                            Refund <span className="font-bold">₹{Math.floor(overpayment).toLocaleString('en-IN')}</span> to customer
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
+            {/* Balance/Overpayment warning - uses backend payment summary */}
+            {paymentSummary && paymentSummary.overpayment > 0 && (
+              <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mt-2">
+                <div className="flex items-start">
+                  <svg className="w-5 h-5 text-yellow-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <div>
+                    <p className="font-bold text-yellow-800 text-sm">Overpayment</p>
+                    <p className="text-yellow-700 text-sm">
+                      Refund <span className="font-bold">₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}</span> to customer
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Check if refund exists */}
@@ -4305,123 +3827,39 @@ export default function OrderDetailsPage() {
               </div>
                   </div>
 
-                  {/* Overpayment Refund Section */}
-                  {(() => {
-                    // Calculate overpayment
-                    const products = Array.isArray(booking?.products) ? booking.products : [];
-                    const rentFromProducts = products.reduce((sum: number, product: any) => {
-                      const rent = typeof product.rent === 'number'
-                        ? product.rent
-                        : parseFloat(String(product.rent || '0')) || 0;
-                      return sum + rent;
-                    }, 0);
-                    
-                    let transportationCharges = 0;
-                    if (booking?.transport_charge !== null && booking?.transport_charge !== undefined) {
-                      if (typeof booking.transport_charge === 'number') {
-                        transportationCharges = booking.transport_charge;
-                      } else if (typeof booking.transport_charge === 'string') {
-                        transportationCharges = parseFloat(booking.transport_charge) || 0;
-                      }
-                    }
-                    
-                    // Use payment summary for accurate totals
-                    if (!paymentSummary) return null;
-                    const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-                    
-                    // Use payment summary for security deposit - no need to calculate
-                    const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
-                    
-                    // Recalculate paid amount from transactions, excluding date change charges and exchange penalties
-                    const paidAmountFromTransactions = transactions.reduce((sum: number, t: any) => {
-                      // Exclude date_change_charge type
-                      if (t.type === 'date_change_charge') return sum;
-                      
-                      // Exclude exchange_penalty, exchange_lapsed, and lapsed_refund transactions
-                      const method = String(t.method || '').toLowerCase().trim();
-                      if (method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange_lapsed' || method === 'lapsed_refund') {
-                        return sum;
-                      }
-                      
-                      // Exclude cancellation penalty transactions - these are kept by shop, not available for payment
-                      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                      if (transactionType === 'cancellation_penalty') {
-                        console.log('🚫 [SECURITY REFUND] EXCLUDING cancellation_penalty:', t.id, 'amount:', t.amount);
-                        return sum;
-                      }
-                      
-                      // Also exclude transactions with date change notes (handles old transactions)
-                      const notes = (t.notes || '').toLowerCase();
-                      if (notes.includes('date change charge') || 
-                          notes.includes('date change') || 
-                          notes.includes('modify booking') ||
-                          notes.includes('booking date change')) {
-                        return sum;
-                      }
-                      
-                      // Exclude exchange penalty notes (handles old transactions)
-                      if (notes.includes('exchange penalty') || (notes.includes('exchange:') && notes.includes('penalty'))) {
-                        return sum;
-                      }
-                      
-                      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                      return sum + (t.type === 'refund' ? -amount : amount);
-                    }, 0);
-                  
-                  // NOTE: calculatePaidAmountExcludingExchangePenalties already excludes cancellation_penalty transactions
-                  // So paidAmountFromTransactions already has penalties excluded
-                  const paidAmount = paidAmountFromTransactions;
-                  
-                  // Calculate total penalties
-                  const totalPenalties = transactions.reduce((sum: number, t: any) => {
-                    const txnType = String(t.transaction_type || '').toLowerCase().trim();
-                    if (txnType === 'exchange_penalty' || txnType === 'downgrade_penalty' || txnType === 'cancellation_penalty') {
-                      const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-                      return sum + amount;
-                    }
-                    return sum;
-                  }, 0);
-                  
-                  const totalRequired = totalAmount + securityDeposit + totalPenalties;
-                  const overpayment = paidAmount - totalRequired;
-                    
-                    // Only show overpayment section if there's an overpayment
-                    if (overpayment <= 0) return null;
-                    
-                    return (
-                      <div className="mb-6">
-                        <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
-                          <div className="flex items-start">
-                            <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                            </svg>
-                            <div className="flex-1">
-                              <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
-                              <p className="text-yellow-800 text-sm mb-3">
-                                Customer has paid <span className="font-bold">₹{Math.floor(overpayment).toLocaleString('en-IN')}</span> extra. 
-                                This full overpayment amount will be automatically refunded along with product security deposits.
-                              </p>
-                              
-                              <div className="bg-white rounded-lg p-4">
-                                {/* Overpayment Refund Amount Display (Read-only) */}
-                                <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    Overpayment Refund Amount
-                                  </label>
-                                  <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
-                                    ₹{Math.floor(overpayment).toLocaleString('en-IN')}
-                                  </div>
-                                  <p className="text-gray-600 text-xs mt-2 text-center">
-                                    ✓ Full overpayment will be refunded and noted in payment history
-                                  </p>
+                  {/* Overpayment Refund Section - uses backend payment summary */}
+                  {paymentSummary && paymentSummary.overpayment > 0 && (
+                    <div className="mb-6">
+                      <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
+                        <div className="flex items-start">
+                          <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          </svg>
+                          <div className="flex-1">
+                            <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
+                            <p className="text-yellow-800 text-sm mb-3">
+                              Customer has paid <span className="font-bold">₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}</span> extra. 
+                              This full overpayment amount will be automatically refunded along with product security deposits.
+                            </p>
+                            
+                            <div className="bg-white rounded-lg p-4">
+                              <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-2">
+                                  Overpayment Refund Amount
+                                </label>
+                                <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
+                                  ₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}
                                 </div>
+                                <p className="text-gray-600 text-xs mt-2 text-center">
+                                  ✓ Full overpayment will be refunded and noted in payment history
+                                </p>
                               </div>
                             </div>
                           </div>
                         </div>
                       </div>
-                    );
-                  })()}
+                    </div>
+                  )}
 
             <div className="flex gap-3 sticky bottom-0 bg-white pt-4 border-t">
                     <button

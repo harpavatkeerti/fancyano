@@ -122,17 +122,7 @@ export function ProductExchange({
         setRentDifferenceAmount(preview.calculations.downgrade_penalty); // Using existing downgrade_penalty
         setRentDifference(preview.calculations.downgrade_penalty);
         setSecurityDifference(preview.calculations.security_difference);
-
-        if (calculatedTotalPaymentDue > 0) {
-          setTotalPaymentDue(calculatedTotalPaymentDue);
-          setExchangePenaltyAmount(exchangePenalty);
-          setRentDifferenceAmount(calculatedRentDiff);
           
-          // Prepare exchange data
-          const exchangeDataToCreate = {
-            booking_id: bookingId,
-            original_product_id: selectedOriginalProduct,
-        
         // Prepare exchange data with backend preview calculations
         if (preview.calculations.total_payment_due > 0) {
           const exchangeDataToCreate = {
@@ -298,16 +288,6 @@ export function ProductExchange({
       toast.error('Product not found');
       return;
     }
-
-    const originalRent = parseFloat(String(originalProduct.rent || '0')) || 0;
-    const newRent = parseFloat(String(exchangedProduct.rent || '0')) || 0;
-    
-    // Calculate total rent of all selected products (main + additional)
-    const additionalRent = additionalProducts.reduce((sum, productId) => {
-      const product = availableProducts.find(p => p.id === productId);
-      return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
-    }, 0);
-    const totalNewRent = newRent + additionalRent;
 
     try {
       setLoading(true);
@@ -599,19 +579,8 @@ export function ProductExchange({
     try {
       setLoading(true);
       
-      // Fetch current transactions to check for lapsed amounts
-      const transactionsResponse = await axios.get(`${API_URL}/payment-transactions/booking/${bookingId}`);
-      const currentTransactions = transactionsResponse.data;
-      
-      // Check if there's a lapsed amount (rent difference that was paid)
-      const lapsedTransactions = currentTransactions.filter(
-        (t: any) => t.method === 'exchange_upgrade' || t.method === 'exchange_downgrade'
-      );
-      
-      const lapsedAmount = lapsedTransactions.reduce((sum: number, t: any) => {
-        const amount = typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0;
-        return sum + amount;
-      }, 0);
+      // Use the exchange record's total_charge as the lapsed amount
+      const lapsedAmount = parseFloat(String(exchange.total_charge || '0')) || 0;
       
       // If there's a lapsed amount, show refund modal
       if (lapsedAmount > 0) {
@@ -1094,10 +1063,7 @@ export function ProductExchange({
                       <div className="mt-3 pt-3 border-t border-blue-200 space-y-1">
                         <div className="flex justify-between text-sm font-semibold text-blue-800">
                           <span>Total Additional Rent:</span>
-                          <span>₹{additionalProducts.reduce((sum, productId) => {
-                            const product = availableProducts.find(p => p.id === productId);
-                            return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
-                          }, 0).toLocaleString('en-IN')}</span>
+                          <span>₹{(exchangePreview?.calculations.additional_rent || 0).toLocaleString('en-IN')}</span>
                         </div>
                       </div>
                     </div>
@@ -1109,16 +1075,6 @@ export function ProductExchange({
 
               {/* Selected Products Preview */}
               {selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
-                const originalRent = parseFloat(String(originalProduct.rent || '0')) || 0;
-                const newRent = parseFloat(String(exchangedProduct.rent || '0')) || 0;
-                
-                // Calculate total rent including additional products
-                const additionalRent = additionalProducts.reduce((sum, productId) => {
-                  const product = availableProducts.find(p => p.id === productId);
-                  return sum + (product ? parseFloat(String(product.rent || '0')) || 0 : 0);
-                }, 0);
-                const totalNewRent = newRent + additionalRent;
-                
                 // Get dates for display
                 const bookedFrom = bookingDates?.booked_from || '';
                 const bookedTo = bookingDates?.booked_to || '';
@@ -1332,24 +1288,23 @@ export function ProductExchange({
                               <span className="text-base font-bold text-gray-900">Total Payment Due:</span>
                               <span className="text-2xl font-bold text-indigo-600">₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}</span>
                             </div>
-                              <div className="text-xs text-gray-600 bg-white rounded p-2">
-                                <p className="font-mono">
-                                  ₹{totalNewRent.toLocaleString('en-IN')} + ₹{Math.floor(calculatedTotal).toLocaleString('en-IN')} + ₹{Math.floor(rentDiff).toLocaleString('en-IN')} - ₹{originalRent.toLocaleString('en-IN')} = ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
-                                </p>
-                              </div>
-                              {totalPaymentDue > 0 && (
-                                <p className="text-sm font-semibold text-indigo-700 mt-3 text-center">
-                                  Customer needs to pay ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
-                                </p>
-                              )}
-                              {totalPaymentDue === 0 && (
-                                <p className="text-sm font-semibold text-green-700 mt-3 text-center">
-                                  No additional payment required
-                                </p>
-                              )}
+                            <div className="text-xs text-gray-600 bg-white rounded p-2">
+                              <p className="font-mono">
+                                New Rent ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} + Penalty ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} + Downgrade ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')} - Original ₹{exchangePreview.calculations.effective_rent.toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}
+                              </p>
                             </div>
-                          );
-                        })()}
+                            {exchangePreview.calculations.total_payment_due > 0 && (
+                              <p className="text-sm font-semibold text-indigo-700 mt-3 text-center">
+                                Customer needs to pay ₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}
+                              </p>
+                            )}
+                            {exchangePreview.calculations.total_payment_due === 0 && (
+                              <p className="text-sm font-semibold text-green-700 mt-3 text-center">
+                                No additional payment required
+                              </p>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                     

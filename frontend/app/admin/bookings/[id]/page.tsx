@@ -578,28 +578,7 @@ export default function OrderDetailsPage() {
               })()}
               <div className="flex justify-between">
                 <span>Security Deposit</span>
-                <span>₹{Math.floor((() => {
-                  // Calculate security deposit from products if booking.security_deposit is 0 or missing
-                  const bookingSecurityDeposit = typeof booking.security_deposit === 'number'
-                    ? booking.security_deposit
-                    : parseFloat(booking.security_deposit || '0') || 0;
-                  
-                  // If booking has security deposit, use it; otherwise calculate from products
-                  if (bookingSecurityDeposit > 0) {
-                    return bookingSecurityDeposit;
-                  }
-                  
-                  // Calculate from products (exclude cancelled)
-                  const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
-                  const calculatedSecurity = products.reduce((sum: number, product: any) => {
-                    const productSecurity = typeof product.security_deposit === 'number'
-                      ? product.security_deposit
-                      : parseFloat(product.security_deposit || '0') || 0;
-                    return sum + productSecurity;
-                  }, 0);
-                  
-                  return calculatedSecurity;
-                })()).toLocaleString('en-IN')}</span>
+                <span>₹{paymentSummary ? Math.floor((paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0)).toLocaleString('en-IN') : '0'}</span>
               </div>
               <div className="flex justify-between font-bold text-lg border-t pt-2">
                 <span>Total</span>
@@ -1008,18 +987,11 @@ export default function OrderDetailsPage() {
             const isFullyCancelled = booking?.status === 'cancelled';
             
             if (isFullyCancelled) {
-              // Calculate financial summary for cancelled booking
-              const totalPaid = transactions
-                .filter((t: any) => t.type === 'payment' && !['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || ''))
-                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-              
-              const penalties = transactions
-                .filter((t: any) => ['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(t.transaction_type || '') || t.type === 'payment' && (t.method === 'exchange_penalty' || t.method === 'downgrade_penalty'))
-                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-              
-              const refunded = transactions
-                .filter((t: any) => t.type === 'refund')
-                .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+              // Use backend payment summary for cancelled booking financial data
+              const totalDue = paymentSummary?.totals.total_due || 0;
+              const totalPaid = paymentSummary?.totals.total_paid || 0;
+              const balance = paymentSummary?.totals.balance || 0;
+              const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
               
               return (
                 <div className="space-y-4">
@@ -1037,29 +1009,24 @@ export default function OrderDetailsPage() {
                       <h4 className="text-sm font-semibold text-gray-700 mb-3">📊 Financial Summary</h4>
                       <div className="space-y-2">
                         <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                          <span className="text-sm text-gray-600">Total Rent Paid by Customer:</span>
+                          <span className="text-sm text-gray-600">Total Due:</span>
+                          <span className="text-lg font-bold text-gray-900">₹{Math.floor(totalDue).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                          <span className="text-sm text-gray-600">Total Paid:</span>
                           <span className="text-lg font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
                         </div>
                         {penalties > 0 && (
                           <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                            <span className="text-sm text-gray-600">Charges + Penalties:</span>
-                            <span className="text-lg font-bold text-red-600">-₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
+                            <span className="text-sm text-gray-600">Penalties Applied:</span>
+                            <span className="text-lg font-bold text-red-600">₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
                           </div>
                         )}
-                        <div className="flex justify-between items-center py-2 border-b border-gray-200">
-                          <span className="text-sm text-gray-600">Total Refunded:</span>
-                          <span className="text-lg font-bold text-blue-600">-₹{Math.floor(refunded).toLocaleString('en-IN')}</span>
-                        </div>
                         <div className="flex justify-between items-center py-3 bg-gray-50 rounded px-3 mt-2">
-                          <span className="text-sm font-semibold text-gray-800">Net Amount (Customer):</span>
-                          <span className="text-xl font-bold text-gray-900">₹{Math.floor(totalPaid - refunded).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="bg-blue-50 border-l-4 border-blue-400 p-3 mt-3">
-                          <p className="text-xs text-blue-800">
-                            <strong>Summary:</strong> Paid (₹{Math.floor(totalPaid).toLocaleString('en-IN')}) - Penalties ₹{Math.floor(penalties).toLocaleString('en-IN')} - Refunded ₹{Math.floor(refunded).toLocaleString('en-IN')}.
-                            {Math.floor(totalPaid - refunded) === 0 && ' Net = ₹0 (Fully settled).'}
-                            {Math.floor(totalPaid - refunded) > 0 && ` Net = ₹${Math.floor(totalPaid - refunded).toLocaleString('en-IN')}.`}
-                          </p>
+                          <span className="text-sm font-semibold text-gray-800">Balance:</span>
+                          <span className={`text-xl font-bold ${balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {balance <= 0 ? 'Fully Settled' : `₹${Math.floor(balance).toLocaleString('en-IN')}`}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -1093,28 +1060,7 @@ export default function OrderDetailsPage() {
                   if (!paymentSummary) return 0;
                   return (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
             })()}
-            securityDeposit={(() => {
-              // Calculate security deposit from products if booking.security_deposit is 0 or missing
-              const bookingSecurityDeposit = typeof booking.security_deposit === 'number'
-                ? booking.security_deposit
-                : parseFloat(booking.security_deposit || '0') || 0;
-              
-              // If booking has security deposit, use it; otherwise calculate from products
-              if (bookingSecurityDeposit > 0) {
-                return bookingSecurityDeposit;
-              }
-              
-              // Calculate from products (exclude cancelled)
-              const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : [];
-              const calculatedSecurity = products.reduce((sum: number, product: any) => {
-                const productSecurity = typeof product.security_deposit === 'number'
-                  ? product.security_deposit
-                  : parseFloat(product.security_deposit || '0') || 0;
-                return sum + productSecurity;
-              }, 0);
-              
-              return calculatedSecurity;
-            })()}
+            securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0) : 0}
             userRole="admin"
             onPaymentUpdate={() => {
               fetchBooking(); // Refresh booking and transactions

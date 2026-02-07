@@ -104,7 +104,7 @@ export function BookingCancellation({
   async function fetchCancellationPreview() {
     try {
       setFetchingPreview(true);
-      const response = await bookingCancellationApi.preview(bookingId, selectedProducts.length > 0 ? selectedProducts : undefined);
+      const response = await bookingCancellationApi.preview(bookingId);
       setPreview(response.data);
       
       // Initialize all products as selected if none selected yet
@@ -280,24 +280,18 @@ export function BookingCancellation({
       setLoading(true);
       
       // Prepare per-product penalties (only for manually edited ones)
-      const perProductPenalties = preview?.products_to_cancel
+      const cancellationPenalties = preview?.products_to_cancel
         .filter(p => editingPenalties[p.product_id] !== undefined)
         .map(p => ({
-          product_id: p.product_id,
+          booking_product_id: p.product_id,
           penalty_amount: getProductPenalty(p),
-          notes: `Manual penalty for ${p.name} (${p.code}) | Reason: ${cancellationReason}`
         })) || [];
       
-      const extraRefundAmount = getExtraRefundAmount();
-      
       await bookingCancellationApi.cancel({
-        booking_id: bookingId,
-        product_ids: selectedProducts,
-        per_product_penalties: perProductPenalties.length > 0 ? perProductPenalties : undefined,
+        booking_product_ids: selectedProducts,
+        cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
         cancellation_reason: cancellationReason,
         cancelled_by: userName || 'system',
-        extra_refund: extraRefundAmount > 0 ? extraRefundAmount : undefined,
-        extra_refund_note: extraRefundNote.trim() || undefined,
       });
 
       const isPartial = preview && selectedProducts.length < preview.all_products.length;
@@ -400,7 +394,7 @@ export function BookingCancellation({
                       {preview.all_products.map((product) => {
                         const isSelected = selectedProducts.includes(product.product_id);
                         const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
-                        const calculatedPenalty = penaltyProduct ? (product.rent * preview.penalty_percentage / 100) : 0;
+                        const calculatedPenalty = penaltyProduct ? penaltyProduct.penalty_amount : 0;
                         const currentPenalty = penaltyProduct ? getProductPenalty(penaltyProduct) : calculatedPenalty;
                         
                         return (
