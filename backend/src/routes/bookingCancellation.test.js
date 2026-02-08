@@ -16,6 +16,8 @@ describe('Booking Cancellation Routes', () => {
   let testPolicyId;
 
   beforeAll(async () => {
+    // Deactivate real policies to avoid overlap conflicts with test policies
+    await pool.query(`UPDATE rental_policies SET is_active = false WHERE policy_key NOT LIKE 'test_%'`);
     // Clean up ALL existing test policies that might conflict from other test suites
     await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_%'`);
     
@@ -54,14 +56,18 @@ describe('Booking Cancellation Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST'))`);
-    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST'))`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST')))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST'))`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST'))`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone IN ('TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST')`);
+    const testPhones = ['TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST', 'CANCEL-SUMMARY-TEST'];
+    const phoneList = testPhones.map(p => `'${p}'`).join(',');
+    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList})))`);
+    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM bookings WHERE customer_phone IN (${phoneList})`);
     await pool.query(`DELETE FROM products WHERE code IN ('TEST-CANCEL-001', 'TEST-CANCEL-PREV-002')`);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key IN ('test_cancellation_0_1', 'test_cancellation_2_3')`);
+    // Re-activate real policies
+    await pool.query(`UPDATE rental_policies SET is_active = true WHERE policy_key NOT LIKE 'test_%'`);
   });
 
   afterEach(async () => {
@@ -295,27 +301,29 @@ describe('Booking Cancellation Routes', () => {
       expect(response.body).toHaveProperty('all_products');
       expect(response.body).toHaveProperty('products_to_cancel');
       expect(response.body).toHaveProperty('total_penalty_amount');
-      expect(response.body).toHaveProperty('base_refund');
-      expect(response.body).toHaveProperty('total_paid');
-      expect(response.body).toHaveProperty('total_refunded');
-      expect(response.body).toHaveProperty('net_paid');
-      expect(response.body).toHaveProperty('paid_rent');
-      expect(response.body).toHaveProperty('paid_security_deposit');
+      expect(response.body).toHaveProperty('total_cancelled_rent');
+      expect(response.body).toHaveProperty('total_cancelled_security');
+      expect(response.body).toHaveProperty('total_rent_paid');
+      expect(response.body).toHaveProperty('total_security_paid');
+      expect(response.body).toHaveProperty('total_refund_amount');
       expect(response.body).toHaveProperty('payment_action');
       expect(response.body).toHaveProperty('payment_difference');
 
-      // Verify product data
+      // Verify product data includes per-product paid amounts
       expect(response.body.all_products).toHaveLength(1);
       expect(response.body.all_products[0]).toHaveProperty('product_id', previewBPId);
       expect(response.body.all_products[0]).toHaveProperty('name');
       expect(response.body.all_products[0]).toHaveProperty('code');
       expect(response.body.all_products[0]).toHaveProperty('rent', 50000);
       expect(response.body.all_products[0]).toHaveProperty('security_deposit', 20000);
+      expect(response.body.all_products[0]).toHaveProperty('rent_paid');
+      expect(response.body.all_products[0]).toHaveProperty('security_paid');
 
-      // Verify products_to_cancel has penalty info
+      // Verify products_to_cancel has penalty + refund info
       expect(response.body.products_to_cancel).toHaveLength(1);
       expect(response.body.products_to_cancel[0]).toHaveProperty('penalty_percentage');
       expect(response.body.products_to_cancel[0]).toHaveProperty('penalty_amount');
+      expect(response.body.products_to_cancel[0]).toHaveProperty('refund_amount');
       expect(typeof response.body.products_to_cancel[0].penalty_amount).toBe('number');
     });
 
@@ -359,8 +367,8 @@ describe('Booking Cancellation Routes', () => {
       expect(response.body.all_products).toHaveLength(2);
       expect(response.body.products_to_cancel).toHaveLength(2);
 
-      // Total cancelled rent required should be sum of both products
-      expect(response.body.total_cancelled_rent_required).toBe(80000); // 50000 + 30000
+      // Total cancelled rent should be sum of both products
+      expect(response.body.total_cancelled_rent).toBe(80000); // 50000 + 30000
 
       // Cleanup
       await pool.query('DELETE FROM product_charges WHERE booking_product_id = $1', [bp2Id]);
@@ -368,7 +376,7 @@ describe('Booking Cancellation Routes', () => {
       await pool.query('DELETE FROM products WHERE id = $1', [product2Id]);
     });
 
-    it('should include payment data when payments exist', async () => {
+    it('should include per-product payment data when payments exist', async () => {
       // Record a payment
       const chargeAccountingService = require('../services/chargeAccountingService');
       await chargeAccountingService.applyPayment(previewBookingId, 30000, 'Cash', 'test-user', 'Test payment');
@@ -376,9 +384,11 @@ describe('Booking Cancellation Routes', () => {
       const response = await request(app).get(`/cancellation/preview/${previewBookingId}`);
 
       expect(response.status).toBe(200);
-      expect(response.body.total_paid).toBe(30000);
-      expect(response.body.net_paid).toBe(30000);
-      expect(response.body.paid_rent).toBeGreaterThan(0); // Payment applied to rent first
+      // Per-product paid amounts should reflect the payment
+      expect(response.body.total_rent_paid).toBeGreaterThan(0); // Payment applied to rent first
+      expect(response.body.all_products[0].rent_paid).toBeGreaterThan(0);
+      // Total refund should reflect paid amounts minus penalty
+      expect(typeof response.body.total_refund_amount).toBe('number');
     });
 
     it('should return 404 for non-existent booking', async () => {
@@ -476,6 +486,141 @@ describe('Booking Cancellation Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.eligible).toBe(false);
       expect(response.body.reason).toBe('Booking product not found');
+    });
+  });
+
+  describe('POST /cancellation/calculate-summary', () => {
+    let summaryBookingId;
+    let summaryBPId;
+
+    beforeEach(async () => {
+      const booking = await bookingService.createBooking({
+        customerName: 'Summary Test Customer',
+        customerPhone: 'CANCEL-SUMMARY-TEST',
+        customerEmail: 'summary@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      summaryBookingId = booking.booking_id;
+
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [summaryBookingId]
+      );
+      summaryBPId = bpResult.rows[0].id;
+
+      // Confirm the booking
+      await bookingService.confirmBooking(summaryBookingId, 'test-user');
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [summaryBookingId]);
+      await pool.query('DELETE FROM booking_cancellation_history WHERE booking_id = $1', [summaryBookingId]);
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)', [summaryBookingId]);
+      await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [summaryBookingId]);
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [summaryBookingId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [summaryBookingId]);
+    });
+
+    it('should return cancellation summary for selected products', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('selected_count', 1);
+      expect(response.body).toHaveProperty('total_count', 1);
+      expect(response.body).toHaveProperty('selected_rent', 50000);
+      expect(response.body).toHaveProperty('selected_security', 20000);
+      expect(response.body).toHaveProperty('selected_rent_paid', 0);
+      expect(response.body).toHaveProperty('selected_security_paid', 0);
+      expect(response.body).toHaveProperty('total_penalty');
+      expect(response.body).toHaveProperty('refund_amount', 0); // no payments, refund is 0
+      expect(response.body).toHaveProperty('payment_action');
+      expect(response.body).toHaveProperty('payment_difference');
+    });
+
+    it('should apply penalty overrides', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId],
+          penalty_overrides: { [summaryBPId]: 500 }
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.total_penalty).toBe(500);
+      // No payments, so still collect
+      expect(response.body.payment_action).toBe('collect');
+      expect(response.body.payment_difference).toBe(500);
+    });
+
+    it('should include extra refund in calculation', async () => {
+      // First apply a payment so there's something to refund
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      await chargeAccountingService.applyPayment(summaryBookingId, 50000, 'Cash', 'test-user', 'Full rent payment');
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId],
+          extra_refund: 1000
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.selected_rent_paid).toBe(50000);
+      expect(response.body.extra_refund).toBe(1000);
+      // refund = 50000 - penalty + 1000
+      expect(response.body.refund_amount).toBeGreaterThan(0);
+      expect(response.body.payment_action).toBe('refund');
+    });
+
+    it('should return zero totals for empty selection', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: []
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.selected_count).toBe(0);
+      expect(response.body.selected_rent).toBe(0);
+      expect(response.body.refund_amount).toBe(0);
+    });
+
+    it('should return 400 for missing required fields', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body).toHaveProperty('error');
+    });
+
+    it('should return 404 for non-existent booking', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: 999999,
+          selected_product_ids: [1]
+        });
+
+      expect(response.status).toBe(404);
+      expect(response.body).toHaveProperty('error', 'Booking not found');
     });
   });
 });

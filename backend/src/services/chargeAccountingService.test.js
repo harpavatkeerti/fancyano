@@ -70,7 +70,7 @@ describe('ChargeAccountingService', () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    // pool.end() handled by global teardown
   });
 
   describe('getPaymentSummary', () => {

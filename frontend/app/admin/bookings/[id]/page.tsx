@@ -494,9 +494,15 @@ export default function OrderDetailsPage() {
 
   const products = Array.isArray(booking.products) ? booking.products : [];
 
-  // Helper to check if a product is cancelled
+  // Helper to check product inactive statuses
   function isProductCancelled(product: any): boolean {
     return product.status === 'cancelled';
+  }
+  function isProductExchanged(product: any): boolean {
+    return product.status === 'exchanged';
+  }
+  function isProductInactive(product: any): boolean {
+    return isProductCancelled(product) || isProductExchanged(product);
   }
 
   return (
@@ -555,7 +561,7 @@ export default function OrderDetailsPage() {
                 <span>Subtotal</span>
                 <span>₹{(() => {
                   if (!paymentSummary) return '0';
-                  const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+                  const totalRent = paymentSummary.charges.rent.due || 0;
                   return Math.floor(totalRent).toLocaleString('en-IN');
                 })()}</span>
               </div>
@@ -578,14 +584,14 @@ export default function OrderDetailsPage() {
               })()}
               <div className="flex justify-between">
                 <span>Security Deposit</span>
-                <span>₹{paymentSummary ? Math.floor((paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0)).toLocaleString('en-IN') : '0'}</span>
+                <span>₹{paymentSummary ? Math.floor(paymentSummary.charges.security.due || 0).toLocaleString('en-IN') : '0'}</span>
               </div>
               <div className="flex justify-between font-bold text-lg border-t pt-2">
                 <span>Total</span>
                 <span>₹{(() => {
                   if (!paymentSummary) return '0';
-                  const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-                  const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
+                  const totalRent = paymentSummary.charges.rent.due || 0;
+                  const totalSecurity = paymentSummary.charges.security.due || 0;
                   const total = totalRent + totalSecurity;
                   return Math.floor(total).toLocaleString('en-IN');
                 })()}</span>
@@ -609,10 +615,13 @@ export default function OrderDetailsPage() {
             const isMale = isMaleClothing(product.name);
             const isExpanded = showMeasurements[uniqueKey] || false;
             const isCancelled = isProductCancelled(product);
+            const isExchanged = isProductExchanged(product);
+            const isInactive = isCancelled || isExchanged;
 
             return (
             <div key={index} className={`border rounded-lg p-4 mb-4 ${
-              isCancelled ? 'opacity-60 border-red-300 bg-red-50' : ''
+              isCancelled ? 'opacity-60 border-red-300 bg-red-50' : 
+              isExchanged ? 'opacity-60 border-orange-300 bg-orange-50' : ''
             }`}>
               <div className="flex justify-between items-start mb-2">
                   <div className="flex items-start gap-3">
@@ -638,6 +647,11 @@ export default function OrderDetailsPage() {
                     {isCancelled && (
                       <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
                         ❌ Cancelled
+                      </span>
+                    )}
+                    {isExchanged && (
+                      <span className="px-2 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
+                        🔄 Exchanged
                       </span>
                     )}
                   </div>
@@ -890,7 +904,7 @@ export default function OrderDetailsPage() {
             <ProductExchange
               bookingId={booking.id}
               bookingDate={booking.booking_date}
-              currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []}
+              currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged') : []}
               onExchangeComplete={fetchBooking}
               userRole="admin"
               bookingStatus={booking.status}
@@ -991,7 +1005,7 @@ export default function OrderDetailsPage() {
               const totalDue = paymentSummary?.totals.total_due || 0;
               const totalPaid = paymentSummary?.totals.total_paid || 0;
               const balance = paymentSummary?.totals.balance || 0;
-              const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
+              const penalties = paymentSummary?.charges.penalties.due || 0;
               
               return (
                 <div className="space-y-4">
@@ -1058,9 +1072,9 @@ export default function OrderDetailsPage() {
                 bookingId={booking.id}
                 totalAmount={(() => {
                   if (!paymentSummary) return 0;
-                  return (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+                  return paymentSummary.charges.rent.due || 0;
             })()}
-            securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0) : 0}
+            securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) : 0}
             userRole="admin"
             onPaymentUpdate={() => {
               fetchBooking(); // Refresh booking and transactions

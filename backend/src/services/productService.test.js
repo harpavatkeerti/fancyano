@@ -15,7 +15,7 @@ describe('ProductService', () => {
   });
 
   afterAll(async () => {
-    await pool.end();
+    // pool.end() handled by global teardown
   });
 
   afterEach(async () => {

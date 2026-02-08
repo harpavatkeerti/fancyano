@@ -2,10 +2,15 @@ const policyService = require('../services/policyService');
 const pool = require('../database/connection');
 
 describe('PolicyService', () => {
-  // Setup: Clean and seed test data before each test
+  // Temporarily deactivate real policies so tests see only test data
+  beforeAll(async () => {
+    await pool.query(`UPDATE rental_policies SET is_active = false WHERE policy_key NOT LIKE 'test_%'`);
+  });
+
+  // Setup: Clean test policies and seed fresh test data before each test
   beforeEach(async () => {
-    // Clean existing policies
-    await pool.query('DELETE FROM rental_policies');
+    // Only delete test-created policies — never wipe real ones!
+    await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_%' OR policy_key LIKE 'replaced_%' OR policy_key LIKE 'replace_%' OR policy_key = 'valid_tier'`);
     
     // Insert test policies
     await pool.query(`
@@ -24,9 +29,9 @@ describe('PolicyService', () => {
   });
 
   afterAll(async () => {
-    // Clean up test policies
-    await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_%'`);
-    await pool.end();
+    // Clean up all test-created policies and re-activate real ones (pool.end() handled by global teardown)
+    await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_%' OR policy_key LIKE 'replaced_%' OR policy_key LIKE 'replace_%' OR policy_key = 'valid_tier'`);
+    await pool.query(`UPDATE rental_policies SET is_active = true WHERE policy_key NOT LIKE 'test_%'`);
   });
 
   describe('getApplicablePolicy', () => {
@@ -346,6 +351,111 @@ describe('PolicyService', () => {
     });
   });
 
+  describe('replacePoliciesForType', () => {
+    // Test: Replaces all policies of a given type with new tiers in a single transaction
+    test('should replace all exchange_penalty policies with new tiers', async () => {
+      const newTiers = [
+        {
+          policy_key: 'replaced_exchange_tier_0',
+          policy_name: 'Replaced Exchange 0-3 days',
+          value_type: 'percentage',
+          value: 5,
+          days_from_booking_min: 0,
+          days_from_booking_max: 3,
+          created_by: 'test_admin'
+        },
+        {
+          policy_key: 'replaced_exchange_tier_1',
+          policy_name: 'Replaced Exchange 4+ days',
+          value_type: 'percentage',
+          value: 25,
+          days_from_booking_min: 4,
+          days_from_booking_max: null,
+          created_by: 'test_admin'
+        }
+      ];
+      
+      const created = await policyService.replacePoliciesForType('exchange_penalty', newTiers);
+      
+      expect(created).toHaveLength(2);
+      expect(created[0].policy_key).toBe('replaced_exchange_tier_0');
+      expect(created[0].value).toBe(5);
+      expect(created[1].policy_key).toBe('replaced_exchange_tier_1');
+      expect(created[1].value).toBe(25);
+      expect(created[0].is_active).toBe(true);
+      expect(created[1].is_active).toBe(true);
+      
+      // Old exchange_penalty policies should now be inactive
+      const allExchange = await pool.query(
+        `SELECT * FROM rental_policies WHERE policy_type = 'exchange_penalty' ORDER BY is_active DESC, id`
+      );
+      const active = allExchange.rows.filter(p => p.is_active);
+      const inactive = allExchange.rows.filter(p => !p.is_active);
+      
+      expect(active).toHaveLength(2);
+      expect(inactive.length).toBeGreaterThanOrEqual(3); // The 3 original test policies
+    });
+    
+    // Test: Only affects the specified policy type, leaving other types untouched
+    test('should not affect policies of other types', async () => {
+      const cancelBefore = await pool.query(
+        `SELECT COUNT(*) as cnt FROM rental_policies WHERE policy_type = 'cancellation_penalty' AND is_active = true`
+      );
+      
+      await policyService.replacePoliciesForType('exchange_penalty', [{
+        policy_key: 'replace_only_exchange',
+        policy_name: 'Replace Only Exchange',
+        value_type: 'percentage',
+        value: 99,
+        days_from_booking_min: 0,
+        days_from_booking_max: null,
+        created_by: 'test'
+      }]);
+      
+      const cancelAfter = await pool.query(
+        `SELECT COUNT(*) as cnt FROM rental_policies WHERE policy_type = 'cancellation_penalty' AND is_active = true`
+      );
+      
+      expect(cancelAfter.rows[0].cnt).toBe(cancelBefore.rows[0].cnt);
+    });
+    
+    // Test: Rolls back the entire transaction if an insert fails
+    test('should rollback on error', async () => {
+      const activeBefore = await pool.query(
+        `SELECT COUNT(*) as cnt FROM rental_policies WHERE policy_type = 'exchange_penalty' AND is_active = true`
+      );
+      
+      try {
+        await policyService.replacePoliciesForType('exchange_penalty', [{
+          policy_key: 'valid_tier',
+          policy_name: 'Valid',
+          value_type: 'percentage',
+          value: 10,
+          days_from_booking_min: 0,
+          days_from_booking_max: 5,
+          created_by: 'test'
+        }, {
+          // Missing required field policy_key → should cause INSERT to fail
+          policy_key: null,
+          policy_name: null,
+          value_type: 'percentage',
+          value: 20,
+          days_from_booking_min: 6,
+          days_from_booking_max: null,
+          created_by: 'test'
+        }]);
+      } catch (e) {
+        // Expected to throw
+      }
+      
+      // Active count should be unchanged (rolled back)
+      const activeAfter = await pool.query(
+        `SELECT COUNT(*) as cnt FROM rental_policies WHERE policy_type = 'exchange_penalty' AND is_active = true`
+      );
+      expect(activeAfter.rows[0].cnt).toBe(activeBefore.rows[0].cnt);
+    });
+  });
+  
   describe('_getDaysSince', () => {
     // Test: Calculates the number of days between a past date and today (10 days)
     test('should calculate days correctly', () => {

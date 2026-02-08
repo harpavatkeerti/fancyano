@@ -6,22 +6,13 @@ import { policiesApi } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import { toast } from '@/lib/toast';
 
-interface RefundPolicy {
-  booked_date: number; // 0% - More than 7 days before
-  before_7_days: number; // 0% - 7 days before
-  before_3_days: number; // 50% - 3 days before
-  before_1_day: number; // 75% - 1 day before
-  on_booking_date: number; // 100% - On booking date
-  days?: number[]; // [7, 3, 1, -1] - Days values
-}
-
-interface CancellationPolicy {
-  booked_date: number; // 0% - More than 7 days before
-  before_7_days: number; // 0% - 7 days before
-  before_3_days: number; // 50% - 3 days before
-  before_1_day: number; // 75% - 1 day before
-  on_booking_date: number; // 100% - On booking date
-  days?: number[]; // [7, 3, 1, -1] - Days values
+// Each policy tier = one row in rental_policies table
+interface PolicyTier {
+  id?: number;            // rental_policies.id (if exists)
+  policy_key: string;     // unique key
+  percentage: number;     // penalty percentage
+  days_min: number;       // days_from_booking_min
+  days_max: number | null; // days_from_booking_max (null = open-ended)
 }
 
 interface SalesmanPermissions {
@@ -34,32 +25,16 @@ interface SalesmanPermissions {
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [editingRefund, setEditingRefund] = useState(false);
-  const [editingCancellation, setEditingCancellation] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [editingPolicyType, setEditingPolicyType] = useState<'refund' | 'cancellation' | null>(null);
+  const [editingPolicyType, setEditingPolicyType] = useState<'exchange' | 'cancellation' | null>(null);
+  
+  // Policy tiers from rental_policies table
+  const [exchangeTiers, setExchangeTiers] = useState<PolicyTier[]>([]);
+  const [cancellationTiers, setCancellationTiers] = useState<PolicyTier[]>([]);
   
   // Modal state for editing
-  const [modalPenalties, setModalPenalties] = useState<number[]>([0, 10, 20, 50]);
+  const [modalPenalties, setModalPenalties] = useState<number[]>([10, 10, 20, 50]);
   const [modalDays, setModalDays] = useState<number[]>([3, 5, 7, -1]);
-  
-  const [refundPolicy, setRefundPolicy] = useState<RefundPolicy>({
-    booked_date: 0,
-    before_7_days: 0,    // Within 3 days: 0%
-    before_3_days: 10,   // Within 5 days: 10%
-    before_1_day: 20,    // Within 7 days: 20%
-    on_booking_date: 50, // After 7 days: 50%
-    days: [3, 5, 7, -1], // Days thresholds: 3, 5, 7, after 7
-  });
-  
-  const [cancellationPolicy, setCancellationPolicy] = useState<CancellationPolicy>({
-    booked_date: 0,
-    before_7_days: 0,    // Within 3 days: 0%
-    before_3_days: 10,   // Within 5 days: 10%
-    before_1_day: 20,    // Within 7 days: 20%
-    on_booking_date: 50, // After 7 days: 50%
-    days: [3, 5, 7, -1], // Days thresholds: 3, 5, 7, after 7
-  });
   
   const [salesmanPermissions, setSalesmanPermissions] = useState<SalesmanPermissions>({
     rental_price_update: true,
@@ -79,62 +54,61 @@ export default function SettingsPage() {
     fetchSettings();
   }, []);
 
+  /**
+   * Convert rental_policies rows into sorted PolicyTier array
+   */
+  function policiesToTiers(policies: any[]): PolicyTier[] {
+    return policies
+      .map(p => ({
+        id: p.id,
+        policy_key: p.policy_key,
+        percentage: p.value || 0,
+        days_min: p.days_from_booking_min ?? 0,
+        days_max: p.days_from_booking_max ?? null,
+      }))
+      .sort((a, b) => (a.days_min ?? 0) - (b.days_min ?? 0));
+  }
+
+  /**
+   * Convert tiers into display format: day thresholds and percentages
+   * E.g. tiers [{min:0,max:3,10%}, {min:4,max:5,10%}, {min:6,max:7,20%}, {min:8,max:null,50%}]
+   * → days: [3, 5, 7, -1], percentages: [10, 10, 20, 50]
+   */
+  function tiersToDisplay(tiers: PolicyTier[]): { days: number[]; percentages: number[] } {
+    if (tiers.length === 0) {
+      return { days: [3, 5, 7, -1], percentages: [10, 10, 20, 50] };
+    }
+    const days: number[] = [];
+    const percentages: number[] = [];
+    for (const tier of tiers) {
+      percentages.push(tier.percentage);
+      days.push(tier.days_max !== null ? tier.days_max : -1);
+    }
+    return { days, percentages };
+  }
+
   async function fetchSettings() {
     try {
       setLoading(true);
       
-      // Fetch refund policy
+      // Fetch exchange penalty policies from rental_policies table
       try {
-        const refundData = await settingsApi.getByKey('refund_policy');
-        if (refundData.data?.setting_value) {
-          const parsed = JSON.parse(refundData.data.setting_value);
-          // Normalize days array to ensure consistent structure: [3, 5, 7, -1]
-          if (!parsed.days || parsed.days.length !== 4) {
-            parsed.days = [3, 5, 7, -1];
-          } else {
-            // Ensure the last value is -1 (for "after X days" display)
-            parsed.days[3] = -1;
-          }
-          // Ensure all required fields exist for backward compatibility
-          if (parsed.before_7_days === undefined) parsed.before_7_days = 0;
-          if (parsed.before_3_days === undefined) parsed.before_3_days = 10;
-          if (parsed.before_1_day === undefined) parsed.before_1_day = 20;
-          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 50;
-          // Remove before_0_days if it exists (cleanup)
-          if (parsed.before_0_days !== undefined) {
-            delete parsed.before_0_days;
-          }
-          setRefundPolicy(parsed);
+        const exchangeResponse = await policiesApi.getAll('exchange_penalty');
+        if (exchangeResponse.data && exchangeResponse.data.length > 0) {
+          setExchangeTiers(policiesToTiers(exchangeResponse.data));
         }
       } catch (error) {
-        console.log('Refund policy not found, using defaults');
+        console.log('Exchange policies not found, using defaults');
       }
 
-      // Fetch cancellation policy
+      // Fetch cancellation penalty policies from rental_policies table
       try {
-        const cancelData = await settingsApi.getByKey('cancellation_policy');
-        if (cancelData.data?.setting_value) {
-          const parsed = JSON.parse(cancelData.data.setting_value);
-          // Normalize days array to ensure consistent structure: [3, 5, 7, -1]
-          if (!parsed.days || parsed.days.length !== 4) {
-            parsed.days = [3, 5, 7, -1];
-          } else {
-            // Ensure the last value is -1 (for "after X days" display)
-            parsed.days[3] = -1;
-          }
-          // Ensure all required fields exist for backward compatibility
-          if (parsed.before_7_days === undefined) parsed.before_7_days = 0;
-          if (parsed.before_3_days === undefined) parsed.before_3_days = 10;
-          if (parsed.before_1_day === undefined) parsed.before_1_day = 20;
-          if (parsed.on_booking_date === undefined) parsed.on_booking_date = 50;
-          // Remove before_0_days if it exists (cleanup)
-          if (parsed.before_0_days !== undefined) {
-            delete parsed.before_0_days;
-          }
-          setCancellationPolicy(parsed);
+        const cancelResponse = await policiesApi.getAll('cancellation_penalty');
+        if (cancelResponse.data && cancelResponse.data.length > 0) {
+          setCancellationTiers(policiesToTiers(cancelResponse.data));
         }
       } catch (error) {
-        console.log('Cancellation policy not found, using defaults');
+        console.log('Cancellation policies not found, using defaults');
       }
 
       // Fetch salesman permissions
@@ -185,26 +159,69 @@ export default function SettingsPage() {
     }
   }
 
+  /**
+   * Save modal day thresholds + percentages as rental_policies rows.
+   * Uses batch replace: deactivates all old tiers and creates fresh ones.
+   */
+  async function savePolicyTiers(
+    policyType: 'exchange_penalty' | 'cancellation_penalty',
+    days: number[],
+    percentages: number[]
+  ): Promise<PolicyTier[]> {
+    const prefix = policyType === 'exchange_penalty' ? 'exchange' : 'cancellation';
+    const label = policyType === 'exchange_penalty' ? 'Exchange' : 'Cancellation';
+    
+    // Build tier definitions from the modal values
+    // days = [3, 5, 7, -1], percentages = [10, 10, 20, 50]
+    // → tier 0: 0..3, tier 1: 4..5, tier 2: 6..7, tier 3: 8..null
+    const tiers: Array<{
+      policy_key: string;
+      policy_name: string;
+      value_type: string;
+      value: number;
+      days_from_booking_min: number;
+      days_from_booking_max: number | null;
+    }> = [];
+    
+    let prevMax = -1;
+    for (let i = 0; i < days.length; i++) {
+      const min = prevMax + 1;
+      const max = days[i] === -1 ? null : days[i];
+      const tierKey = `${prefix}_penalty_tier_${i}`;
+      const tierName = max !== null 
+        ? `${label} Penalty (${min}-${max} days)` 
+        : `${label} Penalty (After ${min - 1} days)`;
+      
+      tiers.push({
+        policy_key: tierKey,
+        policy_name: tierName,
+        value_type: 'percentage',
+        value: percentages[i],
+        days_from_booking_min: min,
+        days_from_booking_max: max,
+      });
+      
+      prevMax = max !== null ? max : 999999;
+    }
+
+    // Batch replace: deactivates old policies, creates new ones in a transaction
+    const response = await policiesApi.batchReplace(policyType, tiers);
+    
+    return (response.data?.policies || []).map((p: any) => ({
+      id: p.id,
+      policy_key: p.policy_key,
+      percentage: p.value,
+      days_min: p.days_from_booking_min ?? 0,
+      days_max: p.days_from_booking_max ?? null,
+    }));
+  }
+
   async function saveSettings() {
     try {
       setSaving(true);
 
-      // Save all settings
+      // Save non-policy settings to settings table
       const settingsToSave = [
-        {
-          key: 'refund_policy',
-          value: JSON.stringify(refundPolicy),
-          type: 'json',
-          category: 'policies',
-          description: 'Refund policy with penalty percentages',
-        },
-        {
-          key: 'cancellation_policy',
-          value: JSON.stringify(cancellationPolicy),
-          type: 'json',
-          category: 'policies',
-          description: 'Cancellation policy with penalty percentages',
-        },
         {
           key: 'salesman_permissions',
           value: JSON.stringify(salesmanPermissions),
@@ -266,10 +283,8 @@ export default function SettingsPage() {
         };
 
         if (lateFeePolicy?.id) {
-          // Update existing policy
           await policiesApi.update(lateFeePolicy.id, lateFeeData);
         } else {
-          // Create new policy
           await policiesApi.upsert(lateFeeData);
         }
       } catch (error) {
@@ -278,22 +293,12 @@ export default function SettingsPage() {
       }
 
       toast.success('Settings saved successfully!');
-      setEditingRefund(false);
-      setEditingCancellation(false);
     } catch (error: any) {
       console.error('Error saving settings:', error);
       toast.error('Error saving settings. Please try again.');
     } finally {
       setSaving(false);
     }
-  }
-
-  function updateRefundPolicy(field: keyof RefundPolicy, value: number) {
-    setRefundPolicy({ ...refundPolicy, [field]: value });
-  }
-
-  function updateCancellationPolicy(field: keyof CancellationPolicy, value: number) {
-    setCancellationPolicy({ ...cancellationPolicy, [field]: value });
   }
 
   function togglePermission(permission: keyof SalesmanPermissions) {
@@ -303,23 +308,13 @@ export default function SettingsPage() {
     });
   }
 
-  function openEditModal(type: 'refund' | 'cancellation') {
+  function openEditModal(type: 'exchange' | 'cancellation') {
     setEditingPolicyType(type);
-    const policy = type === 'refund' ? refundPolicy : cancellationPolicy;
-    // Set modal values based on current policy - 4 fields mapping to within X days
-    // Ensure consistent order and structure for both policies
-    const normalizedDays = policy.days && policy.days.length === 4 
-      ? policy.days 
-      : [3, 5, 7, -1]; // Default: within 3, 5, 7 days, and after 7 days
+    const tiers = type === 'exchange' ? exchangeTiers : cancellationTiers;
+    const { days, percentages } = tiersToDisplay(tiers);
     
-    setModalPenalties([
-      policy.before_7_days || 0,
-      policy.before_3_days || 10,
-      policy.before_1_day || 20,
-      policy.on_booking_date || 50,
-    ]);
-    // Load saved days or use defaults - order: 3, 5, 7, -1 (after X days)
-    setModalDays(normalizedDays);
+    setModalPenalties([...percentages]);
+    setModalDays([...days]);
     setShowEditModal(true);
   }
 
@@ -332,94 +327,31 @@ export default function SettingsPage() {
     if (!editingPolicyType) return;
 
     try {
-      if (editingPolicyType === 'refund') {
-        const updatedPolicy = {
-          booked_date: 0, // Not used - placeholder
-          before_7_days: modalPenalties[0] || 0,    // Within first threshold (e.g., 3 days)
-          before_3_days: modalPenalties[1] || 10,   // Within second threshold (e.g., 5 days)
-          before_1_day: modalPenalties[2] || 20,    // Within third threshold (e.g., 7 days)
-          on_booking_date: modalPenalties[3] || 50, // After third threshold
-          days: modalDays, // Save the days values
-        };
-        setRefundPolicy(updatedPolicy);
-        
-        // Save immediately to database
-        await settingsApi.update('refund_policy', {
-          setting_key: 'refund_policy',
-          setting_value: JSON.stringify(updatedPolicy),
-          setting_type: 'json',
-          category: 'policies',
-          description: 'Refund policy with penalty percentages',
-        });
+      const policyType = editingPolicyType === 'exchange' ? 'exchange_penalty' : 'cancellation_penalty';
+      
+      const savedTiers = await savePolicyTiers(
+        policyType as 'exchange_penalty' | 'cancellation_penalty',
+        modalDays,
+        modalPenalties
+      );
+      
+      if (editingPolicyType === 'exchange') {
+        setExchangeTiers(savedTiers);
       } else {
-        const updatedPolicy = {
-          booked_date: 0, // Not used - placeholder
-          before_7_days: modalPenalties[0] || 0,    // Within first threshold (e.g., 3 days)
-          before_3_days: modalPenalties[1] || 10,   // Within second threshold (e.g., 5 days)
-          before_1_day: modalPenalties[2] || 20,    // Within third threshold (e.g., 7 days)
-          on_booking_date: modalPenalties[3] || 50, // After third threshold
-          days: modalDays, // Save the days values
-        };
-        setCancellationPolicy(updatedPolicy);
-        
-        // Save immediately to database
-        await settingsApi.update('cancellation_policy', {
-          setting_key: 'cancellation_policy',
-          setting_value: JSON.stringify(updatedPolicy),
-          setting_type: 'json',
-          category: 'policies',
-          description: 'Cancellation policy with penalty percentages',
-        });
+        setCancellationTiers(savedTiers);
       }
       
       toast.success('Policy saved successfully!');
       closeEditModal();
     } catch (error: any) {
       console.error('Error saving policy:', error);
-      // If update fails, try creating
-      try {
-        if (editingPolicyType === 'refund') {
-          const updatedPolicy = {
-            booked_date: 0,
-            before_7_days: modalPenalties[0] || 0,
-            before_3_days: modalPenalties[1] || 50,
-            before_1_day: modalPenalties[2] || 75,
-            on_booking_date: modalPenalties[3] || 100,
-            days: modalDays,
-          };
-          setRefundPolicy(updatedPolicy);
-          await settingsApi.create({
-            setting_key: 'refund_policy',
-            setting_value: JSON.stringify(updatedPolicy),
-            setting_type: 'json',
-            category: 'policies',
-            description: 'Refund policy with penalty percentages',
-          });
-        } else {
-          const updatedPolicy = {
-            booked_date: 0,
-            before_7_days: modalPenalties[0] || 0,
-            before_3_days: modalPenalties[1] || 50,
-            before_1_day: modalPenalties[2] || 75,
-            on_booking_date: modalPenalties[3] || 100,
-            days: modalDays,
-          };
-          setCancellationPolicy(updatedPolicy);
-          await settingsApi.create({
-            setting_key: 'cancellation_policy',
-            setting_value: JSON.stringify(updatedPolicy),
-            setting_type: 'json',
-            category: 'policies',
-            description: 'Cancellation policy with penalty percentages',
-          });
-        }
-        toast.success('Policy saved successfully!');
-        closeEditModal();
-      } catch (createError) {
-        console.error('Error creating policy:', createError);
-        toast.error('Error saving policy. Please try again.');
-      }
+      toast.error(error?.response?.data?.error || 'Error saving policy. Please try again.');
     }
+  }
+
+  // Helper: get display values from tiers
+  function getDisplayValues(tiers: PolicyTier[]): { days: number[]; percentages: number[] } {
+    return tiersToDisplay(tiers);
   }
 
   if (loading) {
@@ -433,6 +365,9 @@ export default function SettingsPage() {
     );
   }
 
+  const exchangeDisplay = getDisplayValues(exchangeTiers);
+  const cancellationDisplay = getDisplayValues(cancellationTiers);
+
   return (
     <div className="space-y-6">
       <h1 className="text-3xl font-bold text-gray-800 mb-6">Settings & Policies</h1>
@@ -442,7 +377,7 @@ export default function SettingsPage() {
         <div className="flex justify-between items-center mb-5">
           <h2 className="text-xl font-semibold text-gray-800">Exchange Policy</h2>
           <button
-            onClick={() => openEditModal('refund')}
+            onClick={() => openEditModal('exchange')}
             className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-colors"
           >
             EDIT
@@ -452,29 +387,13 @@ export default function SettingsPage() {
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
-            {/* Penalty Visualization Bar - 4 points perfectly aligned with data below */}
             <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden mb-2">
               <div className="absolute inset-0 grid grid-cols-4 gap-6 px-0">
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {refundPolicy.before_7_days || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {refundPolicy.before_3_days || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {refundPolicy.before_1_day || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {refundPolicy.on_booking_date || 0}%
-                  </span>
-                </div>
+                {exchangeDisplay.percentages.map((pct, i) => (
+                  <div key={i} className="flex items-center justify-center">
+                    <span className="text-xs font-bold text-white drop-shadow-lg">{pct}%</span>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -482,22 +401,16 @@ export default function SettingsPage() {
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
             <div className="grid grid-cols-4 gap-6">
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[0] || 3} days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_7_days || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[1] || 5} days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_3_days || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {refundPolicy.days?.[2] || 7} days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.before_1_day || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">After {refundPolicy.days?.[2] || 7} days</p>
-                <p className="text-base font-semibold text-gray-900">{refundPolicy.on_booking_date || 0}%</p>
-              </div>
+              {exchangeDisplay.days.map((day, i) => (
+                <div key={i} className="text-center">
+                  <p className="text-xs text-gray-600 mb-2">
+                    {day === -1 
+                      ? `After ${exchangeDisplay.days[i - 1] || 7} days` 
+                      : `Within ${day} days`}
+                  </p>
+                  <p className="text-base font-semibold text-gray-900">{exchangeDisplay.percentages[i]}%</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -518,29 +431,13 @@ export default function SettingsPage() {
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
-            {/* Penalty Visualization Bar - 4 points perfectly aligned with data below */}
             <div className="relative h-14 bg-gradient-to-r from-green-500 via-yellow-500 to-red-500 rounded-lg overflow-hidden mb-2">
               <div className="absolute inset-0 grid grid-cols-4 gap-6 px-0">
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {cancellationPolicy.before_7_days || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {cancellationPolicy.before_3_days || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {cancellationPolicy.before_1_day || 0}%
-                  </span>
-                </div>
-                <div className="flex items-center justify-center">
-                  <span className="text-xs font-bold text-white drop-shadow-lg">
-                    {cancellationPolicy.on_booking_date || 0}%
-                  </span>
-                </div>
+                {cancellationDisplay.percentages.map((pct, i) => (
+                  <div key={i} className="flex items-center justify-center">
+                    <span className="text-xs font-bold text-white drop-shadow-lg">{pct}%</span>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
@@ -548,22 +445,16 @@ export default function SettingsPage() {
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
             <div className="grid grid-cols-4 gap-6">
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[0] || 3} days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_7_days || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[1] || 5} days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_3_days || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">Within {cancellationPolicy.days?.[2] || 7} days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.before_1_day || 0}%</p>
-              </div>
-              <div className="text-center">
-                <p className="text-xs text-gray-600 mb-2">After {cancellationPolicy.days?.[2] || 7} days</p>
-                <p className="text-base font-semibold text-gray-900">{cancellationPolicy.on_booking_date || 0}%</p>
-              </div>
+              {cancellationDisplay.days.map((day, i) => (
+                <div key={i} className="text-center">
+                  <p className="text-xs text-gray-600 mb-2">
+                    {day === -1 
+                      ? `After ${cancellationDisplay.days[i - 1] || 7} days` 
+                      : `Within ${day} days`}
+                  </p>
+                  <p className="text-base font-semibold text-gray-900">{cancellationDisplay.percentages[i]}%</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -741,7 +632,7 @@ export default function SettingsPage() {
             {/* Modal Header */}
             <div className="flex justify-between items-center p-6 border-b border-gray-200">
               <h2 className="text-xl font-semibold text-gray-800">
-                Edit {editingPolicyType === 'refund' ? 'Exchange' : 'Cancellation'} Policy
+                Edit {editingPolicyType === 'exchange' ? 'Exchange' : 'Cancellation'} Policy
               </h2>
               <button
                 onClick={closeEditModal}
@@ -757,7 +648,7 @@ export default function SettingsPage() {
                 {/* Left Section: Penalty (in %) */}
                 <div className="flex-1">
                   <h3 className="text-sm font-semibold text-gray-700 mb-4">
-                    {editingPolicyType === 'refund' ? 'Exchange Penalty ( % of Total Rental )' : 'Cancellation Penalty ( % of Total Rental )'}
+                    {editingPolicyType === 'exchange' ? 'Exchange Penalty ( % of Total Rental )' : 'Cancellation Penalty ( % of Total Rental )'}
                   </h3>
                   <div className="space-y-0">
                     {modalPenalties.map((penalty, index) => (
@@ -797,7 +688,7 @@ export default function SettingsPage() {
                         {day === -1 ? (
                           <input
                             type="text"
-                            value="after 7 days"
+                            value={`after ${modalDays[index - 1] || 7} days`}
                             readOnly
                             className="w-full px-4 py-2.5 border border-red-500 rounded-lg bg-white text-gray-700 cursor-default"
                           />

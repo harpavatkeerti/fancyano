@@ -815,8 +815,8 @@ export default function OrderDetailsPage() {
       return;
     }
     
-    const totalRentDue = paymentSummary.charges.rent.due || 0;
-    const totalSecurityDue = paymentSummary.charges.security.due || 0;
+    const totalRentDue = (paymentSummary.charges.rent.due || 0) - (paymentSummary.charges.rent.paid || 0);
+    const totalSecurityDue = (paymentSummary.charges.security.due || 0) - (paymentSummary.charges.security.paid || 0);
 
     // Allocate payment: first to rental, then to security deposit
     let remainingPayment = amount;
@@ -959,10 +959,10 @@ export default function OrderDetailsPage() {
       const currentSummary = summaryResponse.data;
       
       // Recalculate status with latest data
-      const totalRent = (currentSummary.charges.rent.due || 0) + (currentSummary.charges.rent.paid || 0);
-      const totalSecurity = (currentSummary.charges.security.due || 0) + (currentSummary.charges.security.paid || 0);
+      const totalRent = currentSummary.charges.rent.due || 0;
+      const totalSecurity = currentSummary.charges.security.due || 0;
       const totalPaid = currentSummary.totals.total_paid;
-      const totalPenalties = (currentSummary.charges.penalties.due || 0) + (currentSummary.charges.penalties.paid || 0);
+      const totalPenalties = currentSummary.charges.penalties.due || 0;
 
       // Check if all products have refunds
       const currentProducts = Array.isArray(currentBooking.products) ? currentBooking.products : [];
@@ -1114,10 +1114,10 @@ export default function OrderDetailsPage() {
     const selectedItems = products.filter((p: any) => itemRefunds[p.id]?.selected);
     
     // Use payment summary for accurate totals
-    const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-    const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
+    const totalRent = paymentSummary.charges.rent.due || 0;
+    const totalSecurity = paymentSummary.charges.security.due || 0;
     const totalPaid = paymentSummary.totals.total_paid;
-    const totalPenalties = (paymentSummary.charges.penalties.due || 0) + (paymentSummary.charges.penalties.paid || 0);
+    const totalPenalties = paymentSummary.charges.penalties.due || 0;
     
     const totalRequired = totalRent + totalSecurity + totalPenalties;
     const overpaymentAmount = Math.max(0, totalPaid - totalRequired);
@@ -1248,7 +1248,7 @@ export default function OrderDetailsPage() {
     );
   }
 
-  const products = Array.isArray(booking.products) ? booking.products : [];
+  const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'exchanged' && p.status !== 'cancelled') : [];
   
   // Helper function to determine which products have SECURITY refunds (NOT cancellation refunds)
   function getProductsWithRefunds(): Set<number> {
@@ -1317,7 +1317,7 @@ export default function OrderDetailsPage() {
   const productsWithRefunds = getProductsWithRefunds();
   
   // Filter only active (non-cancelled) products for refund status check
-  const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+  const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
   
   // Check if all ACTIVE products have refunds (order is completed)
   const isOrderCompleted = activeProducts.length > 0 && activeProducts.every((p: any) => productsWithRefunds.has(p.id));
@@ -1735,7 +1735,7 @@ export default function OrderDetailsPage() {
               <ProductExchange
                 bookingId={booking.id}
                 bookingDate={booking.booking_date}
-                currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []}
+                currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged') : []}
                 onExchangeComplete={fetchBooking}
                 userRole="salesman"
                 bookingStatus={booking.status}
@@ -1815,7 +1815,7 @@ export default function OrderDetailsPage() {
               {(() => {
                 // Calculate Subtotal (Rent) from active products
                 const products = Array.isArray(booking.products) ? booking.products : [];
-                const activeProducts = products.filter((p: any) => p.status !== 'cancelled');
+                const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
                 const rentalSubtotalFromProducts = activeProducts.reduce((sum: number, product: any) => {
                   const rent = typeof product.rent === 'number'
                     ? product.rent
@@ -1933,8 +1933,8 @@ export default function OrderDetailsPage() {
                   ₹
                   {(() => {
                     if (!paymentSummary) return '0';
-                    const totalRent = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
-                    const totalSecurity = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
+                    const totalRent = paymentSummary.charges.rent.due || 0;
+                    const totalSecurity = paymentSummary.charges.security.due || 0;
                     const total = totalRent + totalSecurity;
                     return isNaN(total) ? '0' : Math.floor(total).toLocaleString('en-IN');
                   })()}
@@ -1958,7 +1958,7 @@ export default function OrderDetailsPage() {
                 const totalDue = paymentSummary?.totals.total_due || 0;
                 const totalPaid = paymentSummary?.totals.total_paid || 0;
                 const balance = paymentSummary?.totals.balance || 0;
-                const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
+                const penalties = paymentSummary?.charges.penalties.due || 0;
                 
                 // Get individual cancellation details from cancellation_refund transactions
                 const cancellationTransactions = transactions.filter((t: any) => 
@@ -2090,7 +2090,7 @@ export default function OrderDetailsPage() {
                     <div className="space-y-2">
                       <div className="flex flex-col">
                         <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due + paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
+                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due).toLocaleString('en-IN')}</span>
                       </div>
                       <div className="flex flex-col pt-1 border-t border-gray-200">
                         <span className="text-xs text-gray-500 mb-0.5">Paid</span>
@@ -2105,7 +2105,7 @@ export default function OrderDetailsPage() {
                     <div className="space-y-2">
                       <div className="flex flex-col">
                         <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due + paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
+                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due).toLocaleString('en-IN')}</span>
                       </div>
                       <div className="flex flex-col pt-1 border-t border-gray-200">
                         <span className="text-xs text-gray-500 mb-0.5">Paid</span>
@@ -2199,9 +2199,9 @@ export default function OrderDetailsPage() {
             const hasRefund = transactions.some((t: any) => t.type === 'refund');
             if (!paymentSummary) return null;
             
-            const totalAmount = (paymentSummary.charges.rent.due || 0) + (paymentSummary.charges.rent.paid || 0);
+            const totalAmount = paymentSummary.charges.rent.due || 0;
             const paidAmount = paymentSummary.totals.total_paid;
-            const securityDeposit = (paymentSummary.charges.security.due || 0) + (paymentSummary.charges.security.paid || 0);
+            const securityDeposit = paymentSummary.charges.security.due || 0;
             
             const rentalDue = paymentSummary.charges.rent.due || 0;
             const totalDue = paymentSummary.totals.balance;
@@ -3674,7 +3674,7 @@ export default function OrderDetailsPage() {
                   <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Items for Refund</h3>
               <div className="space-y-4">
-                {(Array.isArray(booking?.products) ? booking.products.filter((p: any) => p.status !== 'cancelled') : []).map((product: any) => {
+                {(Array.isArray(booking?.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged') : []).map((product: any) => {
                   const productSecurityDeposit = typeof product.security_deposit === 'number'
                     ? product.security_deposit
                     : parseFloat(product.security_deposit || '0') || 0;

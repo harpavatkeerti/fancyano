@@ -20,5 +20,15 @@ export function createPoliciesApi(api: ApiClient) {
     // Update existing policy
     update: (id: number, data: Partial<RentalPolicy>) => 
       api.put<RentalPolicy>(`/policies/${id}`, data),
+    
+    // Batch replace all policies for a given type (deactivates old, creates new)
+    batchReplace: (policyType: string, tiers: Array<{
+      policy_key: string;
+      policy_name: string;
+      value_type: string;
+      value: number;
+      days_from_booking_min: number;
+      days_from_booking_max: number | null;
+    }>) => api.put<{ success: boolean; policies: RentalPolicy[] }>(`/policies/batch/${policyType}`, { tiers }),
   };
 }

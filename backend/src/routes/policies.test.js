@@ -14,8 +14,8 @@ describe('Policy Routes', () => {
   let testPolicyId;
 
   beforeAll(async () => {
-    // Deactivate all existing policies to avoid conflicts with test policies
-    await pool.query(`UPDATE rental_policies SET is_active = false`);
+    // Deactivate real policies to avoid conflicts with test policies
+    await pool.query(`UPDATE rental_policies SET is_active = false WHERE policy_key NOT LIKE 'test_%'`);
     
     // Clean up test policies
     await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_route_%'`);
@@ -54,7 +54,6 @@ describe('Policy Routes', () => {
     await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
     await pool.query(`DELETE FROM products WHERE id = $1`, [testProductId]);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_route_%'`);
-    await pool.end();
   });
 
   describe('GET /policies', () => {
@@ -220,6 +219,69 @@ describe('Policy Routes', () => {
 
       expect(response.status).toBe(409);
       expect(response.body.error).toContain('overlaps');
+    });
+  });
+
+  describe('PUT /policies/batch/:policy_type', () => {
+    // Test: Replaces all policies for a type via the batch endpoint
+    it('should batch replace exchange_penalty policies', async () => {
+      const response = await request(app)
+        .put('/policies/batch/exchange_penalty')
+        .send({
+          tiers: [
+            {
+              policy_key: 'test_route_batch_0',
+              policy_name: 'Batch Exchange 0-3 days',
+              value_type: 'percentage',
+              value: 8,
+              days_from_booking_min: 0,
+              days_from_booking_max: 3
+            },
+            {
+              policy_key: 'test_route_batch_1',
+              policy_name: 'Batch Exchange 4+ days',
+              value_type: 'percentage',
+              value: 30,
+              days_from_booking_min: 4,
+              days_from_booking_max: null
+            }
+          ]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('success', true);
+      expect(response.body.policies).toHaveLength(2);
+      expect(response.body.policies[0].value).toBe(8);
+      expect(response.body.policies[1].value).toBe(30);
+    });
+
+    // Test: Returns 400 for invalid policy type
+    it('should return 400 for invalid policy_type', async () => {
+      const response = await request(app)
+        .put('/policies/batch/invalid_type')
+        .send({ tiers: [{ policy_key: 'x', policy_name: 'X', value_type: 'fixed', value: 1, days_from_booking_min: 0, days_from_booking_max: null }] });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid policy_type');
+    });
+
+    // Test: Returns 400 if tiers array is empty
+    it('should return 400 if tiers array is empty', async () => {
+      const response = await request(app)
+        .put('/policies/batch/exchange_penalty')
+        .send({ tiers: [] });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('tiers');
+    });
+
+    // Test: Returns 400 if tiers is missing
+    it('should return 400 if tiers is missing', async () => {
+      const response = await request(app)
+        .put('/policies/batch/cancellation_penalty')
+        .send({});
+
+      expect(response.status).toBe(400);
     });
   });
 

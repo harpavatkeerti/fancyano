@@ -71,12 +71,19 @@ router.post('/', async (req, res) => {
       });
     }
     
+    // Map snake_case API fields to camelCase expected by service
+    const mappedProducts = new_product_ids.map(p => ({
+      productId: p.product_id,
+      bookedFrom: p.booked_from,
+      bookedTo: p.booked_to,
+      rent: p.rent,
+      securityDeposit: p.security_deposit,
+    }));
+
     // Perform exchange
     const result = await productLifecycleService.exchangeProduct(
       old_booking_product_id,
-      new_product_ids,
-      exchange_penalty || 0,
-      downgrade_penalty || 0,
+      mappedProducts,
       exchange_reason || 'Product exchanged',
       exchanged_by || 'system'
     );

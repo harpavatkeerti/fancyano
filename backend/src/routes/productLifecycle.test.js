@@ -75,7 +75,6 @@ describe('Product Lifecycle Routes', () => {
   afterAll(async () => {
     await pool.query('DELETE FROM products WHERE id = $1', [testProductId]);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_lifecycle_%'`);
-    await pool.end();
   });
 
   describe('POST /:bookingId/products/pickup', () => {

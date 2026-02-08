@@ -189,8 +189,8 @@ export default function CustomerOrderDetailsPage() {
   }
 
   const products = Array.isArray(booking.products) ? booking.products : [];
-  const totalRent = (paymentSummary?.charges.rent.due || 0) + (paymentSummary?.charges.rent.paid || 0);
-  const securityDeposit = (paymentSummary?.charges.security.due || 0) + (paymentSummary?.charges.security.paid || 0);
+  const totalRent = paymentSummary?.charges.rent.due || 0;
+  const securityDeposit = paymentSummary?.charges.security.due || 0;
   const totalPaid = paymentSummary?.totals.total_paid || 0;
   const balanceDue = Math.max(0, paymentSummary?.totals.balance || 0);
   
@@ -483,7 +483,7 @@ export default function CustomerOrderDetailsPage() {
             const totalDue = paymentSummary?.totals.total_due || 0;
             const totalPaid = paymentSummary?.totals.total_paid || 0;
             const balance = paymentSummary?.totals.balance || 0;
-            const penalties = (paymentSummary?.charges.penalties.due || 0) + (paymentSummary?.charges.penalties.paid || 0);
+            const penalties = paymentSummary?.charges.penalties.due || 0;
             
             return (
               <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">

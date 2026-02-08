@@ -14,6 +14,14 @@ export function createBookingCancellationApi(api: ApiClient) {
     getPenaltySuggestion: (bookingProductId: number) => 
       api.get(`/booking-cancellation/penalty-suggestion/${bookingProductId}`),
     
+    // Calculate cancellation summary for selected products (live preview)
+    calculateSummary: (data: {
+      booking_id: number;
+      selected_product_ids: number[];
+      penalty_overrides?: { [bookingProductId: number]: number };
+      extra_refund?: number;
+    }) => api.post<any>('/booking-cancellation/calculate-summary', data),
+
     // Cancel product(s)
     cancel: (data: {
       booking_product_ids: number[];

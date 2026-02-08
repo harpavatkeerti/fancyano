@@ -23,6 +23,40 @@ router.get('/preview/:bookingId', async (req, res) => {
   }
 });
 
+// POST calculate cancellation summary for selected products (live preview)
+// Frontend sends selection + penalty overrides + extra refund, backend returns all computed values
+router.post('/calculate-summary', async (req, res) => {
+  try {
+    const {
+      booking_id,
+      selected_product_ids,
+      penalty_overrides,
+      extra_refund
+    } = req.body;
+
+    if (!booking_id || !selected_product_ids || !Array.isArray(selected_product_ids)) {
+      return res.status(400).json({
+        error: 'booking_id and selected_product_ids array are required'
+      });
+    }
+
+    const summary = await productLifecycleService.calculateCancellationSummary(
+      parseInt(booking_id),
+      selected_product_ids.map(id => parseInt(id)),
+      penalty_overrides || {},
+      parseFloat(extra_refund) || 0
+    );
+
+    res.json(summary);
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    console.error('Error calculating cancellation summary:', error);
+    res.status(500).json({ error: 'Failed to calculate cancellation summary', details: error.message });
+  }
+});
+
 // GET cancellation eligibility/info for a booking product
 router.get('/info/:booking_product_id', async (req, res) => {
   try {

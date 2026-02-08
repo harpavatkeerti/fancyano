@@ -30,6 +30,8 @@ export function createProductExchangesApi(api: ApiClient) {
         rent: number;
         security_deposit: number;
       }>;
+      exchange_penalty?: number;
+      downgrade_penalty?: number;
       exchange_reason?: string;
       exchanged_by: string;
     }) => api.post<any>('/product-exchanges', data),

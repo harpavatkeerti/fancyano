@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { productExchangesApi, productsApi, bookingsApi } from '@/lib/api';
+import { productExchangesApi, productsApi, bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
@@ -363,34 +363,31 @@ export function ProductExchange({
         ? `${exchangeReason ? `${exchangeReason} | ` : ''}Added: ${additionalProdCodes.join(', ')}`
         : exchangeReason || undefined;
 
-      const exchangeDataToCreate = {
-        booking_id: bookingId,
-        original_product_id: selectedOriginalProduct,
-        exchanged_product_id: selectedExchangedProduct,
-        exchange_date: new Date().toISOString().split('T')[0],
-        reason: combinedReason,
-        exchanged_by: exchangeBy,
-        booked_from: mainProductDates.booked_from,
-        booked_to: mainProductDates.booked_to,
-        additionalProducts: additionalProducts.map(productId => ({
+      const newProductIds = [
+        {
+          product_id: selectedExchangedProduct,
+          booked_from: mainProductDates.booked_from,
+          booked_to: mainProductDates.booked_to,
+          rent: exchangePreview?.calculations?.new_rent || 0,
+          security_deposit: exchangePreview?.calculations?.new_security || 0,
+        },
+        ...additionalProducts.map(productId => ({
           product_id: productId,
           booked_from: productDates[productId].booked_from,
-          booked_to: productDates[productId].booked_to
+          booked_to: productDates[productId].booked_to,
+          rent: exchangePreview?.calculations?.additional_rent || 0,
+          security_deposit: exchangePreview?.calculations?.additional_security || 0,
         }))
-      };
+      ];
 
-      const exchangeResult = await productExchangesApi.create(exchangeDataToCreate);
-        
-      // Handle additional products
-      if (exchangeDataToCreate.additionalProducts.length > 0) {
-        for (const addProd of exchangeDataToCreate.additionalProducts) {
-          try {
-            await axios.post(`${API_URL}/bookings/${bookingId}/products`, addProd);
-          } catch (error) {
-            console.error('Error adding additional product:', error);
-          }
-        }
-      }
+      const exchangeResult = await productExchangesApi.exchange({
+        old_booking_product_id: selectedOriginalProduct,
+        new_product_ids: newProductIds,
+        exchange_penalty: exchangePreview?.calculations?.exchange_penalty || 0,
+        downgrade_penalty: exchangePreview?.calculations?.downgrade_penalty || 0,
+        exchange_reason: combinedReason,
+        exchanged_by: exchangeBy,
+      });
       
       toast.success(`Product${additionalProducts.length > 0 ? 's' : ''} exchanged successfully`);
       setShowExchangeModal(false);
@@ -475,33 +472,36 @@ export function ProductExchange({
       
       // STEP 1: Create exchange in database first
       console.log('📝 Creating exchange in database...');
-      const exchangeResult = await productExchangesApi.create({
-        booking_id: pendingExchangeData.booking_id,
-        original_product_id: pendingExchangeData.original_product_id,
-        exchanged_product_id: pendingExchangeData.exchanged_product_id,
-        exchange_date: new Date().toISOString().split('T')[0],
-        reason: combinedReason,
+      const newProductIds = [
+        {
+          product_id: pendingExchangeData.exchanged_product_id,
+          booked_from: mainProductDates.booked_from,
+          booked_to: mainProductDates.booked_to,
+          rent: exchangePreview?.calculations?.new_rent || 0,
+          security_deposit: exchangePreview?.calculations?.new_security || 0,
+        },
+        ...(pendingExchangeData.additionalProducts || []).map((ap: any) => ({
+          product_id: ap.product_id,
+          booked_from: ap.booked_from,
+          booked_to: ap.booked_to,
+          rent: ap.rent || exchangePreview?.calculations?.additional_rent || 0,
+          security_deposit: ap.security_deposit || exchangePreview?.calculations?.additional_security || 0,
+        })),
+      ];
+
+      const exchangeResult = await productExchangesApi.exchange({
+        old_booking_product_id: pendingExchangeData.original_product_id,
+        new_product_ids: newProductIds,
+        exchange_penalty: exchangePreview?.calculations?.exchange_penalty || 0,
+        downgrade_penalty: exchangePreview?.calculations?.downgrade_penalty || 0,
+        exchange_reason: combinedReason,
         exchanged_by: exchangeBy,
-        booked_from: mainProductDates.booked_from,
-        booked_to: mainProductDates.booked_to
       });
       
       const createdExchange = exchangeResult.data;
       console.log('✅ Exchange created:', createdExchange.id);
       
-      // STEP 2: Handle additional products
-      if (pendingExchangeData.additionalProducts && pendingExchangeData.additionalProducts.length > 0) {
-        console.log('📦 Adding additional products...');
-        for (const addProd of pendingExchangeData.additionalProducts) {
-          try {
-            await axios.post(`${API_URL}/bookings/${pendingExchangeData.booking_id}/products`, addProd as any);
-          } catch (error) {
-            console.error('Error adding additional product:', error);
-          }
-        }
-      }
-      
-      // STEP 3: Record ONE payment for the TOTAL PAYMENT DUE amount
+      // STEP 2: Record ONE payment for the TOTAL PAYMENT DUE amount
       console.log('💰 Recording TOTAL payment due:', {
         exchange_id: createdExchange.id,
         total_payment_due: totalPaymentDue,
@@ -523,13 +523,13 @@ export function ProductExchange({
       }
       const detailedNarration = `Total Payment: ₹${totalPaymentDue.toLocaleString('en-IN')} (${breakdownParts.join(' + ')})${paymentNarration ? ` | ${paymentNarration.trim()}` : ''}`;
       
-      // Record the TOTAL payment amount
-      await productExchangesApi.recordPayment({
-        exchange_id: createdExchange.id,
+      // Record the TOTAL payment amount via the standard payment API
+      await paymentTransactionsApi.applyPayment({
+        booking_id: bookingId,
         amount: Math.max(0, parseFloat(totalPaymentDue.toString()) || 0),
         payment_method: paymentMethod.trim(),
         recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
-        narration: detailedNarration
+        notes: detailedNarration
       });
       
       console.log('✅ Total payment recorded successfully');
@@ -1221,20 +1221,20 @@ export function ProductExchange({
                       <div className="space-y-2 text-sm text-blue-800">
                         <div className="flex justify-between">
                           <span>Current Total Rent:</span>
-                          <span className="font-semibold">₹{currentProducts.reduce((sum, p) => sum + (parseFloat(String(p.rent)) || 0), 0).toLocaleString('en-IN')}</span>
+                          <span className="font-semibold">₹{(exchangePreview?.calculations?.current_total_rent ?? currentProducts.reduce((sum, p) => sum + (parseFloat(String(p.rent)) || 0), 0)).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex justify-between">
                           <span>After Exchange:</span>
-                          <span className="font-semibold text-green-700">₹{Math.floor(rentDifference).toLocaleString('en-IN')}</span>
+                          <span className="font-semibold text-green-700">₹{(exchangePreview?.calculations?.after_exchange_rent ?? 0).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="border-t border-blue-300 pt-2 mt-2">
                           <div className="flex justify-between">
                             <span>Current Security:</span>
-                            <span className="font-semibold">₹{currentProducts.reduce((sum, p) => sum + (parseFloat(p.security_deposit) || 0), 0).toLocaleString('en-IN')}</span>
+                            <span className="font-semibold">₹{(exchangePreview?.calculations?.current_total_security ?? currentProducts.reduce((sum, p) => sum + (parseFloat(p.security_deposit) || 0), 0)).toLocaleString('en-IN')}</span>
                           </div>
                           <div className="flex justify-between">
                             <span>After Exchange:</span>
-                            <span className="font-semibold text-green-700">₹{Math.floor(securityDifference).toLocaleString('en-IN')}</span>
+                            <span className="font-semibold text-green-700">₹{(exchangePreview?.calculations?.after_exchange_security ?? 0).toLocaleString('en-IN')}</span>
                           </div>
                         </div>
                         

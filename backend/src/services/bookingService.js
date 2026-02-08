@@ -46,12 +46,19 @@ class BookingService {
         throw new Error('Missing required fields: customerName, customerPhone, bookingDate, products');
       }
       
+      // Calculate overall booked_from (earliest) and booked_to (latest) from products
+      const bookedFromDates = products.map(p => p.bookedFrom).filter(Boolean).sort();
+      const bookedToDates = products.map(p => p.bookedTo).filter(Boolean).sort();
+      const overallBookedFrom = bookedFromDates.length > 0 ? bookedFromDates[0] : null;
+      const overallBookedTo = bookedToDates.length > 0 ? bookedToDates[bookedToDates.length - 1] : null;
+
       // Create booking
       const bookingResult = await client.query(
         `INSERT INTO bookings (
           customer_name, customer_phone, customer_email, customer_address,
-          booking_date, status, transport_charge, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+          booking_date, status, transport_charge, created_by,
+          booked_from, booked_to
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id, created_at`,
         [
           customerName,
@@ -61,7 +68,9 @@ class BookingService {
           bookingDate,
           'pending',
           transportCharge,
-          createdBy
+          createdBy,
+          overallBookedFrom,
+          overallBookedTo
         ]
       );
       
@@ -456,6 +465,8 @@ class BookingService {
     const result = await pool.query(
       `SELECT 
         b.*,
+        COALESCE(b.booked_from, MIN(bp.booked_from)) as booked_from,
+        COALESCE(b.booked_to, MAX(bp.booked_to)) as booked_to,
         json_agg(
           json_build_object(
             'id', bp.id,
@@ -512,19 +523,24 @@ class BookingService {
         b.customer_phone,
         b.customer_email,
         b.booking_date,
-        b.booked_from,
-        b.booked_to,
+        COALESCE(b.booked_from, MIN(bp.booked_from)) as booked_from,
+        COALESCE(b.booked_to, MAX(bp.booked_to)) as booked_to,
         b.status,
         b.transport_charge,
         b.transport_paid,
+        b.created_by,
         b.created_at,
-        COUNT(bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
-        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
-        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
-        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
-        COALESCE(SUM(pc.paid_amount), 0) as total_paid,
+        COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
+        COALESCE(SUM(DISTINCT bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
+        COALESCE(SUM(DISTINCT bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
+        COALESCE(SUM(DISTINCT bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
+        COALESCE((
+          SELECT SUM(pc.paid_amount) 
+          FROM product_charges pc 
+          WHERE pc.booking_product_id IN (SELECT bp2.id FROM booking_products bp2 WHERE bp2.booking_id = b.id)
+        ), 0) as total_paid,
         json_agg(
-          json_build_object(
+          DISTINCT jsonb_build_object(
             'id', bp.id,
             'product_id', p.id,
             'name', p.name,
@@ -538,12 +554,11 @@ class BookingService {
             'status', bp.status,
             'booked_from', bp.booked_from,
             'booked_to', bp.booked_to
-          ) ORDER BY bp.id
+          )
         ) FILTER (WHERE p.id IS NOT NULL) as products
       FROM bookings b
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
       LEFT JOIN products p ON bp.product_id = p.id
-      LEFT JOIN product_charges pc ON bp.id = pc.booking_product_id
       WHERE 1=1
     `;
     
@@ -818,15 +833,16 @@ class BookingService {
   async getBookingsByProductId(productId) {
     try {
       const result = await pool.query(
-        `SELECT DISTINCT b.id, b.booking_date, b.booked_from, b.booked_to, b.status,
+        `SELECT b.id, b.booking_date, b.status,
                 b.customer_name, b.customer_phone,
-                bp.id as booking_product_id, bp.status as product_status
+                bp.id as booking_product_id, bp.status as product_status,
+                bp.booked_from, bp.booked_to
          FROM bookings b
          JOIN booking_products bp ON bp.booking_id = b.id
          WHERE bp.product_id = $1
            AND bp.status NOT IN ('cancelled', 'exchanged')
            AND b.status NOT IN ('cancelled')
-         ORDER BY b.booked_from`,
+         ORDER BY bp.booked_from`,
         [productId]
       );
       return result.rows;

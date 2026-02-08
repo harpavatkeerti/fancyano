@@ -41,6 +41,32 @@ router.get('/applicable', async (req, res) => {
   }
 });
 
+// PUT replace all policies for a given type (batch save)
+router.put('/batch/:policy_type', async (req, res) => {
+  try {
+    const { policy_type } = req.params;
+    const { tiers } = req.body;
+
+    const validTypes = ['exchange_penalty', 'cancellation_penalty'];
+    if (!validTypes.includes(policy_type)) {
+      return res.status(400).json({
+        error: 'Invalid policy_type for batch replace',
+        valid_types: validTypes
+      });
+    }
+
+    if (!Array.isArray(tiers) || tiers.length === 0) {
+      return res.status(400).json({ error: 'tiers array is required and must not be empty' });
+    }
+
+    const created = await policyService.replacePoliciesForType(policy_type, tiers);
+    res.json({ success: true, policies: created });
+  } catch (error) {
+    console.error('Error batch replacing policies:', error);
+    res.status(500).json({ error: 'Failed to save policies', details: error.message });
+  }
+});
+
 // POST create new policy
 router.post('/', async (req, res) => {
   try {

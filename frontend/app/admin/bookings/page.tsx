@@ -1396,8 +1396,9 @@ export default function BookingsPage() {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredBookings.map((booking) => {
-              const products = Array.isArray(booking.products) ? booking.products : [];
-              const productCount = products.length;
+              const allProducts = Array.isArray(booking.products) ? booking.products : [];
+              const activeProducts = allProducts.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
+              const productCount = activeProducts.length;
               const isUrgent = isBookingUrgent(booking);
               const urgentReason = isUrgent ? getUrgentReason(booking) : '';
               const isDelayed = isBookingDelayed(booking);
@@ -2678,20 +2679,26 @@ export default function BookingsPage() {
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-purple-600">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
                   </svg>
-                  Booked Products ({Array.isArray(viewingBooking.products) ? viewingBooking.products.length : 0})
+                  Booked Products ({Array.isArray(viewingBooking.products) ? viewingBooking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged').length : 0})
                 </h3>
                 {Array.isArray(viewingBooking.products) && viewingBooking.products.length > 0 ? (
                   <div className="space-y-3">
                     {viewingBooking.products.map((product: any, index: number) => {
                       const hasImage = product.image && product.image !== null && product.image !== '';
                       const imageUrl = hasImage ? getImageUrl(product.image) : null;
+                      const isCancelled = product.status === 'cancelled';
+                      const isExchanged = product.status === 'exchanged';
                       
                       const bookedFrom = product.booked_from || viewingBooking.booked_from;
                       const bookedTo = product.booked_to || viewingBooking.booked_to;
                       const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}_${index}`;
                       
                       return (
-                        <div key={uniqueKey} className="bg-white rounded-lg p-4 shadow-sm border border-purple-200">
+                        <div key={uniqueKey} className={`bg-white rounded-lg p-4 shadow-sm border ${
+                          isCancelled ? 'opacity-60 border-red-300 bg-red-50' :
+                          isExchanged ? 'opacity-60 border-orange-300 bg-orange-50' :
+                          'border-purple-200'
+                        }`}>
                           <div className="flex justify-between items-start gap-4">
                             {/* Product Image */}
                             {imageUrl && (
@@ -2708,7 +2715,15 @@ export default function BookingsPage() {
                               </div>
                             )}
                           <div className="flex-1">
-                            <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
+                            <div className="flex items-center gap-2">
+                              <p className="font-semibold text-gray-900 text-lg">{product.name}</p>
+                              {isCancelled && (
+                                <span className="px-2 py-0.5 bg-red-100 text-red-800 rounded-full text-xs font-semibold">❌ Cancelled</span>
+                              )}
+                              {isExchanged && (
+                                <span className="px-2 py-0.5 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">🔄 Exchanged</span>
+                              )}
+                            </div>
                             <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
                             {product.size && (
                               <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>

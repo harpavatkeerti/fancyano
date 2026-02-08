@@ -23,17 +23,35 @@ describe('BookingService', () => {
   });
   
   afterAll(async () => {
-    // Cleanup
+    // Cleanup test products (pool.end() handled by global teardown)
     await pool.query('DELETE FROM products WHERE code LIKE \'BOOK%\'');
-    await pool.end();
   });
   
   beforeEach(async () => {
-    // Clean up bookings and related data before each test
-    await pool.query('DELETE FROM booking_activity_log');
-    await pool.query('DELETE FROM product_charges');
-    await pool.query('DELETE FROM booking_products');
-    await pool.query('DELETE FROM bookings');
+    // ONLY clean up test-created data — never wipe entire tables!
+    // Find bookings linked to our test products
+    const testBookingIds = await pool.query(
+      `SELECT DISTINCT booking_id FROM booking_products WHERE product_id IN ($1, $2)`,
+      [testProductId1, testProductId2]
+    );
+    const ids = testBookingIds.rows.map(r => r.booking_id);
+    
+    if (ids.length > 0) {
+      await pool.query('DELETE FROM booking_cancellation_history WHERE booking_id = ANY($1)', [ids]);
+      await pool.query('DELETE FROM booking_exchange_history WHERE booking_id = ANY($1)', [ids]);
+      await pool.query('DELETE FROM payment_transactions WHERE booking_id = ANY($1)', [ids]);
+      await pool.query('DELETE FROM booking_activity_log WHERE booking_id = ANY($1)', [ids]);
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = ANY($1))', [ids]);
+      await pool.query('DELETE FROM booking_products WHERE booking_id = ANY($1)', [ids]);
+      await pool.query('DELETE FROM bookings WHERE id = ANY($1)', [ids]);
+    }
+    
+    // Also clean orphaned test bookings (from rollback/failed tests) by recognizable test phone numbers
+    await pool.query(`
+      DELETE FROM bookings 
+      WHERE customer_phone IN ('1234567890', '9876543210', '1111111111', '9999999999', '8888888888')
+        AND id NOT IN (SELECT DISTINCT booking_id FROM booking_products)
+    `);
   });
   
   describe('createBooking', () => {
@@ -428,6 +446,8 @@ describe('BookingService', () => {
     
     // Test: Rolls back transaction if any step fails
     test('should rollback on error', async () => {
+      const countBefore = await pool.query('SELECT COUNT(*)::int AS cnt FROM bookings');
+      
       const bookingData = {
         customerName: 'Test',
         customerPhone: '1234567890',
@@ -449,9 +469,9 @@ describe('BookingService', () => {
         .rejects
         .toThrow();
       
-      // Verify no booking was created
-      const bookings = await pool.query('SELECT * FROM bookings');
-      expect(bookings.rows).toHaveLength(0);
+      // Verify no new booking was created (count unchanged)
+      const countAfter = await pool.query('SELECT COUNT(*)::int AS cnt FROM bookings');
+      expect(countAfter.rows[0].cnt).toBe(countBefore.rows[0].cnt);
     });
   });
   
@@ -722,7 +742,7 @@ describe('BookingService', () => {
       expect(booking.status).toBe('confirmed');
       expect(booking.transport_charge).toBe(100);
       expect(booking.products).toHaveLength(1);
-      expect(booking.products[0].product_name).toBe('Test Product 1');
+      expect(booking.products[0].name).toBe('Test Product 1');
       expect(booking.products[0].rent).toBe(2500);
     });
     
@@ -788,6 +808,118 @@ describe('BookingService', () => {
       
       expect(page1.length).toBeLessThanOrEqual(2);
       expect(page2.length).toBeLessThanOrEqual(2);
+    });
+  });
+  
+  describe('updateBooking', () => {
+    let testBookingId, testBP1;
+    
+    beforeEach(async () => {
+      const booking = await pool.query(
+        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+         VALUES ('Update Test Customer', '9999999999', CURRENT_DATE, 'confirmed', 'admin')
+         RETURNING id`
+      );
+      testBookingId = booking.rows[0].id;
+      
+      const bp1 = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-06-01', '2024-06-10', 'confirmed', 3000, 1500, 3000)
+         RETURNING id`,
+        [testBookingId, testProductId1]
+      );
+      testBP1 = bp1.rows[0].id;
+    });
+    
+    test('should update measurements for a booking product', async () => {
+      const measurementsKey = `${testBP1}_2024-06-01_2024-06-10`;
+      const result = await bookingService.updateBooking(testBookingId, {
+        measurements: {
+          [measurementsKey]: { chest: 40, waist: 32 }
+        }
+      });
+      
+      expect(result.id).toBe(testBookingId);
+      
+      const bp = await pool.query(
+        'SELECT measurements FROM booking_products WHERE id = $1',
+        [testBP1]
+      );
+      expect(bp.rows[0].measurements).toEqual({ chest: 40, waist: 32 });
+    });
+    
+    test('should update special requirements for a booking product', async () => {
+      const key = `${testBP1}_2024-06-01_2024-06-10`;
+      const result = await bookingService.updateBooking(testBookingId, {
+        special_requirements: JSON.stringify({
+          [key]: 'Needs alteration at waist'
+        })
+      });
+      
+      expect(result.id).toBe(testBookingId);
+      
+      const bp = await pool.query(
+        'SELECT special_requirements FROM booking_products WHERE id = $1',
+        [testBP1]
+      );
+      expect(bp.rows[0].special_requirements).toBe('Needs alteration at waist');
+    });
+    
+    test('should throw error for non-existent booking', async () => {
+      await expect(bookingService.updateBooking(999999, { measurements: {} }))
+        .rejects
+        .toThrow('Booking not found');
+    });
+  });
+  
+  describe('getBookingsByProductId', () => {
+    let testBookingId;
+    
+    beforeEach(async () => {
+      const booking = await pool.query(
+        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+         VALUES ('Availability Test', '8888888888', CURRENT_DATE, 'confirmed', 'admin')
+         RETURNING id`
+      );
+      testBookingId = booking.rows[0].id;
+      
+      await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-07-01', '2024-07-10', 'confirmed', 2000, 1000, 2000)`,
+        [testBookingId, testProductId1]
+      );
+      
+      // Also add a cancelled product (should NOT appear in results)
+      await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-08-01', '2024-08-10', 'cancelled', 1500, 800, 1500)`,
+        [testBookingId, testProductId1]
+      );
+    });
+    
+    test('should return active bookings for a product', async () => {
+      const bookings = await bookingService.getBookingsByProductId(testProductId1);
+      
+      expect(bookings.length).toBeGreaterThanOrEqual(1);
+      // Should have booked_from/booked_to from booking_products
+      const activeBooking = bookings.find(b => b.booking_product_id);
+      expect(activeBooking).toBeDefined();
+      expect(activeBooking.booked_from).toBeDefined();
+      expect(activeBooking.booked_to).toBeDefined();
+    });
+    
+    test('should exclude cancelled products', async () => {
+      const bookings = await bookingService.getBookingsByProductId(testProductId1);
+      
+      // None should have status 'cancelled'
+      bookings.forEach(b => {
+        expect(b.product_status).not.toBe('cancelled');
+      });
+    });
+    
+    test('should return empty array for product with no bookings', async () => {
+      const bookings = await bookingService.getBookingsByProductId(999999);
+      expect(bookings).toEqual([]);
     });
   });
 });

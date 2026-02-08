@@ -17,6 +17,8 @@ describe('Product Exchanges Routes', () => {
   let testPolicyId;
 
   beforeAll(async () => {
+    // Deactivate real policies to avoid overlap conflicts with test policies
+    await pool.query(`UPDATE rental_policies SET is_active = false WHERE policy_key NOT LIKE 'test_%'`);
     // Clean up ALL existing test policies that might conflict from other test suites
     await pool.query(`DELETE FROM rental_policies WHERE policy_key LIKE 'test_%'`);
     
@@ -71,6 +73,8 @@ describe('Product Exchanges Routes', () => {
     await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE'`);
     await pool.query(`DELETE FROM products WHERE code LIKE 'TEST-EXCH-%'`);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key IN ('test_exchange_0_1', 'test_exchange_2_3')`);
+    // Re-activate real policies
+    await pool.query(`UPDATE rental_policies SET is_active = true WHERE policy_key NOT LIKE 'test_%'`);
   });
 
   afterEach(async () => {
@@ -122,13 +126,13 @@ describe('Product Exchanges Routes', () => {
           old_booking_product_id: testBookingProductId,
           new_product_ids: [
             {
-              productId: testProduct2Id,
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
               rent: 60000,
-              securityDeposit: 25000
+              security_deposit: 25000
             }
           ],
-          exchange_penalty: 5000,
-          downgrade_penalty: 0,
           exchange_reason: 'Customer requested different style',
           exchanged_by: 'test-user'
         });
@@ -156,18 +160,20 @@ describe('Product Exchanges Routes', () => {
           old_booking_product_id: testBookingProductId,
           new_product_ids: [
             {
-              productId: testProduct2Id,
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
               rent: 60000,
-              securityDeposit: 25000
+              security_deposit: 25000
             },
             {
-              productId: product3Id,
+              product_id: product3Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
               rent: 30000,
-              securityDeposit: 15000
+              security_deposit: 15000
             }
           ],
-          exchange_penalty: 5000,
-          downgrade_penalty: 0,
           exchange_reason: 'Customer needs multiple items',
           exchanged_by: 'test-user'
         });
@@ -199,9 +205,11 @@ describe('Product Exchanges Routes', () => {
           old_booking_product_id: testBookingProductId,
           new_product_ids: [
             {
-              productId: testProduct2Id,
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
               rent: 60000,
-              securityDeposit: 25000
+              security_deposit: 25000
             }
           ],
           exchanged_by: 'test-user'
@@ -214,9 +222,11 @@ describe('Product Exchanges Routes', () => {
           old_booking_product_id: testBookingProductId,
           new_product_ids: [
             {
-              productId: testProduct2Id,
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
               rent: 60000,
-              securityDeposit: 25000
+              security_deposit: 25000
             }
           ],
           exchanged_by: 'test-user'

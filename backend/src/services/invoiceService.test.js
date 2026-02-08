@@ -32,7 +32,6 @@ describe('InvoiceService', () => {
     await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-INV-SERVICE']);
     await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-INV-SERVICE']);
     await pool.query('DELETE FROM products WHERE id = $1', [testProductId]);
-    await pool.end();
   });
 
   afterEach(async () => {

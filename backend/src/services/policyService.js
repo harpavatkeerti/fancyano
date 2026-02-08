@@ -202,6 +202,68 @@ class PolicyService {
   }
 
   /**
+   * Replace all policies for a given policy type with new tiers.
+   * Deactivates all existing policies of that type, then inserts the new ones.
+   * This avoids overlap conflicts when changing tier boundaries.
+   * @param {string} policyType - 'exchange_penalty' or 'cancellation_penalty'
+   * @param {Array<Object>} tiers - Array of tier objects to create
+   * @returns {Promise<Array>} - Array of created policy rows
+   */
+  async replacePoliciesForType(policyType, tiers) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      // Deactivate all existing policies of this type
+      await client.query(
+        `UPDATE rental_policies SET is_active = false, updated_at = CURRENT_TIMESTAMP 
+         WHERE policy_type = $1 AND is_active = true`,
+        [policyType]
+      );
+      
+      // Insert new tiers
+      const created = [];
+      for (const tier of tiers) {
+        const result = await client.query(
+          `INSERT INTO rental_policies 
+           (policy_key, policy_name, policy_type, value_type, value, 
+            days_from_booking_min, days_from_booking_max, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (policy_key) 
+           DO UPDATE SET
+             policy_name = EXCLUDED.policy_name,
+             value = EXCLUDED.value,
+             days_from_booking_min = EXCLUDED.days_from_booking_min,
+             days_from_booking_max = EXCLUDED.days_from_booking_max,
+             is_active = true,
+             updated_at = CURRENT_TIMESTAMP
+           RETURNING *`,
+          [
+            tier.policy_key,
+            tier.policy_name,
+            policyType,
+            tier.value_type || 'percentage',
+            tier.value,
+            tier.days_from_booking_min,
+            tier.days_from_booking_max,
+            tier.created_by || 'admin'
+          ]
+        );
+        created.push(result.rows[0]);
+      }
+      
+      await client.query('COMMIT');
+      return created;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error replacing policies:', error);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Create or update a policy
    * @param {Object} policyData - Policy data
    * @returns {Promise<Object>} - Created/updated policy

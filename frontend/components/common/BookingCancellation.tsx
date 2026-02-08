@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { bookingCancellationApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
@@ -8,11 +8,14 @@ interface Product {
   name: string;
   rent: number;
   security_deposit: number;
+  rent_paid: number;
+  security_paid: number;
 }
 
 interface ProductPenalty extends Product {
   penalty_percentage: number;
   penalty_amount: number;
+  refund_amount: number;
 }
 
 interface CancellationPreview {
@@ -23,23 +26,29 @@ interface CancellationPreview {
   policy: any;
   all_products: Product[];
   products_to_cancel: ProductPenalty[];
-  total_cancelled_rent_required?: number;
-  total_cancelled_security_required?: number;
-  total_cancelled_rent?: number;  // Actual paid rent for cancelled products
-  total_cancelled_security?: number;  // Actual paid security for cancelled products
+  total_cancelled_rent: number;
+  total_cancelled_security: number;
+  total_rent_paid: number;
+  total_security_paid: number;
   total_penalty_amount: number;
-  difference_of_amount_paid?: number;
-  remaining_rent_required?: number;
-  advance_paid?: number;
-  base_refund: number;
-  total_paid: number;
-  total_refunded: number;
-  net_paid: number;
-  paid_rent?: number;
-  paid_security_deposit?: number;
+  total_refund_amount: number;
   payment_action: 'collect' | 'refund' | 'none';
   payment_difference: number;
   is_partial: boolean;
+}
+
+interface CancellationSummary {
+  selected_count: number;
+  total_count: number;
+  selected_rent: number;
+  selected_security: number;
+  selected_rent_paid: number;
+  selected_security_paid: number;
+  total_penalty: number;
+  extra_refund: number;
+  refund_amount: number;
+  payment_action: 'collect' | 'refund' | 'none';
+  payment_difference: number;
 }
 
 interface BookingCancellationProps {
@@ -64,8 +73,10 @@ export function BookingCancellation({
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancellationReason, setCancellationReason] = useState('');
   const [preview, setPreview] = useState<CancellationPreview | null>(null);
+  const [summary, setSummary] = useState<CancellationSummary | null>(null);
   const [loading, setLoading] = useState(false);
   const [fetchingPreview, setFetchingPreview] = useState(false);
+  const [fetchingSummary, setFetchingSummary] = useState(false);
   
   // Product selection for partial cancellation
   const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
@@ -78,18 +89,74 @@ export function BookingCancellation({
   const [extraRefundNote, setExtraRefundNote] = useState('');
   
   const [showConfirmation, setShowConfirmation] = useState(false);
+  
+  // Debounce timer ref
+  const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const canBeCancelled = bookingStatus !== 'cancelled' && bookingStatus !== 'completed';
+
+  // Build penalty overrides map from editing state
+  const getPenaltyOverrides = useCallback((): { [key: number]: number } => {
+    const overrides: { [key: number]: number } = {};
+    for (const [productId, value] of Object.entries(editingPenalties)) {
+      if (value === '') {
+        overrides[parseInt(productId)] = 0;
+      } else {
+        const parsed = parseFloat(value);
+        if (!isNaN(parsed)) {
+          overrides[parseInt(productId)] = parsed;
+        }
+      }
+    }
+    return overrides;
+  }, [editingPenalties]);
+
+  // Fetch summary from backend whenever selection, penalties, or extra refund changes
+  const fetchSummary = useCallback(async (
+    productIds: number[],
+    penalties: { [key: number]: number },
+    extra: number
+  ) => {
+    if (productIds.length === 0) {
+      setSummary(null);
+      return;
+    }
+    try {
+      setFetchingSummary(true);
+      const response = await bookingCancellationApi.calculateSummary({
+        booking_id: bookingId,
+        selected_product_ids: productIds,
+        penalty_overrides: Object.keys(penalties).length > 0 ? penalties : undefined,
+        extra_refund: extra || undefined,
+      });
+      setSummary(response.data);
+    } catch (error: any) {
+      console.error('Error fetching cancellation summary:', error);
+    } finally {
+      setFetchingSummary(false);
+    }
+  }, [bookingId]);
+
+  // Debounced summary fetch — triggers whenever inputs change
+  useEffect(() => {
+    if (!preview || !showCancelModal) return;
+    
+    if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
+    summaryTimerRef.current = setTimeout(() => {
+      const extra = parseFloat(extraRefund) || 0;
+      fetchSummary(selectedProducts, getPenaltyOverrides(), extra);
+    }, 300);
+    
+    return () => {
+      if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
+    };
+  }, [selectedProducts, editingPenalties, extraRefund, preview, showCancelModal, fetchSummary, getPenaltyOverrides]);
 
   useEffect(() => {
     if (autoOpen && canBeCancelled) {
       handleOpenCancelModal();
     }
   }, [autoOpen, bookingId]);
-
-  // Note: Removed auto-refetch on selection changes
-  // The component now calculates totals dynamically based on selected products
-  // without needing to call the API again
 
   async function handleOpenCancelModal() {
     if (!canBeCancelled) {
@@ -109,10 +176,9 @@ export function BookingCancellation({
       
       // Initialize all products as selected if none selected yet
       if (selectedProducts.length === 0 && response.data.all_products.length > 0) {
-        setSelectedProducts(response.data.all_products.map((p: Product) => p.product_id));
+        const allIds = response.data.all_products.map((p: Product) => p.product_id);
+        setSelectedProducts(allIds);
       }
-      
-      console.log('Cancellation Preview:', response.data);
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
       toast.error(error.response?.data?.error || 'Failed to fetch cancellation details');
@@ -144,122 +210,12 @@ export function BookingCancellation({
     }));
   }
 
-  function getProductPenalty(product: ProductPenalty): number {
+  // Get display penalty for a product (user-edited or backend default)
+  function getDisplayPenalty(product: ProductPenalty): number | string {
     const editedValue = editingPenalties[product.product_id];
-    if (editedValue !== undefined) {
-      // If user has edited the field (even if empty), use their value
-      // Empty string or invalid number = 0
-      if (editedValue === '') return 0;
-      return parseFloat(editedValue) || 0;
-    }
-    // No edit made - use default calculated penalty
+    if (editedValue !== undefined) return editedValue;
     return product.penalty_amount;
   }
-
-  function getTotalPenalty(): number {
-    if (!preview) return 0;
-    // Only calculate penalty for SELECTED products
-    return preview.products_to_cancel
-      .filter(product => selectedProducts.includes(product.product_id))
-      .reduce((sum, product) => {
-        return sum + getProductPenalty(product);
-      }, 0);
-  }
-
-  function getExtraRefundAmount(): number {
-    const amount = parseFloat(extraRefund);
-    return isNaN(amount) ? 0 : amount;
-  }
-
-  function getTotalCancelledRent(): number {
-    if (!preview) return 0;
-    // Use the backend-calculated rent amount (which accounts for what was actually paid)
-    // If we're cancelling all products, use the preview's total_cancelled_rent directly
-    // If partial cancellation, calculate proportionally
-    if (selectedProducts.length === 0) return 0;
-    
-    const allProductIds = preview.all_products.map(p => p.product_id);
-    const allSelected = allProductIds.every(id => selectedProducts.includes(id));
-    
-    if (allSelected) {
-      // All products selected - use backend's calculated value
-      return preview.total_cancelled_rent || 0;
-    } else {
-      // Partial selection - calculate proportionally based on what backend said is available
-      const totalRentRequired = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
-      const selectedRentRequired = preview.all_products
-        .filter(p => selectedProducts.includes(p.product_id))
-        .reduce((sum, p) => sum + p.rent, 0);
-      
-      if (totalRentRequired === 0) return 0;
-      
-      // Calculate ratio and apply to paid rent
-      const ratio = selectedRentRequired / totalRentRequired;
-      const paidRent = preview.paid_rent || 0;
-      return paidRent * ratio;
-    }
-  }
-
-  function getTotalCancelledSecurity(): number {
-    if (!preview) return 0;
-    // Use the backend-calculated security amount (which accounts for what was actually paid)
-    // If we're cancelling all products, use the preview's total_cancelled_security directly
-    // If partial cancellation, calculate proportionally
-    if (selectedProducts.length === 0) return 0;
-    
-    const allProductIds = preview.all_products.map(p => p.product_id);
-    const allSelected = allProductIds.every(id => selectedProducts.includes(id));
-    
-    if (allSelected) {
-      // All products selected - use backend's calculated value
-      return preview.total_cancelled_security || 0;
-    } else {
-      // Partial selection - calculate proportionally based on what backend said is available
-      const totalSecurityRequired = preview.all_products.reduce((sum, p) => sum + p.security_deposit, 0);
-      const selectedSecurityRequired = preview.all_products
-        .filter(p => selectedProducts.includes(p.product_id))
-        .reduce((sum, p) => sum + p.security_deposit, 0);
-      
-      if (totalSecurityRequired === 0) return 0;
-      
-      // Calculate ratio and apply to paid security
-      const ratio = selectedSecurityRequired / totalSecurityRequired;
-      const paidSecurity = preview.paid_security_deposit || 0;
-      return paidSecurity * ratio;
-    }
-  }
-
-  function getTotalCancelledRentRequired(): number {
-    if (!preview) return 0;
-    // Get the required rent for selected products
-    return preview.all_products
-      .filter(p => selectedProducts.includes(p.product_id))
-      .reduce((sum, p) => sum + p.rent, 0);
-  }
-
-  function getRemainingProductRent(): number {
-    if (!preview) return 0;
-    // Calculate remaining product rent (products NOT being cancelled)
-    const totalRent = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
-    const cancelledRent = getTotalCancelledRentRequired();
-    return totalRent - cancelledRent;
-  }
-
-  function getFinalRefundAmount(): number {
-    if (!preview) return 0;
-    
-    // CORRECT FORMULA: Refund = Total Booking Rent - (Remaining Due + Penalty + Remaining Product Rent)
-    const totalBookingRent = preview.all_products.reduce((sum, p) => sum + p.rent, 0);
-    const advancePaid = preview.net_paid || 0;
-    const remainingDue = Math.max(0, totalBookingRent - advancePaid);
-    const penalty = getTotalPenalty();
-    const remainingProductRent = getRemainingProductRent();
-    const extra = getExtraRefundAmount();
-    
-    return Math.floor(totalBookingRent - (remainingDue + penalty + remainingProductRent) + extra);
-  }
-
-  // Removed - now auto-recalculates on product selection changes
 
   function handleProceedToConfirmation() {
     if (selectedProducts.length === 0) {
@@ -279,13 +235,12 @@ export function BookingCancellation({
     try {
       setLoading(true);
       
-      // Prepare per-product penalties (only for manually edited ones)
-      const cancellationPenalties = preview?.products_to_cancel
-        .filter(p => editingPenalties[p.product_id] !== undefined)
-        .map(p => ({
-          booking_product_id: p.product_id,
-          penalty_amount: getProductPenalty(p),
-        })) || [];
+      // Build penalty overrides for products that were manually edited
+      const penaltyOverrides = getPenaltyOverrides();
+      const cancellationPenalties = Object.entries(penaltyOverrides).map(([id, amount]) => ({
+        booking_product_id: parseInt(id),
+        penalty_amount: amount,
+      }));
       
       await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
@@ -303,6 +258,7 @@ export function BookingCancellation({
       setExtraRefund('');
       setExtraRefundNote('');
       setPreview(null);
+      setSummary(null);
       setSelectedProducts([]);
       setEditingPenalties({});
       onCancellationComplete();
@@ -395,7 +351,7 @@ export function BookingCancellation({
                         const isSelected = selectedProducts.includes(product.product_id);
                         const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
                         const calculatedPenalty = penaltyProduct ? penaltyProduct.penalty_amount : 0;
-                        const currentPenalty = penaltyProduct ? getProductPenalty(penaltyProduct) : calculatedPenalty;
+                        const currentPenalty = penaltyProduct ? getDisplayPenalty(penaltyProduct) : calculatedPenalty;
                         
                         return (
                           <div
@@ -454,49 +410,59 @@ export function BookingCancellation({
                     </div>
                   </div>
 
-                  {/* Summary */}
-                  {selectedProducts.length > 0 && (
+                  {/* Summary — all values from backend */}
+                  {selectedProducts.length > 0 && summary && (
                     <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                      <h3 className="font-semibold text-yellow-900 mb-3">Cancellation Summary (Live Preview)</h3>
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="font-semibold text-yellow-900">Cancellation Summary (Live Preview)</h3>
+                        {fetchingSummary && (
+                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-yellow-600"></div>
+                        )}
+                      </div>
                       <div className="space-y-2 text-sm">
                         <div className="flex justify-between">
                           <span className="text-yellow-800">Products to Cancel:</span>
-                          <span className="font-medium text-yellow-900">{selectedProducts.length} of {preview.all_products.length}</span>
+                          <span className="font-medium text-yellow-900">{summary.selected_count} of {summary.total_count}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-yellow-800">Total Rent (Cancelled):</span>
-                          <span className="font-medium text-yellow-900">₹{Math.floor(getTotalCancelledRentRequired()).toLocaleString('en-IN')}</span>
+                          <span className="text-yellow-800">Cancelled Product Rent:</span>
+                          <span className="font-medium text-yellow-900">₹{Math.floor(summary.selected_rent).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-yellow-800">Total Security (Cancelled):</span>
-                          <span className="font-medium text-yellow-900">₹{Math.floor(getTotalCancelledSecurity()).toLocaleString('en-IN')}</span>
+                          <span className="text-yellow-800">Cancelled Product Security:</span>
+                          <span className="font-medium text-yellow-900">₹{Math.floor(summary.selected_security).toLocaleString('en-IN')}</span>
                         </div>
-                        {preview && preview.paid_security_deposit !== undefined && preview.paid_security_deposit === 0 && (
-                          <div className="text-xs text-gray-600 italic ml-4">
-                            Note: Only ₹{Math.floor(preview.paid_security_deposit || 0).toLocaleString('en-IN')} security was paid
-                          </div>
-                        )}
                         <div className="flex justify-between">
-                          <span className="text-yellow-800">Cancellation Penalty:</span>
-                          <span className="font-medium text-red-600">-₹{Math.floor(getTotalPenalty()).toLocaleString('en-IN')}</span>
+                          <span className="text-yellow-800">Cancellation Penalty ({preview.penalty_percentage}%):</span>
+                          <span className="font-medium text-red-600">₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
                         </div>
-                        {getRemainingProductRent() > 0 && (
-                          <div className="flex justify-between">
-                            <span className="text-yellow-800">Remaining Product Rent:</span>
-                            <span className="font-medium text-blue-600">-₹{Math.floor(getRemainingProductRent()).toLocaleString('en-IN')}</span>
-                          </div>
-                        )}
-                        {getExtraRefundAmount() > 0 && (
-                          <div className="flex justify-between">
-                            <span className="text-yellow-800">Extra Refund:</span>
-                            <span className="font-medium text-green-600">+₹{Math.floor(getExtraRefundAmount()).toLocaleString('en-IN')}</span>
-                          </div>
-                        )}
+
                         <div className="border-t border-yellow-300 pt-2 mt-2">
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Rent Paid (for cancelled products):</span>
+                            <span>₹{Math.floor(summary.selected_rent_paid).toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Security Paid (for cancelled products):</span>
+                            <span>₹{Math.floor(summary.selected_security_paid).toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="flex justify-between text-xs text-gray-600">
+                            <span>Penalty Deduction:</span>
+                            <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
+                          </div>
+                          {summary.extra_refund > 0 && (
+                            <div className="flex justify-between text-xs text-gray-600">
+                              <span>Extra Refund:</span>
+                              <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="border-t border-yellow-300 pt-2 mt-1">
                           <div className="flex justify-between items-center">
-                            <span className="font-semibold text-yellow-900">Final Refund Amount:</span>
+                            <span className="font-semibold text-yellow-900">Refund Amount:</span>
                             <span className="font-bold text-green-600 text-lg">
-                              ₹{Math.floor(getFinalRefundAmount()).toLocaleString('en-IN')}
+                              ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
                             </span>
                           </div>
                         </div>
@@ -602,44 +568,52 @@ export function BookingCancellation({
                 </p>
               </div>
 
+              {summary && (
               <div className="bg-gray-50 rounded-lg p-4 mb-6">
                 <div className="text-sm space-y-2">
                   <div className="flex justify-between">
                     <span className="text-gray-600">Products:</span>
-                    <span className="font-medium">{selectedProducts.length}</span>
+                    <span className="font-medium">{summary.selected_count}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Total Rent (Cancelled):</span>
-                    <span className="font-medium">₹{Math.floor(getTotalCancelledRentRequired()).toLocaleString('en-IN')}</span>
+                    <span className="text-gray-600">Cancelled Product Rent:</span>
+                    <span className="font-medium">₹{Math.floor(summary.selected_rent).toLocaleString('en-IN')}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Total Security (Cancelled):</span>
-                    <span className="font-medium">₹{Math.floor(getTotalCancelledSecurity()).toLocaleString('en-IN')}</span>
+                    <span className="text-gray-600">Cancelled Product Security:</span>
+                    <span className="font-medium">₹{Math.floor(summary.selected_security).toLocaleString('en-IN')}</span>
                   </div>
                   <div className="flex justify-between">
-                    <span className="text-gray-600">Cancellation Penalty:</span>
-                    <span className="font-medium text-red-600">-₹{Math.floor(getTotalPenalty()).toLocaleString('en-IN')}</span>
+                    <span className="text-gray-600">Cancellation Penalty ({preview?.penalty_percentage || 0}%):</span>
+                    <span className="font-medium text-red-600">₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
                   </div>
-                  {getRemainingProductRent() > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Remaining Product Rent:</span>
-                      <span className="font-medium text-blue-600">-₹{Math.floor(getRemainingProductRent()).toLocaleString('en-IN')}</span>
-                    </div>
-                  )}
-                  {getExtraRefundAmount() > 0 && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-600">Extra Refund:</span>
-                      <span className="font-medium text-green-600">+₹{Math.floor(getExtraRefundAmount()).toLocaleString('en-IN')}</span>
+                  <div className="flex justify-between text-xs text-gray-500 pt-1">
+                    <span>Rent Paid (for cancelled products):</span>
+                    <span>₹{Math.floor(summary.selected_rent_paid).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-gray-500">
+                    <span>Security Paid (for cancelled products):</span>
+                    <span>₹{Math.floor(summary.selected_security_paid).toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between text-xs text-gray-500">
+                    <span>Penalty Deduction:</span>
+                    <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
+                  </div>
+                  {summary.extra_refund > 0 && (
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Extra Refund:</span>
+                      <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
                     </div>
                   )}
                   <div className="flex justify-between pt-2 border-t border-gray-200">
-                    <span className="font-semibold">Final Refund:</span>
+                    <span className="font-semibold">Refund Amount:</span>
                     <span className="font-bold text-green-600">
-                      ₹{Math.floor(getFinalRefundAmount()).toLocaleString('en-IN')}
+                      ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
                     </span>
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="flex space-x-3">
                 <button
