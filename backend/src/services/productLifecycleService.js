@@ -287,11 +287,105 @@ class ProductLifecycleService {
         rent_paid: rentPaid,
         security_paid: securityPaid,
         refund_amount: refundAmount,
+        requires_settlement: refundAmount > 0,
         has_active_products: !statusResult.all_terminal,
         status: 'cancelled'
       };
     } catch (error) {
       await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Process settlement after cancellation — refund or adjust the computed refund amount
+   * @param {number} bookingId - The booking ID
+   * @param {number} refundAmount - Amount to settle (from cancelProduct result)
+   * @param {'refund' | 'adjust' | 'none'} action - Settlement action
+   * @param {string} refundMethod - Payment method for refund (e.g. 'Cash', 'UPI')
+   * @param {string} recordedBy - User performing the settlement
+   * @param {string} notes - Optional notes
+   * @returns {Promise<Object>} - Settlement details
+   */
+  async processCancellationSettlement(bookingId, refundAmount, action, refundMethod, recordedBy, notes) {
+    if (!['refund', 'adjust', 'none'].includes(action)) {
+      throw new Error('settlement_action must be "refund", "adjust", or "none"');
+    }
+
+    if (action === 'none' || refundAmount <= 0) {
+      return {
+        booking_id: bookingId,
+        settlement_action: 'none',
+        amount: 0,
+        transaction_recorded: false
+      };
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      if (action === 'refund') {
+        // Record a refund transaction — money goes back to customer
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+          [bookingId, refundAmount, refundMethod || 'Cash',
+           notes || 'Cancellation refund', recordedBy]
+        );
+
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, 'refund_issued', $2, $3)`,
+          [bookingId, JSON.stringify({
+            amount: refundAmount,
+            method: refundMethod || 'Cash',
+            reason: 'Cancellation refund',
+            notes
+          }), recordedBy]
+        );
+      } else if (action === 'adjust') {
+        // Apply refund amount against outstanding dues using payment priority logic
+        const adjustBreakdown = await chargeAccountingService._applyPaymentInternal(
+          bookingId, refundAmount, client
+        );
+
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'adjustment', 'Adjustment', $3, $4, CURRENT_TIMESTAMP)`,
+          [bookingId, refundAmount,
+           notes || 'Cancellation refund adjusted against outstanding dues',
+           recordedBy]
+        );
+
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, 'adjustment_applied', $2, $3)`,
+          [bookingId, JSON.stringify({
+            amount: refundAmount,
+            reason: 'Cancellation refund adjusted against dues',
+            notes,
+            breakdown: adjustBreakdown.applications
+          }), recordedBy]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      return {
+        booking_id: bookingId,
+        settlement_action: action,
+        amount: refundAmount,
+        method: action === 'refund' ? (refundMethod || 'Cash') : 'Adjustment',
+        transaction_recorded: true
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error processing cancellation settlement:', error);
       throw error;
     } finally {
       client.release();
@@ -641,6 +735,102 @@ class ProductLifecycleService {
     } catch (error) {
       console.error('Error calculating security return:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Process security deposit return (execute refund or adjustment transaction)
+   * @param {number} bookingProductId - Booking product ID
+   * @param {'refund' | 'adjust'} action - 'refund' returns cash, 'adjust' applies against dues
+   * @param {string} recordedBy - User performing the action
+   * @returns {Promise<Object>} - Transaction details
+   */
+  async processSecurityReturn(bookingProductId, action, recordedBy) {
+    if (!['refund', 'adjust'].includes(action)) {
+      throw new Error('action must be "refund" or "adjust"');
+    }
+
+    // First calculate what should happen
+    const calculation = await this.calculateSecurityReturn(bookingProductId);
+
+    if (calculation.total_security === 0) {
+      return {
+        ...calculation,
+        action,
+        transaction_recorded: false,
+        message: 'No security was paid for this product — nothing to process'
+      };
+    }
+
+    const { booking_id, total_security, adjusted_amount, refund_amount } = calculation;
+
+    if (action === 'adjust') {
+      // Apply the full security amount against outstanding dues via chargeAccountingService
+      if (total_security > 0) {
+        const adjustResult = await chargeAccountingService.applyAdjustment(
+          booking_id,
+          total_security,
+          'Adjustment',
+          recordedBy,
+          `Security deposit adjustment for booking product #${bookingProductId}`
+        );
+
+        return {
+          booking_id,
+          booking_product_id: bookingProductId,
+          action: 'adjust',
+          total_security,
+          adjusted_amount: total_security,
+          refund_amount: 0,
+          transaction_recorded: true,
+          adjustment_details: adjustResult
+        };
+      }
+    }
+
+    if (action === 'refund') {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Refund the full security amount back to customer
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'refund', 'Cash', $3, $4, CURRENT_TIMESTAMP)`,
+          [booking_id, total_security,
+           `Security deposit refund for product #${bookingProductId}`,
+           recordedBy]
+        );
+
+        // Log refund activity
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, 'refund_issued', $2, $3)`,
+          [booking_id, JSON.stringify({
+            amount: total_security,
+            reason: 'Security deposit refund',
+            booking_product_id: bookingProductId
+          }), recordedBy]
+        );
+
+        await client.query('COMMIT');
+
+        return {
+          booking_id,
+          booking_product_id: bookingProductId,
+          action: 'refund',
+          total_security,
+          adjusted_amount: 0,
+          refund_amount: total_security,
+          transaction_recorded: true
+        };
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
     }
   }
 

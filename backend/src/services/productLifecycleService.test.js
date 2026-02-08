@@ -1209,6 +1209,148 @@ describe('ProductLifecycleService', () => {
     });
   });
 
+  describe('processSecurityReturn', () => {
+    test('should process refund — full security refunded to customer', async () => {
+      // Set up: pay rent + security, then mark completed
+      const chargeAccountingService = require('./chargeAccountingService');
+      await chargeAccountingService.applyPayment(testBookingId, 3500, 'Cash', 'test-user', 'Full payment');
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+
+      const result = await productLifecycleService.processSecurityReturn(
+        testBookingProductId, 'refund', 'test-user'
+      );
+
+      expect(result.action).toBe('refund');
+      expect(result.transaction_recorded).toBe(true);
+      expect(result.refund_amount).toBe(1000); // Full security back to customer
+      expect(result.adjusted_amount).toBe(0);  // No adjustment, just refund
+
+      // Verify refund transaction was recorded
+      const txns = await pool.query(
+        "SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'",
+        [testBookingId]
+      );
+      expect(txns.rows.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('should process adjustment when outstanding dues exist', async () => {
+      // Set up: pay only security (partial), then mark completed
+      const chargeAccountingService = require('./chargeAccountingService');
+      // Only pay security (1000), leaving rent (2500) unpaid
+      await pool.query(
+        "UPDATE product_charges SET paid_amount = 1000 WHERE booking_product_id = $1 AND charge_type = 'security'",
+        [testBookingProductId]
+      );
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+
+      const result = await productLifecycleService.processSecurityReturn(
+        testBookingProductId, 'adjust', 'test-user'
+      );
+
+      expect(result.action).toBe('adjust');
+      expect(result.transaction_recorded).toBe(true);
+      expect(result.total_security).toBe(1000);
+      expect(result.adjusted_amount).toBe(1000); // Full security goes to adjustment
+
+      // Clean up the security paid_amount change
+      await pool.query(
+        "UPDATE product_charges SET paid_amount = 0 WHERE booking_product_id = $1 AND charge_type = 'security'",
+        [testBookingProductId]
+      );
+    });
+
+    test('should return nothing when no security was paid', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+
+      const result = await productLifecycleService.processSecurityReturn(
+        testBookingProductId, 'refund', 'test-user'
+      );
+
+      expect(result.transaction_recorded).toBe(false);
+      expect(result.message).toContain('No security was paid');
+    });
+
+    test('should throw error for invalid action', async () => {
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', testBookingProductId]);
+
+      await expect(
+        productLifecycleService.processSecurityReturn(testBookingProductId, 'invalid', 'test-user')
+      ).rejects.toThrow('action must be "refund" or "adjust"');
+    });
+
+    test('should throw error for non-completed product', async () => {
+      // Product is still in 'confirmed' status
+      await expect(
+        productLifecycleService.processSecurityReturn(testBookingProductId, 'refund', 'test-user')
+      ).rejects.toThrow('Cannot calculate security return for product with status: confirmed');
+    });
+  });
+
+  describe('processCancellationSettlement', () => {
+    test('should record a refund transaction', async () => {
+      const result = await productLifecycleService.processCancellationSettlement(
+        testBookingId, 500, 'refund', 'Cash', 'test-user', 'Cancellation refund'
+      );
+
+      expect(result.settlement_action).toBe('refund');
+      expect(result.amount).toBe(500);
+      expect(result.transaction_recorded).toBe(true);
+      expect(result.method).toBe('Cash');
+
+      // Verify refund transaction exists
+      const txns = await pool.query(
+        "SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'",
+        [testBookingId]
+      );
+      expect(txns.rows.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('should apply adjustment against dues', async () => {
+      const result = await productLifecycleService.processCancellationSettlement(
+        testBookingId, 500, 'adjust', null, 'test-user', 'Adjusted against dues'
+      );
+
+      expect(result.settlement_action).toBe('adjust');
+      expect(result.amount).toBe(500);
+      expect(result.transaction_recorded).toBe(true);
+      expect(result.method).toBe('Adjustment');
+
+      // Verify adjustment transaction exists
+      const txns = await pool.query(
+        "SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'",
+        [testBookingId]
+      );
+      expect(txns.rows.length).toBeGreaterThanOrEqual(1);
+    });
+
+    test('should return no transaction for action=none', async () => {
+      const result = await productLifecycleService.processCancellationSettlement(
+        testBookingId, 500, 'none', null, 'test-user', null
+      );
+
+      expect(result.settlement_action).toBe('none');
+      expect(result.amount).toBe(0);
+      expect(result.transaction_recorded).toBe(false);
+    });
+
+    test('should return no transaction when refund amount is 0', async () => {
+      const result = await productLifecycleService.processCancellationSettlement(
+        testBookingId, 0, 'refund', 'Cash', 'test-user', null
+      );
+
+      expect(result.settlement_action).toBe('none');
+      expect(result.transaction_recorded).toBe(false);
+    });
+
+    test('should throw error for invalid action', async () => {
+      await expect(
+        productLifecycleService.processCancellationSettlement(
+          testBookingId, 500, 'invalid', null, 'test-user', null
+        )
+      ).rejects.toThrow('settlement_action must be "refund", "adjust", or "none"');
+    });
+  });
+
   describe('updateBookingDateRange', () => {
     // Test: Updates booking date range based on active products only
     test('should update booking date range from active products', async () => {

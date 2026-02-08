@@ -203,6 +203,84 @@ describe('Booking Cancellation Routes', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Cannot cancel');
     });
+
+    it('should cancel with settlement_action=refund and record refund transaction', async () => {
+      // First pay some amount so there's something to refund
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      await chargeAccountingService.applyPayment(testBookingId, 50000, 'Cash', 'test-user', 'Payment');
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [testBookingProductId],
+          cancellation_penalties: [
+            { booking_product_id: testBookingProductId, penalty_amount: 5000 }
+          ],
+          cancellation_reason: 'Customer changed mind',
+          cancelled_by: 'test-user',
+          settlement_action: 'refund',
+          refund_method: 'UPI',
+          settlement_notes: 'Refund via UPI'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.total_refund).toBeGreaterThan(0);
+      expect(response.body.settlement).not.toBeNull();
+      expect(response.body.settlement.settlement_action).toBe('refund');
+      expect(response.body.settlement.transaction_recorded).toBe(true);
+      expect(response.body.settlement.method).toBe('UPI');
+    });
+
+    it('should cancel with settlement_action=adjust and adjust against dues', async () => {
+      // Pay enough for the product charges
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      await chargeAccountingService.applyPayment(testBookingId, 50000, 'Cash', 'test-user', 'Payment');
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [testBookingProductId],
+          cancellation_penalties: [
+            { booking_product_id: testBookingProductId, penalty_amount: 5000 }
+          ],
+          cancellation_reason: 'Customer changed mind',
+          cancelled_by: 'test-user',
+          settlement_action: 'adjust'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.total_refund).toBeGreaterThan(0);
+      expect(response.body.settlement).not.toBeNull();
+      expect(response.body.settlement.settlement_action).toBe('adjust');
+      expect(response.body.settlement.transaction_recorded).toBe(true);
+    });
+
+    it('should cancel with settlement_action=none and not record settlement', async () => {
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [testBookingProductId],
+          cancellation_reason: 'Customer changed mind',
+          cancelled_by: 'test-user',
+          settlement_action: 'none'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.settlement).toBeNull(); // No refund to settle (nothing paid)
+    });
+
+    it('should cancel without settlement_action and not record settlement', async () => {
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [testBookingProductId],
+          cancellation_reason: 'Customer changed mind',
+          cancelled_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.settlement).toBeNull();
+    });
   });
 
   describe('GET /cancellation/penalty-suggestion/:booking_product_id', () => {

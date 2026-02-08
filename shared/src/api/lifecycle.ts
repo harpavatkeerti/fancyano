@@ -18,9 +18,13 @@ export function createLifecycleApi(api: ApiClient) {
     }) => api.post(`/lifecycle/${bookingId}/products/return`, data),
     
     // Calculate security refund (read-only, no transaction)
-    calculateSecurityRefund: (bookingId: number, productId: number, action: 'refund' | 'adjust') => 
-      api.get(`/lifecycle/${bookingId}/products/${productId}/security-refund/calculate`, {
-        params: { action }
-      }),
+    calculateSecurityRefund: (bookingId: number, productId: number) => 
+      api.get(`/lifecycle/${bookingId}/products/${productId}/security-refund/calculate`),
+
+    // Process security refund or adjustment (executes the transaction)
+    processSecurityRefund: (bookingId: number, productId: number, data: {
+      action: 'refund' | 'adjust';
+      recorded_by: string;
+    }) => api.post(`/lifecycle/${bookingId}/products/${productId}/security-refund/process`, data),
   };
 }

@@ -119,4 +119,39 @@ router.get('/:bookingId/products/:productId/security-refund/calculate', async (r
   }
 });
 
+// POST process security refund/adjustment (executes the transaction)
+router.post('/:bookingId/products/:productId/security-refund/process', async (req, res) => {
+  try {
+    const { productId } = req.params;
+    const { action, recorded_by } = req.body;
+
+    if (!action || !['refund', 'adjust'].includes(action)) {
+      return res.status(400).json({
+        error: 'action is required and must be "refund" or "adjust"'
+      });
+    }
+
+    if (!recorded_by) {
+      return res.status(400).json({ error: 'recorded_by is required' });
+    }
+
+    const result = await productLifecycleService.processSecurityReturn(
+      parseInt(productId),
+      action,
+      recorded_by
+    );
+
+    res.json({
+      success: true,
+      security_return: result
+    });
+  } catch (error) {
+    if (error.message.includes('not found') || error.message.includes('status:') || error.message.includes('action must be')) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error processing security return:', error);
+    res.status(500).json({ error: 'Failed to process security return', details: error.message });
+  }
+});
+
 module.exports = router;

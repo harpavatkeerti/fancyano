@@ -22,7 +22,7 @@ export function createBookingCancellationApi(api: ApiClient) {
       extra_refund?: number;
     }) => api.post<any>('/booking-cancellation/calculate-summary', data),
 
-    // Cancel product(s)
+    // Cancel product(s) with optional settlement action
     cancel: (data: {
       booking_product_ids: number[];
       cancellation_penalties?: Array<{
@@ -31,6 +31,9 @@ export function createBookingCancellationApi(api: ApiClient) {
       }>;
       cancellation_reason?: string;
       cancelled_by: string;
+      settlement_action?: 'refund' | 'adjust' | 'none';
+      refund_method?: string;
+      settlement_notes?: string;
     }) => api.post<any>('/booking-cancellation', data),
   };
 }

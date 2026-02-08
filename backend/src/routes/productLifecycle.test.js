@@ -66,10 +66,14 @@ describe('Product Lifecycle Routes', () => {
 
   afterEach(async () => {
     // Cleanup
-    if (testBookingId) {
-      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
-      await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
-    }
+    const testPhones = ['TEST-LIFECYCLE-PHONE', 'TEST-SEC-ADJUST', 'TEST-BALANCE-DUE', 'TEST-PARTIAL', 'TEST-NO-SEC'];
+    const phoneList = testPhones.map(p => `'${p}'`).join(',');
+    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT bp.id FROM booking_products bp JOIN bookings b ON bp.booking_id = b.id WHERE b.customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
+    await pool.query(`DELETE FROM bookings WHERE customer_phone IN (${phoneList})`);
   });
 
   afterAll(async () => {
@@ -279,6 +283,118 @@ describe('Product Lifecycle Routes', () => {
 
       expect(response.status).toBe(400);
       expect(response.body).toHaveProperty('error');
+    });
+  });
+
+  describe('POST /:bookingId/products/:productId/security-refund/process', () => {
+    beforeEach(async () => {
+      // Pay enough to cover rent + transport + security
+      await chargeAccountingService.applyPayment(
+        testBookingId,
+        75000,
+        'Cash',
+        'test-user',
+        'Full payment'
+      );
+      // Set status to completed
+      await pool.query(
+        'UPDATE booking_products SET status = $1 WHERE id = $2',
+        ['completed', testBookingProductId]
+      );
+    });
+
+    it('should process refund successfully', async () => {
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
+        .send({
+          action: 'refund',
+          recorded_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.security_return.action).toBe('refund');
+      expect(response.body.security_return.transaction_recorded).toBe(true);
+      expect(response.body.security_return.refund_amount).toBe(20000);
+    });
+
+    it('should process adjustment successfully', async () => {
+      // Create booking with unpaid dues
+      const booking2 = await bookingService.createBooking({
+        customerName: 'Test Adjust',
+        customerPhone: 'TEST-SEC-ADJUST',
+        customerEmail: 'adjust@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 5000,
+        createdBy: 'test-user'
+      });
+      const bp2Result = await pool.query('SELECT id FROM booking_products WHERE booking_id = $1', [booking2.booking_id]);
+      const bp2Id = bp2Result.rows[0].id;
+
+      // Pay security only by directly updating
+      await chargeAccountingService.applyPayment(booking2.booking_id, 75000, 'Cash', 'test-user', 'Full payment');
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', bp2Id]);
+
+      const response = await request(app)
+        .post(`/lifecycle/${booking2.booking_id}/products/${bp2Id}/security-refund/process`)
+        .send({
+          action: 'adjust',
+          recorded_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.success).toBe(true);
+      expect(response.body.security_return.action).toBe('adjust');
+      expect(response.body.security_return.transaction_recorded).toBe(true);
+
+      // Cleanup
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [booking2.booking_id]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [booking2.booking_id]);
+    });
+
+    it('should return 400 for invalid action', async () => {
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
+        .send({
+          action: 'invalid',
+          recorded_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('must be "refund" or "adjust"');
+    });
+
+    it('should return 400 when recorded_by is missing', async () => {
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
+        .send({
+          action: 'refund'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('recorded_by is required');
+    });
+
+    it('should return 400 when product is not completed', async () => {
+      // Reset status to confirmed
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['confirmed', testBookingProductId]);
+
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
+        .send({
+          action: 'refund',
+          recorded_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('status:');
     });
   });
 

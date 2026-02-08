@@ -89,6 +89,8 @@ export function BookingCancellation({
   const [extraRefundNote, setExtraRefundNote] = useState('');
   
   const [showConfirmation, setShowConfirmation] = useState(false);
+  const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust'>('refund');
+  const [refundMethod, setRefundMethod] = useState('Cash');
   
   // Debounce timer ref
   const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -242,15 +244,23 @@ export function BookingCancellation({
         penalty_amount: amount,
       }));
       
-      await bookingCancellationApi.cancel({
+      const result = await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
         cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
         cancellation_reason: cancellationReason,
         cancelled_by: userName || 'system',
+        settlement_action: settlementAction,
+        refund_method: settlementAction === 'refund' ? refundMethod : undefined,
+        settlement_notes: extraRefundNote || undefined,
       });
 
       const isPartial = preview && selectedProducts.length < preview.all_products.length;
-      toast.success(isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully');
+      const settlementMsg = result.data?.settlement?.transaction_recorded
+        ? ` (${settlementAction === 'refund' ? 'Refund' : 'Adjustment'} of ₹${Math.floor(result.data.total_refund).toLocaleString('en-IN')} recorded)`
+        : '';
+      toast.success(
+        (isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully') + settlementMsg
+      );
       
       setShowCancelModal(false);
       setShowConfirmation(false);
@@ -261,6 +271,8 @@ export function BookingCancellation({
       setSummary(null);
       setSelectedProducts([]);
       setEditingPenalties({});
+      setSettlementAction('refund');
+      setRefundMethod('Cash');
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
@@ -305,6 +317,8 @@ export function BookingCancellation({
                     setEditingPenalties({});
                     setExtraRefund('');
                     setExtraRefundNote('');
+                    setSettlementAction('refund');
+                    setRefundMethod('Cash');
                   }}
                   className="text-gray-400 hover:text-gray-600"
                 >
@@ -527,9 +541,11 @@ export function BookingCancellation({
                         setShowCancelModal(false);
                         setPreview(null);
                         setSelectedProducts([]);
-                        setEditingPenalties([]);
+                        setEditingPenalties({});
                         setExtraRefund('');
                         setExtraRefundNote('');
+                        setSettlementAction('refund');
+                        setRefundMethod('Cash');
                       }}
                       className="flex-1 py-3 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-medium transition-colors"
                     >
@@ -613,6 +629,65 @@ export function BookingCancellation({
                   </div>
                 </div>
               </div>
+              )}
+
+              {/* Settlement Action: Refund or Adjust */}
+              {summary && summary.refund_amount > 0 && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+                  <h4 className="font-semibold text-green-900 mb-3">
+                    How would you like to handle the ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund?
+                  </h4>
+                  <div className="space-y-3">
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
+                      <input
+                        type="radio"
+                        name="settlement"
+                        value="refund"
+                        checked={settlementAction === 'refund'}
+                        onChange={() => setSettlementAction('refund')}
+                        className="mt-1 w-4 h-4 text-green-600"
+                      />
+                      <div>
+                        <p className="font-medium text-green-900">Refund to Customer</p>
+                        <p className="text-xs text-green-700">Return ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} directly to the customer</p>
+                      </div>
+                    </label>
+                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
+                      <input
+                        type="radio"
+                        name="settlement"
+                        value="adjust"
+                        checked={settlementAction === 'adjust'}
+                        onChange={() => setSettlementAction('adjust')}
+                        className="mt-1 w-4 h-4 text-green-600"
+                      />
+                      <div>
+                        <p className="font-medium text-green-900">Adjust Against Dues</p>
+                        <p className="text-xs text-green-700">Apply ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} against any outstanding dues on this booking</p>
+                      </div>
+                    </label>
+                  </div>
+
+                  {/* Refund Method selector (only shown when refund is selected) */}
+                  {settlementAction === 'refund' && (
+                    <div className="mt-3 pt-3 border-t border-green-200">
+                      <label className="block text-sm font-medium text-green-800 mb-2">
+                        Refund Method
+                      </label>
+                      <select
+                        value={refundMethod}
+                        onChange={(e) => setRefundMethod(e.target.value)}
+                        className="w-full px-3 py-2 border border-green-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                      >
+                        <option value="Cash">Cash</option>
+                        <option value="UPI">UPI</option>
+                        <option value="Bank Transfer">Bank Transfer</option>
+                        <option value="Card">Card</option>
+                        <option value="Cheque">Cheque</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
               )}
 
               <div className="flex space-x-3">

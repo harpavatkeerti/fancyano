@@ -80,13 +80,21 @@ router.post('/', async (req, res) => {
       booking_product_ids, // Array of booking_product IDs to cancel
       cancellation_penalties, // Array of { booking_product_id, penalty_amount }
       cancellation_reason,
-      cancelled_by
+      cancelled_by,
+      settlement_action, // 'refund' | 'adjust' | 'none' (optional, default 'none')
+      refund_method,     // Payment method for refund (e.g. 'Cash', 'UPI')
+      settlement_notes   // Optional notes for settlement
     } = req.body;
     
     if (!booking_product_ids || !Array.isArray(booking_product_ids) || booking_product_ids.length === 0) {
       return res.status(400).json({ 
         error: 'booking_product_ids array is required',
-        example: { booking_product_ids: [1, 2], cancellation_penalties: [{ booking_product_id: 1, penalty_amount: 300 }] }
+        example: {
+          booking_product_ids: [1, 2],
+          cancellation_penalties: [{ booking_product_id: 1, penalty_amount: 300 }],
+          settlement_action: 'refund',
+          refund_method: 'Cash'
+        }
       });
     }
     
@@ -106,10 +114,29 @@ router.post('/', async (req, res) => {
       
       results.push(result);
     }
+
+    // Calculate total refund across all cancelled products
+    const totalRefund = results.reduce((sum, r) => sum + (r.refund_amount || 0), 0);
+    const bookingId = results[0]?.booking_id;
+    let settlementResult = null;
+
+    // Process settlement if there's a refund and an action was specified
+    if (totalRefund > 0 && settlement_action && settlement_action !== 'none' && bookingId) {
+      settlementResult = await productLifecycleService.processCancellationSettlement(
+        bookingId,
+        totalRefund,
+        settlement_action,
+        refund_method,
+        cancelled_by || 'system',
+        settlement_notes
+      );
+    }
     
     res.json({
       message: `${booking_product_ids.length} product(s) cancelled successfully`,
-      cancelled_products: results
+      cancelled_products: results,
+      total_refund: totalRefund,
+      settlement: settlementResult
     });
   } catch (error) {
     if (error.message.includes('Cannot cancel')) {
