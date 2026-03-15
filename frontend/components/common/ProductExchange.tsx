@@ -39,18 +39,18 @@ export function ProductExchange({
   const [exchangeReason, setExchangeReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [fetchingExchanges, setFetchingExchanges] = useState(false);
-  
+
   // Refund modal state
   const [showRefundModal, setShowRefundModal] = useState(false);
   const [refundLapsedAmount, setRefundLapsedAmount] = useState(0);
   const [refundAmount, setRefundAmount] = useState('');
   const [pendingDeleteExchangeId, setPendingDeleteExchangeId] = useState<number | null>(null);
-  
+
   // Date selection for each product
   const [productDates, setProductDates] = useState<Record<number, { booked_from: string; booked_to: string }>>({});
   const [productBookings, setProductBookings] = useState<Record<number, any[]>>({}); // Bookings for each product for availability checking
   const [availabilityErrors, setAvailabilityErrors] = useState<Record<number, string>>({});
-  
+
   // Payment collection state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [totalPaymentDue, setTotalPaymentDue] = useState<number>(0);
@@ -61,12 +61,13 @@ export function ProductExchange({
   const [pendingExchange, setPendingExchange] = useState<any>(null);
   const [pendingExchangeData, setPendingExchangeData] = useState<any>(null); // Store exchange data before creating it
   const [paymentType, setPaymentType] = useState<'penalty' | 'rent' | 'both'>('penalty');
-  
+
   // UPI QR Code state
   const [showUPIModal, setShowUPIModal] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [paymentScanned, setPaymentScanned] = useState(false);
-  
+  const [paymentQrCode, setPaymentQrCode] = useState<string>('');
+
   // Exchange preview from backend API
   const [exchangePreview, setExchangePreview] = useState<any>(null);
   const [rentDifference, setRentDifference] = useState<number>(0);
@@ -76,6 +77,10 @@ export function ProductExchange({
   useEffect(() => {
     fetchExchanges();
     fetchBookingDates();
+    // Fetch rent QR code from settings (exchange = rent/penalty payment)
+    settingsApi.getByKey('payment_qr_rent')
+      .then(res => { if (res.data?.setting_value) setPaymentQrCode(res.data.setting_value); })
+      .catch(() => { });
   }, [bookingId]);
 
   async function fetchBookingDates() {
@@ -91,7 +96,7 @@ export function ProductExchange({
       console.error('Error fetching booking dates:', error);
     }
   }
-  
+
   // Fetch exchange preview from backend when products are selected
   useEffect(() => {
     async function fetchExchangePreview() {
@@ -112,17 +117,17 @@ export function ProductExchange({
           selectedExchangedProduct,
           additionalProducts
         );
-        
+
         const preview = response.data;
         setExchangePreview(preview);
-        
+
         // Update payment due and differences from backend calculations
         setTotalPaymentDue(preview.calculations.total_payment_due);
         setExchangePenaltyAmount(preview.calculations.exchange_penalty);
         setRentDifferenceAmount(preview.calculations.downgrade_penalty); // Using existing downgrade_penalty
         setRentDifference(preview.calculations.downgrade_penalty);
         setSecurityDifference(preview.calculations.security_difference);
-          
+
         // Prepare exchange data with backend preview calculations
         if (preview.calculations.total_payment_due > 0) {
           const exchangeDataToCreate = {
@@ -150,7 +155,7 @@ export function ProductExchange({
         setTotalPaymentDue(0);
       }
     }
-    
+
     fetchExchangePreview();
   }, [selectedOriginalProduct, selectedExchangedProduct, additionalProducts, exchangeReason, productDates, bookingDates]);
 
@@ -195,9 +200,9 @@ export function ProductExchange({
       });
 
       if (!response.data.available) {
-        return { 
-          available: false, 
-          message: response.data.message || 'Product is not available for selected dates' 
+        return {
+          available: false,
+          message: response.data.message || 'Product is not available for selected dates'
         };
       }
 
@@ -205,32 +210,32 @@ export function ProductExchange({
       const bookings = productBookings[productId] || [];
       const fromDate = new Date(dateFrom);
       const toDate = new Date(dateTo);
-      
+
       for (const booking of bookings) {
         if (!booking.booked_from || !booking.booked_to) continue;
-        
+
         // Skip completed and cancelled bookings
         if (booking.status === 'completed' || booking.status === 'cancelled') continue;
-        
+
         const bookingFrom = new Date(booking.booked_from);
         const bookingTo = new Date(booking.booked_to);
-        
+
         // Check if there's a gap of 2 days or less between bookings
         const daysAfter = Math.floor((fromDate.getTime() - bookingTo.getTime()) / (1000 * 60 * 60 * 24));
         const daysBefore = Math.floor((bookingFrom.getTime() - toDate.getTime()) / (1000 * 60 * 60 * 24));
-        
+
         if (daysAfter >= 0 && daysAfter <= 2) {
-          return { 
-            available: true, 
-            isUrgent: true, 
-            message: `Tight schedule: Only ${daysAfter} day(s) gap after previous booking` 
+          return {
+            available: true,
+            isUrgent: true,
+            message: `Tight schedule: Only ${daysAfter} day(s) gap after previous booking`
           };
         }
         if (daysBefore >= 0 && daysBefore <= 2) {
-          return { 
-            available: true, 
-            isUrgent: true, 
-            message: `Tight schedule: Only ${daysBefore} day(s) gap before next booking` 
+          return {
+            available: true,
+            isUrgent: true,
+            message: `Tight schedule: Only ${daysBefore} day(s) gap before next booking`
           };
         }
       }
@@ -238,9 +243,9 @@ export function ProductExchange({
       return { available: true };
     } catch (error: any) {
       console.error('Error checking availability:', error);
-      return { 
-        available: false, 
-        message: error.response?.data?.error || 'Failed to check availability' 
+      return {
+        available: false,
+        message: error.response?.data?.error || 'Failed to check availability'
       };
     }
   }
@@ -251,11 +256,11 @@ export function ProductExchange({
       const currentProductIds = currentProducts
         .filter(p => p.id !== selectedOriginalProduct)
         .map(p => p.id);
-      const available = response.data.filter((p: any) => 
+      const available = response.data.filter((p: any) =>
         p.availability && !currentProductIds.includes(p.id)
       );
       setAvailableProducts(available);
-      
+
       // Initialize dates for main exchanged product (use empty strings to allow fresh selection)
       if (selectedExchangedProduct) {
         setProductDates(prev => ({
@@ -283,7 +288,7 @@ export function ProductExchange({
     // Validate product selection
     const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
     const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
-    
+
     if (!originalProduct || !exchangedProduct) {
       toast.error('Product not found');
       return;
@@ -291,7 +296,7 @@ export function ProductExchange({
 
     try {
       setLoading(true);
-      
+
       let exchangeBy = userName;
       if (!exchangeBy) {
         if (userRole === 'admin') {
@@ -334,7 +339,7 @@ export function ProductExchange({
           toast.error(`Please select dates for all additional products`);
           return;
         }
-        
+
         const availability = await checkProductAvailability(
           additionalProductId,
           dates.booked_from,
@@ -388,7 +393,7 @@ export function ProductExchange({
         exchange_reason: combinedReason,
         exchanged_by: exchangeBy,
       });
-      
+
       toast.success(`Product${additionalProducts.length > 0 ? 's' : ''} exchanged successfully`);
       setShowExchangeModal(false);
       setSelectedOriginalProduct(null);
@@ -400,7 +405,7 @@ export function ProductExchange({
       setAvailabilityErrors({});
       setExchangeReason('');
       setPendingExchangeData(null);
-      
+
       await fetchExchanges();
       await fetchBookingDates(); // Refresh booking dates after exchange
       if (onExchangeComplete) {
@@ -432,7 +437,7 @@ export function ProductExchange({
 
     try {
       setLoading(true);
-      
+
       // Prepare exchange by name
       let exchangeBy = pendingExchangeData.exchanged_by;
       if (!exchangeBy) {
@@ -452,9 +457,9 @@ export function ProductExchange({
       }
 
       // Get main product dates
-      const mainProductDates = pendingExchangeData.exchanged_product_dates || 
-                               productDates[pendingExchangeData.exchanged_product_id];
-      
+      const mainProductDates = pendingExchangeData.exchanged_product_dates ||
+        productDates[pendingExchangeData.exchanged_product_id];
+
       if (!mainProductDates?.booked_from || !mainProductDates?.booked_to) {
         toast.error('Please select dates for the exchanged product');
         return;
@@ -469,7 +474,7 @@ export function ProductExchange({
       const combinedReason = additionalProdCodes.length
         ? `${pendingExchangeData.exchange_reason ? `${pendingExchangeData.exchange_reason} | ` : ''}Added: ${additionalProdCodes.join(', ')}`
         : pendingExchangeData.exchange_reason || undefined;
-      
+
       // STEP 1: Create exchange in database first
       console.log('📝 Creating exchange in database...');
       const newProductIds = [
@@ -497,10 +502,10 @@ export function ProductExchange({
         exchange_reason: combinedReason,
         exchanged_by: exchangeBy,
       });
-      
+
       const createdExchange = exchangeResult.data;
       console.log('✅ Exchange created:', createdExchange.id);
-      
+
       // STEP 2: Record ONE payment for the TOTAL PAYMENT DUE amount
       console.log('💰 Recording TOTAL payment due:', {
         exchange_id: createdExchange.id,
@@ -512,7 +517,7 @@ export function ProductExchange({
         payment_method: paymentMethod,
         narration: paymentNarration
       });
-      
+
       // Build detailed narration showing the breakdown
       const breakdownParts = [];
       if (exchangePenaltyAmount > 0) {
@@ -522,7 +527,7 @@ export function ProductExchange({
         breakdownParts.push(`Rent Difference: ₹${rentDifferenceAmount.toLocaleString('en-IN')}`);
       }
       const detailedNarration = `Total Payment: ₹${totalPaymentDue.toLocaleString('en-IN')} (${breakdownParts.join(' + ')})${paymentNarration ? ` | ${paymentNarration.trim()}` : ''}`;
-      
+
       // Record the TOTAL payment amount via the standard payment API
       await paymentTransactionsApi.applyPayment({
         booking_id: bookingId,
@@ -531,11 +536,11 @@ export function ProductExchange({
         recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
         notes: detailedNarration
       });
-      
+
       console.log('✅ Total payment recorded successfully');
 
       toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
-      
+
       setShowExchangeModal(false);
       setShowPaymentModal(false);
       setPendingExchange(null);
@@ -553,7 +558,7 @@ export function ProductExchange({
       setProductBookings({});
       setAvailabilityErrors({});
       setExchangeReason('');
-      
+
       await fetchExchanges();
       await fetchBookingDates(); // Refresh booking dates after exchange
       if (onExchangeComplete) {
@@ -571,17 +576,17 @@ export function ProductExchange({
     // Find the exchange to get lapsed amount
     const exchange = exchanges.find(e => e.id === exchangeId);
     if (!exchange) return;
-    
+
     if (!confirm('Are you sure you want to delete this exchange? This will revert the product change.')) {
       return;
     }
 
     try {
       setLoading(true);
-      
+
       // Use the exchange record's total_charge as the lapsed amount
       const lapsedAmount = parseFloat(String(exchange.total_charge || '0')) || 0;
-      
+
       // If there's a lapsed amount, show refund modal
       if (lapsedAmount > 0) {
         setRefundLapsedAmount(lapsedAmount);
@@ -599,14 +604,14 @@ export function ProductExchange({
       setLoading(false);
     }
   }
-  
+
   async function proceedWithDeletion(exchangeId: number, refundAmountValue: number) {
     try {
       setLoading(true);
-      
+
       // Delete the exchange (backend will mark transactions as lapsed)
       await productExchangesApi.delete(exchangeId);
-      
+
       // If admin chose to refund, create a special refund transaction
       if (refundAmountValue > 0) {
         try {
@@ -626,7 +631,7 @@ export function ProductExchange({
       } else {
         toast.success('Exchange deleted successfully');
       }
-      
+
       await fetchExchanges();
       await fetchBookingDates(); // Refresh booking dates after deleting exchange
       if (onExchangeComplete) {
@@ -643,24 +648,24 @@ export function ProductExchange({
       setRefundLapsedAmount(0);
     }
   }
-  
+
   function handleRefundModalConfirm() {
     if (!pendingDeleteExchangeId) return;
-    
+
     const refundAmountValue = parseFloat(refundAmount);
     if (isNaN(refundAmountValue) || refundAmountValue < 0) {
       toast.error('Please enter a valid refund amount');
       return;
     }
-    
+
     if (refundAmountValue > refundLapsedAmount) {
       toast.error(`Refund amount cannot exceed ₹${refundLapsedAmount.toFixed(2)}`);
       return;
     }
-    
+
     proceedWithDeletion(pendingDeleteExchangeId, refundAmountValue);
   }
-  
+
   function handleRefundModalCancel() {
     if (!pendingDeleteExchangeId) return;
     proceedWithDeletion(pendingDeleteExchangeId, 0);
@@ -669,7 +674,7 @@ export function ProductExchange({
   const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
   const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
 
-  const canExchange = bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
+  const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
 
   return (
     <div className="space-y-4">
@@ -690,11 +695,10 @@ export function ProductExchange({
               setShowExchangeModal(true);
             }}
             disabled={!canExchange}
-            className={`px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
-              canExchange
-                ? 'bg-red-600 text-white hover:bg-red-700'
-                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-            }`}
+            className={`px-4 py-2 rounded-lg transition-colors text-sm font-medium ${canExchange
+              ? 'bg-red-600 text-white hover:bg-red-700'
+              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              }`}
           >
             Exchange Product
           </button>
@@ -711,100 +715,101 @@ export function ProductExchange({
             const addedList =
               exchange.reason && exchange.reason.includes('Added:')
                 ? exchange.reason
-                    .split('Added:')[1]
-                    .split(',')
-                    .map((item: string) => item.trim())
-                    .filter(Boolean)
+                  .split('Added:')[1]
+                  .split(',')
+                  .map((item: string) => item.trim())
+                  .filter(Boolean)
                 : [];
             return (
-            <div
-              key={exchange.id}
-              className="bg-gray-50 border border-gray-200 rounded-lg p-4"
-            >
-              <div className="flex justify-between items-start">
-                <div className="flex-1">
-                  <div className="mb-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-sm font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded">
-                        {exchange.original_product_name} ({exchange.original_product_code})
-                      </span>
-                      <span className="text-gray-500 font-bold">→</span>
-                      {/* Show primary exchanged product */}
-                      <span className="text-sm font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded">
-                        {exchange.exchanged_product_name} ({exchange.exchanged_product_code})
-                      </span>
-                      {/* Show additional products inline with primary - all part of the same exchange */}
-                      {addedList.length > 0 && addedList.map((item: string, idx: number) => (
-                        <React.Fragment key={idx}>
-                          <span className="text-gray-500 font-bold">+</span>
-                          <span className="text-sm font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded">
-                            {item}
-                          </span>
-                        </React.Fragment>
-                      ))}
-                    </div>
-                  </div>
-                  <div className="text-xs text-gray-600 space-y-1">
-                    <p>Date: {new Date(exchange.exchange_date).toLocaleDateString("en-GB")}</p>
-                    <p>Days from booking: {exchange.days_from_booking}</p>
-                    <p>Penalty: {exchange.penalty_percentage}%</p>
-                    <p className="font-semibold text-gray-800">
-                      Total Charge: ₹{exchange.total_charge.toLocaleString('en-IN')}
-                    </p>
-                    {exchange.reason && !exchange.reason.includes('Added:') && (
-                      <p>Reason: {exchange.reason}</p>
-                    )}
-                    {exchange.reason && exchange.reason.includes('Added:') && exchange.reason.split('|')[0].trim() && (
-                      <p>Reason: {exchange.reason.split('|')[0].trim()}</p>
-                    )}
-                    {exchange.exchanged_by && <p>Exchanged by: {exchange.exchanged_by}</p>}
-                  </div>
-                  <div className="mt-3">
-                    <details className="text-xs text-gray-700">
-                      <summary className="cursor-pointer text-blue-600 font-semibold">View exchanged product details</summary>
-                      <div className="mt-2 space-y-2">
-                        <div className="bg-white border border-blue-200 rounded p-3">
-                          <p className="font-semibold text-blue-800 text-sm mb-2">🔄 Products in this Exchange</p>
-                          {/* Original product that was replaced */}
-                          <div className="mb-3 pb-2 border-b border-gray-200">
-                            <p className="text-xs text-gray-500 mb-1">Replaced:</p>
-                            <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-xs font-medium">
-                              {exchange.original_product_name} ({exchange.original_product_code})
+              <div
+                key={exchange.id}
+                className="bg-gray-50 border border-gray-200 rounded-lg p-4"
+              >
+                <div className="flex justify-between items-start">
+                  <div className="flex-1">
+                    <div className="mb-2">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="text-sm font-medium text-red-700 bg-red-50 px-2 py-0.5 rounded">
+                          {exchange.original_product_name} ({exchange.original_product_code})
+                        </span>
+                        <span className="text-gray-500 font-bold">→</span>
+                        {/* Show primary exchanged product */}
+                        <span className="text-sm font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded">
+                          {exchange.exchanged_product_name} ({exchange.exchanged_product_code})
+                        </span>
+                        {/* Show additional products inline with primary - all part of the same exchange */}
+                        {addedList.length > 0 && addedList.map((item: string, idx: number) => (
+                          <React.Fragment key={idx}>
+                            <span className="text-gray-500 font-bold">+</span>
+                            <span className="text-sm font-medium text-green-700 bg-green-50 px-2 py-0.5 rounded">
+                              {item}
                             </span>
-                          </div>
-                          {/* All new products added in exchange */}
-                          <div>
-                            <p className="text-xs text-gray-500 mb-1">New products added:</p>
-                            <div className="flex flex-wrap gap-2">
-                              {/* Primary exchanged product */}
-                              <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-medium">
-                                {exchange.exchanged_product_name} ({exchange.exchanged_product_code})
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-600 space-y-1">
+                      <p>Date: {new Date(exchange.exchange_date).toLocaleDateString("en-GB")}</p>
+                      <p>Days from booking: {exchange.days_from_booking}</p>
+                      <p>Penalty: {exchange.penalty_percentage}%</p>
+                      <p className="font-semibold text-gray-800">
+                        Total Charge: ₹{exchange.total_charge.toLocaleString('en-IN')}
+                      </p>
+                      {exchange.reason && !exchange.reason.includes('Added:') && (
+                        <p>Reason: {exchange.reason}</p>
+                      )}
+                      {exchange.reason && exchange.reason.includes('Added:') && exchange.reason.split('|')[0].trim() && (
+                        <p>Reason: {exchange.reason.split('|')[0].trim()}</p>
+                      )}
+                      {exchange.exchanged_by && <p>Exchanged by: {exchange.exchanged_by}</p>}
+                    </div>
+                    <div className="mt-3">
+                      <details className="text-xs text-gray-700">
+                        <summary className="cursor-pointer text-blue-600 font-semibold">View exchanged product details</summary>
+                        <div className="mt-2 space-y-2">
+                          <div className="bg-white border border-blue-200 rounded p-3">
+                            <p className="font-semibold text-blue-800 text-sm mb-2">🔄 Products in this Exchange</p>
+                            {/* Original product that was replaced */}
+                            <div className="mb-3 pb-2 border-b border-gray-200">
+                              <p className="text-xs text-gray-500 mb-1">Replaced:</p>
+                              <span className="bg-red-100 text-red-800 px-2 py-1 rounded text-xs font-medium">
+                                {exchange.original_product_name} ({exchange.original_product_code})
                               </span>
-                              {/* Additional products from reason field */}
-                              {exchange.reason && exchange.reason.includes('Added:') && 
-                                exchange.reason.split('Added:')[1].split(',').map((item: string, idx: number) => (
-                                  <span key={idx} className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-medium">
-                                    {item.trim()}
-                                  </span>
-                                ))
-                              }
+                            </div>
+                            {/* All new products added in exchange */}
+                            <div>
+                              <p className="text-xs text-gray-500 mb-1">New products added:</p>
+                              <div className="flex flex-wrap gap-2">
+                                {/* Primary exchanged product */}
+                                <span className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-medium">
+                                  {exchange.exchanged_product_name} ({exchange.exchanged_product_code})
+                                </span>
+                                {/* Additional products from reason field */}
+                                {exchange.reason && exchange.reason.includes('Added:') &&
+                                  exchange.reason.split('Added:')[1].split(',').map((item: string, idx: number) => (
+                                    <span key={idx} className="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-medium">
+                                      {item.trim()}
+                                    </span>
+                                  ))
+                                }
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    </details>
+                      </details>
+                    </div>
                   </div>
-                </div>
-                {/* <button
+                  {/* <button
                   onClick={() => handleDeleteExchange(exchange.id)}
                   disabled={loading}
                   className="ml-4 text-red-600 hover:text-red-700 text-sm font-medium disabled:opacity-50"
                 >
                   Delete
                 </button> */}
+                </div>
               </div>
-            </div>
-          )})}
+            )
+          })}
         </div>
       )}
 
@@ -870,7 +875,7 @@ export function ProductExchange({
                         setSelectedExchangedProduct(productId);
                         setAdditionalProducts([]); // Reset additional products when main product changes
                         setProductSearchTerm(''); // Reset search when main product changes
-                        
+
                         // Initialize dates for new product (use empty strings to allow fresh selection)
                         if (productId) {
                           setProductDates(prev => ({
@@ -920,7 +925,7 @@ export function ProductExchange({
                   <p className="text-xs text-blue-600 mb-3">
                     You can add more products to this exchange along with the main product selected above.
                   </p>
-                  
+
                   {/* Search Input */}
                   <div className="mb-3">
                     <input
@@ -961,9 +966,8 @@ export function ProductExchange({
                             return (
                               <label
                                 key={product.id}
-                                className={`flex items-center p-3 hover:bg-gray-50 cursor-pointer transition-colors ${
-                                  isSelected ? 'bg-blue-50' : ''
-                                }`}
+                                className={`flex items-center p-3 hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''
+                                  }`}
                               >
                                 <input
                                   type="checkbox"
@@ -1078,7 +1082,7 @@ export function ProductExchange({
                 // Get dates for display
                 const bookedFrom = bookingDates?.booked_from || '';
                 const bookedTo = bookingDates?.booked_to || '';
-                
+
                 // Collect all products to display (main exchanged + additional)
                 const allSelectedProducts = [
                   { ...exchangedProduct, isMain: true }
@@ -1089,17 +1093,17 @@ export function ProductExchange({
                     allSelectedProducts.push({ ...product, isMain: false });
                   }
                 });
-                
+
                 return (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-4">
                     <h4 className="text-sm font-semibold text-blue-900 mb-3">Selected Products for Exchange</h4>
-                    
+
                     {/* Products List */}
                     <div className="space-y-3">
                       {allSelectedProducts.map((product, index) => {
                         const productRent = parseFloat(String(product.rent || '0')) || 0;
                         const productSecurity = parseFloat(product.security_deposit || '0') || 0;
-                        
+
                         return (
                           <div key={product.id || index} className="bg-white rounded-lg p-3 border border-blue-200">
                             <div className="flex items-start gap-3">
@@ -1124,7 +1128,7 @@ export function ProductExchange({
                                     <span className="font-medium">Security:</span> ₹{productSecurity.toLocaleString('en-IN')}
                                   </p>
                                 </div>
-                                
+
                                 {/* Date Selection for Each Product */}
                                 <div className="mt-3 pt-3 border-t border-gray-200">
                                   <h3 className="text-sm font-semibold text-gray-700 mb-3">
@@ -1161,7 +1165,7 @@ export function ProductExchange({
                                           booked_to: date || ''
                                         }
                                       }));
-                                      
+
                                       // Check availability when both dates are set
                                       if (date && currentFrom) {
                                         checkProductAvailability(
@@ -1197,11 +1201,10 @@ export function ProductExchange({
                                         <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                                         </svg>
-                                        <p className={`text-sm font-medium ${
-                                          availabilityErrors[product.id].includes('⚠️') 
-                                            ? 'text-orange-700' 
-                                            : 'text-red-700'
-                                        }`}>
+                                        <p className={`text-sm font-medium ${availabilityErrors[product.id].includes('⚠️')
+                                          ? 'text-orange-700'
+                                          : 'text-red-700'
+                                          }`}>
                                           {availabilityErrors[product.id]}
                                         </p>
                                       </div>
@@ -1214,7 +1217,7 @@ export function ProductExchange({
                         );
                       })}
                     </div>
-                    
+
                     {/* Exchange Impact Summary */}
                     <div className="border-t border-blue-300 pt-3 mt-3">
                       <h5 className="text-sm font-semibold text-blue-900 mb-2">Exchange Impact Summary</h5>
@@ -1237,7 +1240,7 @@ export function ProductExchange({
                             <span className="font-semibold text-green-700">₹{(exchangePreview?.calculations?.after_exchange_security ?? 0).toLocaleString('en-IN')}</span>
                           </div>
                         </div>
-                        
+
                         {/* Payment Breakdown - Using Backend Preview */}
                         <div className="border-t border-blue-300 pt-2 mt-2">
                           <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-3">
@@ -1246,7 +1249,7 @@ export function ProductExchange({
                               Total = New Rent + Exchange Penalty + Rent Difference - Original Rent
                             </p>
                           </div>
-                          
+
                           {exchangePreview && (
                             <>
                               {/* Original Rent */}
@@ -1254,19 +1257,19 @@ export function ProductExchange({
                                 <span>Original Product Rent:</span>
                                 <span className="font-semibold">₹{exchangePreview.calculations.original_rent.toLocaleString('en-IN')}</span>
                               </div>
-                              
+
                               {/* New Rent */}
                               <div className="flex justify-between">
                                 <span>New Product(s) Rent:</span>
                                 <span className="font-semibold text-green-700">₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')}</span>
                               </div>
-                              
+
                               {/* Exchange Penalty */}
                               <div className="flex justify-between">
                                 <span>Exchange Penalty ({exchangePreview.calculations.penalty_percentage}%):</span>
                                 <span className="font-semibold text-orange-700">₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')}</span>
                               </div>
-                              
+
                               {/* Rent Difference */}
                               <div className="flex justify-between">
                                 <span>Downgrade Penalty:</span>
@@ -1280,7 +1283,7 @@ export function ProductExchange({
                             </>
                           )}
                         </div>
-                        
+
                         {/* Total Payment Due */}
                         {exchangePreview && (
                           <div className="border-t-2 border-blue-400 pt-3 mt-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3">
@@ -1307,7 +1310,7 @@ export function ProductExchange({
                         )}
                       </div>
                     </div>
-                    
+
                     <p className="text-xs text-blue-700 mt-3">
                       <strong>Note:</strong> Total rental and security will be recalculated as sum of all products.
                     </p>
@@ -1319,7 +1322,7 @@ export function ProductExchange({
               {totalPaymentDue > 0 && pendingExchangeData && (
                 <div className="bg-gradient-to-r from-green-50 to-blue-50 border-2 border-green-400 rounded-lg p-6">
                   <h4 className="text-lg font-semibold text-gray-900 mb-4">💳 Payment Collection</h4>
-                  
+
                   {/* Total Payment Due */}
                   <div className="bg-white border-2 border-indigo-400 rounded-lg p-4 mb-4">
                     <div className="flex justify-between items-center">
@@ -1533,7 +1536,7 @@ export function ProductExchange({
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                   <p className="text-xs text-gray-600 mb-1">Exchange Details:</p>
                   <p className="text-sm font-medium text-gray-800">
-                    {currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.name} ({currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.code}) 
+                    {currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.name} ({currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.code})
                     → {availableProducts.find(p => p.id === pendingExchangeData.exchanged_product_id)?.name} ({availableProducts.find(p => p.id === pendingExchangeData.exchanged_product_id)?.code})
                   </p>
                   {pendingExchangeData.additionalProducts && pendingExchangeData.additionalProducts.length > 0 && (
@@ -1590,61 +1593,46 @@ export function ProductExchange({
             >
               ×
             </button>
-            
+
             <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
             <p className="text-center text-gray-700 mb-4">
               Amount to collect: ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
             </p>
-            
-            {/* Show QR based on booking ID (alternate between them) */}
-            {bookingId % 2 === 0 ? (
-              // Even booking ID - Show Ayushi Babel QR
+
+            {/* Show QR from admin settings */}
+            {paymentQrCode ? (
               <div>
                 <div className="flex justify-center mb-4">
                   <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                    <img 
-                      src="/upi-qr-ayushi.png" 
-                      alt="UPI QR Code" 
+                    <img
+                      src={paymentQrCode}
+                      alt="UPI QR Code"
                       className="rounded-lg"
-                      style={{ 
-                        maxWidth: '280px', 
-                        maxHeight: '310px', 
-                        width: 'auto', 
+                      style={{
+                        maxWidth: '280px',
+                        maxHeight: '310px',
+                        width: 'auto',
                         height: 'auto'
                       }}
                     />
                   </div>
                 </div>
-                <p className="text-center text-gray-600 mb-4">OR</p>
-                <p className="text-center text-sm text-gray-700 mb-6">
-                  Pay on UPI ID: <span className="font-semibold">ayushibabel22@oksbi</span>
+                <p className="text-center text-sm text-gray-500 mb-4">
+                  Scan the QR code above to make payment
                 </p>
               </div>
             ) : (
-              // Odd booking ID - Show Shubham Sahlot QR
-              <div>
-                <div className="flex justify-center mb-4">
-                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                    <img 
-                      src="/upi-qr.png" 
-                      alt="UPI QR Code" 
-                      className="rounded-lg"
-                      style={{ 
-                        maxWidth: '280px', 
-                        maxHeight: '310px', 
-                        width: 'auto', 
-                        height: 'auto'
-                      }}
-                    />
-                  </div>
+              <div className="flex justify-center mb-4">
+                <div className="bg-gray-50 rounded-lg border-2 border-dashed border-gray-300 p-8 text-center min-h-[200px] flex flex-col items-center justify-center">
+                  <svg className="w-12 h-12 text-gray-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                  </svg>
+                  <p className="text-sm font-medium text-gray-600">No QR code configured</p>
+                  <p className="text-xs text-gray-500 mt-1">Ask admin to upload a QR in Settings</p>
                 </div>
-                <p className="text-center text-gray-600 mb-4">OR</p>
-                <p className="text-center text-sm text-gray-700 mb-6">
-                  Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
-                </p>
               </div>
             )}
-            
+
             <div className="space-y-3">
               <button
                 onClick={() => setShowQRScanner(true)}

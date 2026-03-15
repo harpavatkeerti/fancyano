@@ -430,7 +430,7 @@ describe('Bookings Routes', () => {
       expect(response.body).toHaveProperty('message');
       expect(response.body.discount_details).toHaveProperty('booking_id', testBookingId);
       expect(response.body.discount_details).toHaveProperty('discount_amount', 5000);
-      
+
       // Verify discount is reflected in booking
       const booking = await pool.query('SELECT final_discount FROM bookings WHERE id = $1', [testBookingId]);
       expect(booking.rows[0].final_discount).toBe(5000);
@@ -555,29 +555,31 @@ describe('Bookings Routes', () => {
       expect(bookingCheck.rows[0].final_discount).toBe(5000);
     });
 
-    // Test: Finalize with overpayment (refund scenario)
-    it('should finalize booking with overpayment (refund scenario)', async () => {
-      // Pay more than total due
+    // Test: Finalize with discount creating a refund (discount exceeds balance)
+    it('should finalize booking with discount creating refund scenario', async () => {
+      // Pay exact total due
       await chargeAccountingService.applyPayment(
         finalizeTestBookingId,
-        80000, // Total due is 75000, so 5000 overpayment
+        75000, // Exact total: 50000 rent + 5000 transport + 20000 security
         'Cash',
         'test-user',
-        'Overpayment'
+        'Full payment'
       );
 
       const response = await request(app)
         .post(`/bookings/${finalizeTestBookingId}/finalize`)
         .send({
-          final_discount: 3000,
+          final_discount: 8000,
           finalized_by: 'test-user'
         });
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
       expect(response.body.settlement.action).toBe('refund');
-      expect(response.body.settlement.final_discount).toBe(3000);
-      // Refund = overpayment + discount = 5000 + 3000 = 8000
+      expect(response.body.settlement.final_discount).toBe(8000);
+
+      // TODO: FIX THIS - where did discount come into the picture from??? 
+      // Refund = discount amount since fully paid
       expect(response.body.settlement.amount).toBe(8000);
     });
 

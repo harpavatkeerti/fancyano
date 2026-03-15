@@ -26,10 +26,10 @@ class BookingService {
    */
   async createBooking(bookingData) {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
-      
+
       const {
         customerName,
         customerPhone,
@@ -40,12 +40,12 @@ class BookingService {
         transportCharge = 0,
         createdBy
       } = bookingData;
-      
+
       // Validate required fields
       if (!customerName || !customerPhone || !bookingDate || !products || products.length === 0) {
         throw new Error('Missing required fields: customerName, customerPhone, bookingDate, products');
       }
-      
+
       // Calculate overall booked_from (earliest) and booked_to (latest) from products
       const bookedFromDates = products.map(p => p.bookedFrom).filter(Boolean).sort();
       const bookedToDates = products.map(p => p.bookedTo).filter(Boolean).sort();
@@ -73,39 +73,39 @@ class BookingService {
           overallBookedTo
         ]
       );
-      
+
       const bookingId = bookingResult.rows[0].id;
       const createdAt = bookingResult.rows[0].created_at;
-      
+
       // Create booking products and their charges
       const bookingProductIds = [];
       const productDetails = [];
-      
+
       for (const product of products) {
-        const { 
-          productId, 
-          bookedFrom, 
-          bookedTo, 
-          rent, 
-          securityDeposit, 
+        const {
+          productId,
+          bookedFrom,
+          bookedTo,
+          rent,
+          securityDeposit,
           quantity = 1,
           measurements,
           specialRequirements,
           discountType,    // NEW: 'percentage' or 'fixed'
           discountValue    // NEW: discount value
         } = product;
-        
+
         if (!productId || !bookedFrom || !bookedTo || rent === undefined || securityDeposit === undefined) {
           throw new Error('Each product must have productId, bookedFrom, bookedTo, rent, and securityDeposit');
         }
-        
+
         // Calculate effective rent with discount
         const { effectiveRent, discountAmount } = DiscountCalculator.calculateEffectiveRent(
           rent,
           discountType,
           discountValue
         );
-        
+
         // Create booking_product entry with discount information
         const bpResult = await client.query(
           `INSERT INTO booking_products (
@@ -131,10 +131,10 @@ class BookingService {
             specialRequirements || null
           ]
         );
-        
+
         const bookingProductId = bpResult.rows[0].id;
         bookingProductIds.push(bookingProductId);
-        
+
         // Initialize charges for this product using EFFECTIVE RENT (after discount)
         await chargeAccountingService.initializeProductCharges(
           bookingProductId,
@@ -142,13 +142,13 @@ class BookingService {
           securityDeposit,
           client
         );
-        
+
         // Get product name for activity log
         const productInfo = await client.query(
           'SELECT name, code FROM products WHERE id = $1',
           [productId]
         );
-        
+
         productDetails.push({
           product_id: productId,
           booking_product_id: bookingProductId,
@@ -161,7 +161,7 @@ class BookingService {
           security_deposit: securityDeposit
         });
       }
-      
+
       // Log booking creation activity
       await client.query(
         `INSERT INTO booking_activity_log (
@@ -178,16 +178,16 @@ class BookingService {
           createdBy
         ]
       );
-      
+
       await client.query('COMMIT');
-      
+
       return {
         booking_id: bookingId,
         booking_product_ids: bookingProductIds,
         status: 'pending',
         created_at: createdAt
       };
-      
+
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -195,7 +195,7 @@ class BookingService {
       client.release();
     }
   }
-  
+
   /**
    * Update booking measurements and special requirements
    * @param {number} bookingId - Booking ID
@@ -210,17 +210,48 @@ class BookingService {
     try {
       await client.query('BEGIN');
 
-      // Verify booking exists
+      // Verify booking exists and get current state
       const bookingResult = await client.query(
-        'SELECT id FROM bookings WHERE id = $1',
+        'SELECT id, status FROM bookings WHERE id = $1',
         [bookingId]
       );
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
       }
+      const currentStatus = bookingResult.rows[0].status;
 
-      const { measurements, special_requirements } = data;
+      const { status, performed_by, measurements, special_requirements } = data;
 
+      // ── Status update ──────────────────────────────────────────────────────
+      // Update booking status and the corresponding product statuses
+      // independently in the same transaction, driven by the business action.
+      if (status !== undefined) {
+        const validStatuses = ['pending', 'confirmed', 'in_progress', 'partially_completed', 'completed', 'cancelled'];
+        if (!validStatuses.includes(status)) {
+          throw new Error(`Invalid status: ${status}`);
+        }
+
+        // Update booking status directly
+        await client.query(
+          'UPDATE bookings SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [status, bookingId]
+        );
+
+        // Log the status change
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            bookingId,
+            'status_changed',
+            JSON.stringify({ previous_status: currentStatus, new_status: status }),
+            performed_by || 'system'
+          ]
+        );
+      }
+
+
+      // ── Measurements / special requirements update ─────────────────────────
       if (measurements || special_requirements) {
         const specialReqs = special_requirements ? JSON.parse(special_requirements) : {};
 
@@ -264,7 +295,6 @@ class BookingService {
 
       await client.query('COMMIT');
 
-      // Return updated booking
       return await this.getBookingById(bookingId);
     } catch (error) {
       await client.query('ROLLBACK');
@@ -274,30 +304,53 @@ class BookingService {
     }
   }
 
+
   /**
-   * Update booking status to 'completed' if all products are in terminal states
+   * Update booking status based on current product lifecycle states.
+   *
+   * Status transition rules (derived from blueprint):
+   * - All products pending/confirmed             → booking: confirmed
+   * - Any product in_progress (none completed)   → booking: in_progress
+   * - Some completed + some still active         → booking: partially_completed
+   * - All products terminal (completed/cancelled/exchanged):
+   *     at least 1 completed                     → booking: completed
+   *     none completed                            → booking: cancelled
+   * - Booking already completed/cancelled        → no change
+   *
    * @param {number} bookingId - Booking ID
    * @returns {Promise<Object>} Updated status info
    */
   async updateBookingStatus(bookingId) {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
-      
+
       // Get current booking status
       const bookingResult = await client.query(
         'SELECT status FROM bookings WHERE id = $1',
         [bookingId]
       );
-      
+
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
       }
-      
+
       const currentStatus = bookingResult.rows[0].status;
-      
-      // Check if all products are in terminal states
+
+      // Never downgrade a finalized booking
+      if (currentStatus === 'completed' || currentStatus === 'cancelled') {
+        await client.query('COMMIT');
+        return {
+          booking_id: bookingId,
+          status: currentStatus,
+          updated: false,
+          all_terminal: true,
+          status_counts: {}
+        };
+      }
+
+      // Aggregate product statuses
       const productsResult = await client.query(
         `SELECT status, COUNT(*) as count
          FROM booking_products
@@ -305,55 +358,75 @@ class BookingService {
          GROUP BY status`,
         [bookingId]
       );
-      
+
       const statusCounts = {};
       let totalProducts = 0;
-      
+
       productsResult.rows.forEach(row => {
         statusCounts[row.status] = parseInt(row.count);
         totalProducts += parseInt(row.count);
       });
-      
-      // Terminal states: completed, cancelled, exchanged
-      const terminalStates = ['completed', 'cancelled', 'exchanged'];
-      let terminalCount = 0;
-      
-      terminalStates.forEach(state => {
-        terminalCount += statusCounts[state] || 0;
-      });
-      
-      const allTerminal = terminalCount === totalProducts;
-      const hasCompleted = (statusCounts['completed'] || 0) > 0;
-      
-      // Determine new status if all products are in terminal states
-      let newStatus = null;
-      if (allTerminal && currentStatus !== 'completed' && currentStatus !== 'cancelled') {
-        if (hasCompleted) {
-          // At least one product completed - mark booking as completed
-          newStatus = 'completed';
-        } else {
-          // No products completed (all cancelled/exchanged) - mark booking as cancelled
-          newStatus = 'cancelled';
-        }
+
+      if (totalProducts === 0) {
+        // No products — leave status unchanged
+        await client.query('COMMIT');
+        return { booking_id: bookingId, status: currentStatus, updated: false, all_terminal: false, status_counts: statusCounts };
       }
-      
-      if (newStatus) {
-        // Update booking status
+
+      const countOf = (s) => statusCounts[s] || 0;
+
+      const terminalCount = countOf('completed') + countOf('cancelled') + countOf('exchanged');
+      const allTerminal = terminalCount === totalProducts;
+      const hasCompleted = countOf('completed') > 0;
+      const hasInProgress = countOf('in_progress') > 0;
+      const hasPending = countOf('pending') > 0;
+      const hasConfirmed = countOf('confirmed') > 0;
+
+      let newStatus;
+
+      if (allTerminal) {
+        // All products are done — finalize booking
+        newStatus = hasCompleted ? 'completed' : 'cancelled';
+      } else if (hasCompleted) {
+        // At least one product returned, others still active
+        newStatus = 'partially_completed';
+      } else if (hasInProgress) {
+        // At least one product picked up, none returned yet
+        newStatus = 'in_progress';
+      } else {
+        // Products are still pending or confirmed — no auto-change
+        // (pending → confirmed is an explicit user action, not auto-derived)
+        newStatus = currentStatus;
+      }
+
+      let updated = false;
+
+      if (newStatus !== currentStatus) {
         await client.query(
-          'UPDATE bookings SET status = $1 WHERE id = $2',
+          'UPDATE bookings SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           [newStatus, bookingId]
         );
-        
-        // Log activity
+        updated = true;
+
+        // Map newStatus → activity event name
+        const eventMap = {
+          confirmed: 'booking_confirmed',
+          in_progress: 'booking_in_progress',
+          partially_completed: 'booking_partially_completed',
+          completed: 'booking_completed',
+          cancelled: 'booking_cancelled'
+        };
+
         await client.query(
           `INSERT INTO booking_activity_log (
             booking_id, event_type, details, performed_by
           ) VALUES ($1, $2, $3, $4)`,
           [
             bookingId,
-            newStatus === 'completed' ? 'booking_completed' : 'booking_cancelled',
+            eventMap[newStatus] || 'status_updated',
             JSON.stringify({
               previous_status: currentStatus,
+              new_status: newStatus,
               total_products: totalProducts,
               status_counts: statusCounts
             }),
@@ -361,17 +434,17 @@ class BookingService {
           ]
         );
       }
-      
+
       await client.query('COMMIT');
-      
+
       return {
         booking_id: bookingId,
-        status: newStatus || currentStatus,
-        updated: !!newStatus,
+        status: newStatus,
+        updated,
         all_terminal: allTerminal,
         status_counts: statusCounts
       };
-      
+
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -379,7 +452,7 @@ class BookingService {
       client.release();
     }
   }
-  
+
   /**
    * Confirm a pending booking (transition to 'confirmed' status)
    * @param {number} bookingId - Booking ID
@@ -388,32 +461,32 @@ class BookingService {
    */
   async confirmBooking(bookingId, confirmedBy) {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
-      
+
       // Get booking and verify it's pending
       const bookingResult = await client.query(
         'SELECT status FROM bookings WHERE id = $1',
         [bookingId]
       );
-      
+
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
       }
-      
+
       const currentStatus = bookingResult.rows[0].status;
-      
+
       if (currentStatus !== 'pending') {
         throw new Error(`Cannot confirm booking with status: ${currentStatus}`);
       }
-      
+
       // Update booking status
       await client.query(
         'UPDATE bookings SET status = $1 WHERE id = $2',
         ['confirmed', bookingId]
       );
-      
+
       // Update all pending products to confirmed
       const productsResult = await client.query(
         `UPDATE booking_products 
@@ -422,9 +495,9 @@ class BookingService {
          RETURNING id`,
         [bookingId]
       );
-      
+
       const confirmedProductCount = productsResult.rows.length;
-      
+
       // Log activity
       await client.query(
         `INSERT INTO booking_activity_log (
@@ -439,15 +512,15 @@ class BookingService {
           confirmedBy
         ]
       );
-      
+
       await client.query('COMMIT');
-      
+
       return {
         booking_id: bookingId,
         status: 'confirmed',
         confirmed_products: confirmedProductCount
       };
-      
+
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -455,7 +528,7 @@ class BookingService {
       client.release();
     }
   }
-  
+
   /**
    * Get booking by ID with full details
    * @param {number} bookingId - Booking ID
@@ -496,14 +569,14 @@ class BookingService {
        GROUP BY b.id`,
       [bookingId]
     );
-    
+
     if (result.rows.length === 0) {
       throw new Error('Booking not found');
     }
-    
+
     return result.rows[0];
   }
-  
+
   /**
    * Get list of bookings with optional filters
    * @param {Object} filters - Filter options
@@ -515,7 +588,7 @@ class BookingService {
    */
   async getBookingsList(filters = {}) {
     const { status, search, limit = 100, offset = 0 } = filters;
-    
+
     let query = `
       SELECT 
         b.id,
@@ -561,52 +634,52 @@ class BookingService {
       LEFT JOIN products p ON bp.product_id = p.id
       WHERE 1=1
     `;
-    
+
     const params = [];
     let paramCount = 0;
-    
+
     if (status) {
       paramCount++;
       query += ` AND b.status = $${paramCount}`;
       params.push(status);
     }
-    
+
     if (search) {
       paramCount++;
       query += ` AND (b.customer_name ILIKE $${paramCount} OR b.customer_phone ILIKE $${paramCount})`;
       params.push(`%${search}%`);
     }
-    
+
     query += ` GROUP BY b.id ORDER BY b.created_at DESC`;
-    
+
     paramCount++;
     query += ` LIMIT $${paramCount}`;
     params.push(limit);
-    
+
     paramCount++;
     query += ` OFFSET $${paramCount}`;
     params.push(offset);
-    
+
     const result = await pool.query(query, params);
-    
+
     // Calculate payment_status for each booking (backend business logic)
     const bookingsWithStatus = result.rows.map(booking => {
       const totalRent = parseFloat(booking.total_rent || 0) + parseFloat(booking.transport_charge || 0);
       const totalPaid = parseFloat(booking.total_paid || 0);
-      
+
       let payment_status = 'unpaid';
       if (totalPaid >= totalRent) {
         payment_status = 'paid';
       } else if (totalPaid > 0) {
         payment_status = 'partial';
       }
-      
+
       return {
         ...booking,
         payment_status
       };
     });
-    
+
     return bookingsWithStatus;
   }
 
@@ -687,7 +760,7 @@ class BookingService {
    */
   async finalizeBooking(bookingId, finalDiscount = 0, finalizedBy) {
     const client = await pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -719,15 +792,14 @@ class BookingService {
       const summary = await chargeAccountingService.getPaymentSummary(bookingId);
       const totalDue = summary.totals.total_due;
       const totalPaid = summary.totals.total_paid;
-      // Raw balance accounts for overpayment (negative balance means overpayment)
-      const rawBalance = (totalDue - totalPaid) - (summary.overpayment || 0);
+      const rawBalance = totalDue - totalPaid;
 
       // Calculate final settlement
       const finalAmount = rawBalance - finalDiscount;
-      
+
       let action;
       let amount;
-      
+
       if (finalAmount > 0) {
         action = 'collect';
         amount = finalAmount;

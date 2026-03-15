@@ -41,7 +41,7 @@ export default function OrderDetailsPage() {
   const [changeReason, setChangeReason] = useState('');
   const [productBookingsForChange, setProductBookingsForChange] = useState<any[]>([]);
   const [dateChangeCharge, setDateChangeCharge] = useState(0);
-  
+
   // Date change charge settings
   const [dateChangeChargeSettings, setDateChangeChargeSettings] = useState({
     charge_type: 'manual' as 'fixed' | 'variable' | 'manual',
@@ -58,15 +58,19 @@ export default function OrderDetailsPage() {
   const [showUPIModal, setShowUPIModal] = useState(false);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [paymentScanned, setPaymentScanned] = useState(false);
+  const [rentQrCode, setRentQrCode] = useState<string>('');
+  const [securityQrCode, setSecurityQrCode] = useState<string>('');
+  const [showSecurityQr, setShowSecurityQr] = useState(false);
   const [showPaymentBreakdown, setShowPaymentBreakdown] = useState(false);
   const [paymentBreakdown, setPaymentBreakdown] = useState({
     rentDue: '',
     securityDepositDue: '',
     refundToCustomer: 0,
+    hasTransport: false,
   });
 
   // Helper function to calculate paid amount excluding exchange penalties
-  
+
   // Transportation charges
   const [transportationCharges, setTransportationCharges] = useState('');
   const [showTransportationInput, setShowTransportationInput] = useState(false);
@@ -76,7 +80,7 @@ export default function OrderDetailsPage() {
   const [refundMethod, setRefundMethod] = useState('Cash');
   const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
   // Per-item refund state: { productId: { selected: boolean, amount: string, notes: string } }
-  const [itemRefunds, setItemRefunds] = useState<{[key: number]: {selected: boolean, amount: string, notes: string}}>({});
+  const [itemRefunds, setItemRefunds] = useState<{ [key: number]: { selected: boolean, amount: string, notes: string } }>({});
 
   // Transaction history
   const [transactions, setTransactions] = useState<any[]>([]);
@@ -85,17 +89,17 @@ export default function OrderDetailsPage() {
   const [showMeasurementModal, setShowMeasurementModal] = useState(false);
   const [showComplaintForm, setShowComplaintForm] = useState(false);
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
-  const [measurements, setMeasurements] = useState<{[key: string]: any}>({});
-  const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
-  const [specialRequirements, setSpecialRequirements] = useState<{[key: string]: string}>({});
-  
+  const [measurements, setMeasurements] = useState<{ [key: string]: any }>({});
+  const [measurementErrors, setMeasurementErrors] = useState<{ [key: string]: string }>({});
+  const [specialRequirements, setSpecialRequirements] = useState<{ [key: string]: string }>({});
+
   // View/Edit measurements modal
   const [showViewMeasurements, setShowViewMeasurements] = useState(false);
   const [selectedProductForMeasurements, setSelectedProductForMeasurements] = useState<any>(null);
   const [isEditingMeasurements, setIsEditingMeasurements] = useState(false);
-  const [editingMeasurements, setEditingMeasurements] = useState<{[key: string]: string}>({});
+  const [editingMeasurements, setEditingMeasurements] = useState<{ [key: string]: string }>({});
   const [editingSpecialRequirements, setEditingSpecialRequirements] = useState<string>('');
-  
+
   // Salesman permissions
   const [salesmanPermissions, setSalesmanPermissions] = useState({
     exchange_allowed: false,
@@ -105,7 +109,7 @@ export default function OrderDetailsPage() {
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
     if (!recordedBy) return 'N/A';
-    
+
     // If it's a string
     if (typeof recordedBy === 'string') {
       try {
@@ -117,12 +121,12 @@ export default function OrderDetailsPage() {
         return recordedBy;
       }
     }
-    
+
     // If it's already an object
     if (typeof recordedBy === 'object') {
       return recordedBy.userName || recordedBy.name || 'N/A';
     }
-    
+
     return String(recordedBy);
   }
 
@@ -138,17 +142,24 @@ export default function OrderDetailsPage() {
       fetchBooking();
       fetchDateChangeChargeSettings();
       fetchSalesmanPermissions();
+      // Fetch payment QR codes from settings (rent + security)
+      settingsApi.getByKey('payment_qr_rent')
+        .then(res => { if (res.data?.setting_value) setRentQrCode(res.data.setting_value); })
+        .catch(() => { });
+      settingsApi.getByKey('payment_qr_security')
+        .then(res => { if (res.data?.setting_value) setSecurityQrCode(res.data.setting_value); })
+        .catch(() => { });
     }
-    
+
     // Initialize userName from localStorage (client-side only)
     if (typeof window !== 'undefined') {
-      const storedUserName = localStorage.getItem('userName') || 
-                             localStorage.getItem('salesman_user') || 
-                             'Salesman';
+      const storedUserName = localStorage.getItem('userName') ||
+        localStorage.getItem('salesman_user') ||
+        'Salesman';
       setUserName(storedUserName);
     }
   }, [params.id]);
-  
+
   async function fetchSalesmanPermissions() {
     try {
       const response = await settingsApi.getByKey('salesman_permissions');
@@ -163,7 +174,7 @@ export default function OrderDetailsPage() {
       console.error('Error fetching salesman permissions:', error);
     }
   }
-  
+
   async function fetchDateChangeChargeSettings() {
     try {
       const settings = [
@@ -238,7 +249,7 @@ export default function OrderDetailsPage() {
       window.console.log('Payment Summary:', summaryResponse.data);
 
       console.log('Transportation charge:', bookingResponse.data.transport_charge);
-      
+
       // Debug: Log product images
       if (bookingResponse.data.products) {
         bookingResponse.data.products.forEach((product: any, index: number) => {
@@ -251,21 +262,21 @@ export default function OrderDetailsPage() {
           });
         });
       }
-      
+
       setBooking(bookingResponse.data);
       setPaymentSummary(summaryResponse.data);
       const allTransactions = transactionsResponse.data || [];
       setTransactions(allTransactions);
-      
+
       // Check for rent difference payment and log it
       const rentDiffPayments = allTransactions.filter((t: any) => {
         const method = (t.method || '').toLowerCase();
         const notes = (t.notes || '').toLowerCase();
-        return method === 'exchange_upgrade' || 
-               notes.includes('additional rent') || 
-               notes.includes('rent difference');
+        return method === 'exchange_upgrade' ||
+          notes.includes('additional rent') ||
+          notes.includes('rent difference');
       });
-      
+
       if (rentDiffPayments.length > 0) {
         console.log('✅✅✅ FOUND RENT DIFFERENCE PAYMENTS:', rentDiffPayments);
         rentDiffPayments.forEach((t: any) => {
@@ -274,7 +285,7 @@ export default function OrderDetailsPage() {
       } else {
         console.log('⚠️ No rent difference payment transactions found');
       }
-      
+
       // Check for refund transactions
       const refundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
       if (refundTransactions.length > 0) {
@@ -291,12 +302,12 @@ export default function OrderDetailsPage() {
       } else {
         console.log('ℹ️ No refund transactions found');
       }
-      
+
       console.log('📊 Transactions updated:', allTransactions.length, 'transactions');
       console.log('📊 All transactions:', transactionsResponse.data);
       console.log('📊 ALL TRANSACTIONS DETAILED:', JSON.stringify(transactionsResponse.data, null, 2));
       console.log('📊 Refund transactions:', transactionsResponse.data?.filter((t: any) => t.type === 'refund').length);
-      
+
       // Check for exchange-related transactions
       const exchangeTransactions = (transactionsResponse.data || []).filter((t: any) => {
         const method = (t.method || '').toLowerCase();
@@ -312,7 +323,7 @@ export default function OrderDetailsPage() {
           notes: t.notes?.substring(0, 80)
         })));
       }
-      
+
       // Specifically check for rent difference payments (exchange_upgrade)
       const rentDifferencePayments = (transactionsResponse.data || []).filter((t: any) => {
         const method = (t.method || '').toLowerCase();
@@ -330,7 +341,7 @@ export default function OrderDetailsPage() {
       } else {
         console.log('⚠️ WARNING: No rent difference payment transactions found! If customer paid rent difference during exchange, the transaction may not have been created.');
       }
-      
+
       // Check for refunds
       const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
       const statusRefundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
@@ -345,30 +356,30 @@ export default function OrderDetailsPage() {
       });
       const allProductsHaveRefunds = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
       const hasAnyRefund = productsWithRefunds.size > 0;
-      
+
       // Use backend-provided status - backend handles status updates based on product lifecycle and payments
-      
+
       // Note: updateBookingStatus() should only be called explicitly after payment/refund actions
       // Not automatically here to avoid infinite loops
-      
+
       // Load measurements from booking if they exist
       if (bookingResponse.data.measurements) {
         try {
-          const measurementsData = typeof bookingResponse.data.measurements === 'string' 
+          const measurementsData = typeof bookingResponse.data.measurements === 'string'
             ? JSON.parse(bookingResponse.data.measurements)
             : bookingResponse.data.measurements;
-          
+
           // Convert old format (keyed by product.id) to new format (keyed by product.id + dates)
-          const convertedMeasurements: {[key: string]: any} = {};
+          const convertedMeasurements: { [key: string]: any } = {};
           const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
-          
+
           if (typeof measurementsData === 'object' && measurementsData !== null) {
             products.forEach((product: any) => {
               const productId = product.id;
               const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
               const bookedTo = product.booked_to || bookingResponse.data.booked_to;
               const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-              
+
               // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
               // This ensures each product instance with different dates gets independent measurements
               const productMeas = measurementsData[uniqueKey] || measurementsData[productId] || {};
@@ -379,7 +390,7 @@ export default function OrderDetailsPage() {
               }
             });
           }
-          
+
           setMeasurements(convertedMeasurements);
         } catch (error) {
           console.error('Error parsing measurements:', error);
@@ -394,15 +405,15 @@ export default function OrderDetailsPage() {
             : bookingResponse.data.special_requirements;
           if (typeof specialReqsData === 'object' && specialReqsData !== null) {
             // Convert old format to new format (keyed by product.id + dates)
-            const convertedSpecialReqs: {[key: string]: string} = {};
+            const convertedSpecialReqs: { [key: string]: string } = {};
             const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
-            
+
             products.forEach((product: any) => {
               const productId = product.id;
               const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
               const bookedTo = product.booked_to || bookingResponse.data.booked_to;
               const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-              
+
               // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
               // This ensures each product instance with different dates gets independent special requirements
               const productReq = specialReqsData[uniqueKey] || specialReqsData[productId] || '';
@@ -412,7 +423,7 @@ export default function OrderDetailsPage() {
                 convertedSpecialReqs[uniqueKey] = productReq;
               }
             });
-            
+
             setSpecialRequirements(convertedSpecialReqs);
           }
         } catch (error) {
@@ -439,7 +450,7 @@ export default function OrderDetailsPage() {
       // Store PDF blob and show preview instead of auto-downloading
       const blob = new Blob([response.data], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
-      
+
       setPdfBlob(blob);
       setPdfType(type);
       setPdfUrl(url);
@@ -452,7 +463,7 @@ export default function OrderDetailsPage() {
         );
         const publicUrl = generateResponse.data.url;
         const fullUrl = generateResponse.data.fullUrl || `${API_URL.replace('/api', '')}${publicUrl}`;
-        
+
         // Replace localhost with actual server IP if needed
         let shareableUrl = fullUrl;
         if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
@@ -494,7 +505,7 @@ export default function OrderDetailsPage() {
 
   function handleDownloadPdf() {
     if (!pdfBlob || !pdfType || !booking) return;
-    
+
     const url = window.URL.createObjectURL(pdfBlob);
     const link = document.createElement('a');
     link.href = url;
@@ -507,27 +518,27 @@ export default function OrderDetailsPage() {
 
   function formatPhoneNumber(phone: string): string | null {
     if (!phone) return null;
-    
+
     // Remove all non-digits
     let phoneNumber = phone.replace(/\D/g, '');
-    
+
     // Remove leading zeros
     phoneNumber = phoneNumber.replace(/^0+/, '');
-    
+
     if (phoneNumber.length === 0) {
       return null;
     }
-    
+
     // If it's exactly 10 digits and doesn't start with a country code, assume it's Indian
     if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
       phoneNumber = '91' + phoneNumber;
     }
-    
+
     // Validate: WhatsApp requires phone numbers in E.164 format (7-15 digits, no leading zeros)
     if (phoneNumber.length < 7 || phoneNumber.length > 15 || phoneNumber[0] === '0') {
       return null;
     }
-    
+
     return phoneNumber;
   }
 
@@ -545,7 +556,7 @@ export default function OrderDetailsPage() {
     // Use the public URL that was generated when creating the PDF
     // This URL points directly to the PDF file, not through localhost
     let pdfDownloadLink = '';
-    
+
     if (pdfPublicUrl) {
       // Use the stored public URL
       pdfDownloadLink = pdfPublicUrl;
@@ -570,7 +581,7 @@ export default function OrderDetailsPage() {
         pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
       }
     }
-    
+
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
     const message = `Hi ${booking.customer_name}, your ${documentName} for booking #${booking.id} is ready. Download PDF: ${pdfDownloadLink}`;
 
@@ -626,10 +637,10 @@ export default function OrderDetailsPage() {
     }
 
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
-    
+
     // Prompt for customer email if not available
     let customerEmail = booking.customer_email || null;
-    
+
     if (!customerEmail) {
       const emailInput = prompt(`Enter customer email address for ${booking.customer_name}:`);
       if (!emailInput || !emailInput.trim()) {
@@ -658,18 +669,18 @@ export default function OrderDetailsPage() {
     } catch (error: any) {
       // Fallback to mailto if backend email fails or not configured
       const useMailto = error.response?.data?.useMailto || !error.response;
-      
+
       if (useMailto) {
         // Construct email body with PDF download link
         const emailBody = `Hi ${booking.customer_name},\n\nPlease find your ${documentName} for booking #${booking.id} below.\n\nDownload PDF: ${pdfPublicUrl}\n\nNote: The PDF is available for download at the link above. Please download and attach it to this email if needed.\n\nThank you!`;
-        
+
         const subject = encodeURIComponent(`${documentName} for Booking #${booking.id}`);
         const body = encodeURIComponent(emailBody);
-        
+
         // Note: mailto protocol doesn't support file attachments
         // We include the download link in the body and pre-fill the recipient email
         const mailtoLink = `mailto:${customerEmail}?subject=${subject}&body=${body}`;
-        
+
         window.location.href = mailtoLink;
         toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
       } else {
@@ -698,7 +709,7 @@ export default function OrderDetailsPage() {
     setChangeDateTo(product.booked_to?.split('T')[0] || '');
     setDateChangeCharge(0);
     setShowChangeDateModal(true);
-    
+
     // Fetch bookings for this product to show availability
     fetchProductBookingsForChange(product.id);
   }
@@ -738,10 +749,10 @@ export default function OrderDetailsPage() {
       }
 
       // Calculate or use manual charge
-      const finalCharge = dateChangeChargeSettings.charge_type === 'manual' 
+      const finalCharge = dateChangeChargeSettings.charge_type === 'manual'
         ? dateChangeCharge
         : calculateDateChangeCharge(oldFrom, oldTo, changeDateFrom, changeDateTo);
-      
+
       console.log('Updating product dates:', {
         productId: selectedProduct.id,
         oldDates: { from: oldFrom, to: oldTo },
@@ -758,7 +769,7 @@ export default function OrderDetailsPage() {
         toast.error('Invalid booking ID');
         return;
       }
-      
+
       await bookingsApi.update(bookingId, {
         products: [{
           id: selectedProduct.id,
@@ -789,10 +800,10 @@ export default function OrderDetailsPage() {
       setChangeDateTo('');
       setDateChangeCharge(0);
       setSelectedProduct(null);
-      
+
       // Refresh booking data to show updated dates and transactions
       await fetchBooking();
-      
+
       // Refresh product bookings to update calendar availability
       // This will show the new dates as blocked and old dates as available
       await fetchProductBookingsForChange(updatedProductId);
@@ -804,19 +815,23 @@ export default function OrderDetailsPage() {
 
   function calculatePaymentBreakdown() {
     const amount = parseFloat(paymentAmount);
-    
+
     // Use payment summary for accurate calculations
     if (!paymentSummary) {
       setPaymentBreakdown({
         rentDue: 'Loading...',
         securityDepositDue: 'Loading...',
         refundToCustomer: 0,
+        hasTransport: false,
       });
       return;
     }
-    
-    const totalRentDue = (paymentSummary.charges.rent.due || 0) - (paymentSummary.charges.rent.paid || 0);
+
+    const rentDue = (paymentSummary.charges.rent.due || 0) - (paymentSummary.charges.rent.paid || 0);
+    const transportDue = (paymentSummary.charges.transport?.due || 0) - (paymentSummary.charges.transport?.paid || 0);
+    const totalRentDue = rentDue + transportDue;
     const totalSecurityDue = (paymentSummary.charges.security.due || 0) - (paymentSummary.charges.security.paid || 0);
+    const hasTransport = (paymentSummary.charges.transport?.due || 0) > 0;
 
     // Allocate payment: first to rental, then to security deposit
     let remainingPayment = amount;
@@ -850,6 +865,7 @@ export default function OrderDetailsPage() {
       rentDue: newRentalDue <= 0 ? 'Fully Paid' : `₹${Math.floor(newRentalDue).toLocaleString('en-IN')}`,
       securityDepositDue: newSecurityDue <= 0 ? 'Fully Paid' : `₹${Math.floor(newSecurityDue).toLocaleString('en-IN')}`,
       refundToCustomer: refund,
+      hasTransport,
     });
   }
 
@@ -880,7 +896,7 @@ export default function OrderDetailsPage() {
       toast.success('Transportation charges added successfully!');
       setShowTransportationInput(false);
       setTransportationCharges('');
-      
+
       // Refresh the booking
       console.log('🔄 Refreshing booking data...');
       await fetchBooking();
@@ -912,7 +928,7 @@ export default function OrderDetailsPage() {
         toast.error('Invalid booking ID');
         return;
       }
-      
+
       await paymentTransactionsApi.create({
         booking_id: bookingId,
         amount: amount,
@@ -929,10 +945,15 @@ export default function OrderDetailsPage() {
       setPaymentAmount('');
       setPaymentMethod('Cash');
       setPaymentNotes('');
-      
-      // Update booking status based on payment (this will fetch fresh data)
-      await updateBookingStatus();
-      
+
+      // Auto-confirm booking after first payment if still pending
+      if (booking?.status === 'pending') {
+        await bookingsApi.update(bookingId, { status: 'confirmed' } as any);
+      }
+
+      // Refresh booking data from backend
+      await fetchBooking();
+
       // Show measurement confirmation modal
       setShowMeasurementModal(true);
     } catch (error) {
@@ -941,132 +962,14 @@ export default function OrderDetailsPage() {
     }
   }
 
-  // Calculate booking status based on payments and refunds
-  // Update booking status in database
-  async function updateBookingStatus() {
-    if (!booking) return;
-
-    try {
-      // Fetch fresh booking, transaction, and payment summary data
-      const [bookingResponse, transactionsResponse, summaryResponse] = await Promise.all([
-        bookingsApi.getById(booking.id),
-        paymentTransactionsApi.getByBookingId(booking.id),
-        bookingsApi.getPaymentSummary(booking.id),
-      ]);
-      
-      const currentBooking = bookingResponse.data;
-      const currentTransactions = transactionsResponse.data || [];
-      const currentSummary = summaryResponse.data;
-      
-      // Recalculate status with latest data
-      const totalRent = currentSummary.charges.rent.due || 0;
-      const totalSecurity = currentSummary.charges.security.due || 0;
-      const totalPaid = currentSummary.totals.total_paid;
-      const totalPenalties = currentSummary.charges.penalties.due || 0;
-
-      // Check if all products have refunds
-      const currentProducts = Array.isArray(currentBooking.products) ? currentBooking.products : [];
-      const refundTransactions = currentTransactions.filter((t: any) => t.type === 'refund');
-      
-      const productsWithRefunds = new Set<number>();
-      refundTransactions.forEach((transaction: any) => {
-        const notes = transaction.notes || '';
-        currentProducts.forEach((product: any) => {
-          // First try exact pattern match: (CODE)
-          if (notes.includes(`(${product.code})`)) {
-            productsWithRefunds.add(product.id);
-            return;
-          }
-          
-          // If that doesn't match, try matching product name followed by code pattern
-          const namePattern = new RegExp(`\\b${product.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'i');
-          if (namePattern.test(notes)) {
-            productsWithRefunds.add(product.id);
-            return;
-          }
-          
-          // Last resort: check if product code appears as a whole word (not substring)
-          const codePattern = new RegExp(`\\b${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-          if (codePattern.test(notes) && notes.includes(product.name)) {
-            productsWithRefunds.add(product.id);
-          }
-        });
-      });
-      
-      const allProductsHaveRefunds = currentProducts.length > 0 && currentProducts.every((p: any) => productsWithRefunds.has(p.id));
-      const hasAnyRefund = productsWithRefunds.size > 0;
-      
-      console.log('=== updateBookingStatus: Status Calculation ===');
-      console.log('Current products:', currentProducts.length);
-      console.log('Products with refunds:', productsWithRefunds.size);
-      console.log('Product IDs:', currentProducts.map((p: any) => p.id));
-      console.log('Products with refund IDs:', Array.from(productsWithRefunds));
-      console.log('All products have refunds?', allProductsHaveRefunds);
-      console.log('Has any refund?', hasAnyRefund);
-      console.log('Current status:', currentBooking.status);
-      
-      const totalRequired = totalRent + totalSecurity + totalPenalties;
-      const isFullyPaid = totalPaid >= totalRequired;
-      const hasRentalPayment = (currentSummary.charges.rent.paid || 0) > 0;
-
-      let newStatus = currentBooking.status;
-
-      // Don't update status if booking is cancelled or partially completed
-      if (currentBooking.status === 'cancelled' || currentBooking.status === 'partially_completed') {
-        console.log('⚠️ Booking is cancelled or partially completed - skipping status update');
-        return;
-      }
-
-      // Once refunds start, the order is in "refund phase" - status should only be determined by refund completion
-      if (allProductsHaveRefunds) {
-        console.log('Setting status to completed because all products have refunds');
-        newStatus = 'completed';
-      } else if (hasAnyRefund) {
-        console.log('Setting status to in_progress because refunds are in progress');
-        newStatus = 'in_progress'; // Refund phase - waiting for remaining refunds
-      } else if (isFullyPaid) {
-        const products = Array.isArray(currentBooking.products) ? currentBooking.products : [];
-        if (products.length > 1) {
-          const dates = products.map((p: any) => ({
-            from: p.booked_from || currentBooking.booked_from,
-            to: p.booked_to || currentBooking.booked_to
-          }));
-          const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-          if (uniqueDates.size > 1) {
-            newStatus = 'in_progress'; // Partially Completed
-          } else {
-            newStatus = 'in_progress'; // Under Process
-          }
-        } else {
-          newStatus = 'in_progress'; // Under Process
-        }
-      } else if (hasRentalPayment) {
-        newStatus = 'confirmed';
-      } else {
-        newStatus = 'pending';
-      }
-      
-      // Only update if status changed
-      if (currentBooking.status !== newStatus) {
-        await bookingsApi.update(currentBooking.id, {
-          status: newStatus
-        } as any);
-        console.log(`Booking status updated from ${currentBooking.status} to ${newStatus}`);
-        // Update local state with fresh booking data
-        setBooking(currentBooking);
-        setPaymentSummary(currentSummary);
-        setTransactions(currentTransactions);
-      }
-    } catch (error) {
-      console.error('Error updating booking status:', error);
-    }
-  }
+  // Booking status is driven entirely by the backend based on product lifecycle.
+  // No local status calculation needed — fetchBooking() always gets the current state.
 
   // Measurement helper functions
   function handleMeasurementChange(uniqueKey: string, field: string, value: string) {
     // Remove any non-digit characters
     const numericValue = value.replace(/\D/g, '');
-    
+
     // Check if more than 2 digits
     if (numericValue.length > 2) {
       const errorKey = `${uniqueKey}-${field}`;
@@ -1076,14 +979,14 @@ export default function OrderDetailsPage() {
       });
       return;
     }
-    
+
     // Clear error if valid
     const errorKey = `${uniqueKey}-${field}`;
     setMeasurementErrors({
       ...measurementErrors,
       [errorKey]: '',
     });
-    
+
     setMeasurements({
       ...measurements,
       [uniqueKey]: {
@@ -1109,21 +1012,18 @@ export default function OrderDetailsPage() {
     if (!booking || !paymentSummary) return;
 
     const products = Array.isArray(booking.products) ? booking.products : [];
-    
+
     // Get selected items
     const selectedItems = products.filter((p: any) => itemRefunds[p.id]?.selected);
-    
+
     // Use payment summary for accurate totals
     const totalRent = paymentSummary.charges.rent.due || 0;
     const totalSecurity = paymentSummary.charges.security.due || 0;
     const totalPaid = paymentSummary.totals.total_paid;
     const totalPenalties = paymentSummary.charges.penalties.due || 0;
-    
-    const totalRequired = totalRent + totalSecurity + totalPenalties;
-    const overpaymentAmount = Math.max(0, totalPaid - totalRequired);
-    
-    // Need at least one selected item OR overpayment
-    if (selectedItems.length === 0 && overpaymentAmount <= 0) {
+
+    // Need at least one selected item
+    if (selectedItems.length === 0) {
       toast.warning('Please select at least one item to refund');
       return;
     }
@@ -1134,11 +1034,11 @@ export default function OrderDetailsPage() {
       if (!refundData) continue;
 
       const amount = parseFloat(refundData.amount);
-    
-    if (isNaN(amount) || amount < 0) {
+
+      if (isNaN(amount) || amount < 0) {
         toast.warning(`Please enter a valid refund amount for ${product.name}`);
-      return;
-    }
+        return;
+      }
 
       // Get product security deposit
       const productSecurityDeposit = typeof product.security_deposit === 'number'
@@ -1148,13 +1048,13 @@ export default function OrderDetailsPage() {
       // Validate: refund cannot exceed product security deposit
       if (amount > productSecurityDeposit) {
         toast.error(`Refund amount for ${product.name} cannot exceed its security deposit of ₹${Math.floor(productSecurityDeposit).toLocaleString('en-IN')}`);
-      return;
-    }
+        return;
+      }
 
       // If refund is less than product security deposit, notes are required
       if (amount < productSecurityDeposit && !refundData.notes.trim()) {
         toast.warning(`Please provide narration/notes for ${product.name} explaining why the refund is less than its security deposit`);
-      return;
+        return;
       }
     }
 
@@ -1163,49 +1063,28 @@ export default function OrderDetailsPage() {
       const refundPromises = selectedItems.map(async (product: any) => {
         const refundData = itemRefunds[product.id];
         const amount = parseFloat(refundData.amount);
-        
+
         // IMPORTANT: Always include product name and code in notes for tracking
         // Format: "Refund for Product Name (CODE): user notes" or "Refund for Product Name (CODE)"
         const baseNotes = `Refund for ${product.name} (${product.code})`;
-        let fullNotes = refundData.notes.trim() 
-          ? `${baseNotes}: ${refundData.notes.trim()}` 
+        let fullNotes = refundData.notes.trim()
+          ? `${baseNotes}: ${refundData.notes.trim()}`
           : `${baseNotes} - ₹${Math.floor(amount).toLocaleString('en-IN')}`;
-        
+
         // Append general narration if provided
         if (refundNarration.trim()) {
           fullNotes += ` | ${refundNarration.trim()}`;
         }
-        
+
         return paymentTransactionsApi.create({
           booking_id: booking.id,
-        amount: amount,
-        type: 'refund',
-        method: refundMethod,
+          amount: amount,
+          type: 'refund',
+          method: refundMethod,
           recorded_by: 'Salesman',
           notes: fullNotes,
         });
       });
-
-      // Automatically add overpayment refund if it exists
-      if (overpaymentAmount > 0) {
-        let overpaymentNotes = `Overpayment Refund - ₹${Math.floor(overpaymentAmount).toLocaleString('en-IN')}`;
-        
-        // Append general narration if provided
-        if (refundNarration.trim()) {
-          overpaymentNotes += ` | ${refundNarration.trim()}`;
-        }
-        
-        refundPromises.push(
-          paymentTransactionsApi.create({
-            booking_id: booking.id,
-            amount: overpaymentAmount,
-            type: 'refund',
-            method: refundMethod,
-            recorded_by: 'Salesman',
-            notes: overpaymentNotes,
-          })
-        );
-      }
 
       await Promise.all(refundPromises);
 
@@ -1214,17 +1093,13 @@ export default function OrderDetailsPage() {
       setItemRefunds({});
       setRefundMethod('Cash');
       setRefundNarration('');
-      
+
       // Refresh booking and transactions to get latest data
       // This will update the state and trigger re-render with new transactions
       await fetchBooking();
-      
-      // After state updates, calculate and update booking status
-      // Use a small delay to ensure state has updated
-      setTimeout(async () => {
-      await updateBookingStatus();
-      }, 100);
-      
+
+
+
       toast.success('Refund(s) recorded successfully!');
     } catch (error) {
       console.error('Error recording refund:', error);
@@ -1249,7 +1124,7 @@ export default function OrderDetailsPage() {
   }
 
   const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'exchanged' && p.status !== 'cancelled') : [];
-  
+
   // Helper function to determine which products have SECURITY refunds (NOT cancellation refunds)
   function getProductsWithRefunds(): Set<number> {
     const productsWithRefunds = new Set<number>();
@@ -1258,38 +1133,38 @@ export default function OrderDetailsPage() {
       const transactionType = String(t.transaction_type || '').toLowerCase().trim();
       return t.type === 'refund' && transactionType !== 'cancellation_refund';
     });
-    
+
     console.log('=== getProductsWithRefunds called ===');
     console.log('Total transactions:', transactions.length);
     console.log('Security refund transactions (excluding cancellation):', refundTransactions.length);
     console.log('Products to check:', products.length);
-    
+
     // Debug: log refund transactions
     if (refundTransactions.length > 0) {
-      console.log('Refund transaction details:', refundTransactions.map((t: any) => ({ 
-        id: t.id, 
+      console.log('Refund transaction details:', refundTransactions.map((t: any) => ({
+        id: t.id,
         notes: t.notes,
-        amount: t.amount 
+        amount: t.amount
       })));
     }
-    
+
     refundTransactions.forEach((transaction: any) => {
       // Parse notes to extract product code
       // Format: "Refund of ₹X for Product Name (CODE)" or similar
       const notes = transaction.notes || '';
       console.log('Checking transaction notes:', notes);
-      
+
       // Try to match product code in notes - use precise matching
       products.forEach((product: any) => {
         console.log(`  Testing product: ${product.id} (${product.name}, code: ${product.code})`);
-        
+
         // First try exact pattern match: (CODE) - this is the most reliable
         if (notes.includes(`(${product.code})`)) {
           productsWithRefunds.add(product.id);
           console.log(`  ✓ Matched product ${product.id} (${product.name}) via exact code pattern (${product.code})`);
           return;
         }
-        
+
         // If that doesn't match, try matching product name followed by code pattern
         // This handles cases where format might be slightly different
         const namePattern = new RegExp(`\\b${product.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'i');
@@ -1298,7 +1173,7 @@ export default function OrderDetailsPage() {
           console.log(`  ✓ Matched product ${product.id} (${product.name}) via name+code pattern`);
           return;
         }
-        
+
         // Last resort: check if product code appears as a whole word (not substring) AND product name is present
         const codePattern = new RegExp(`\\b${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
         if (codePattern.test(notes) && notes.includes(product.name)) {
@@ -1307,26 +1182,26 @@ export default function OrderDetailsPage() {
         }
       });
     });
-    
+
     console.log('Products with refunds (IDs):', Array.from(productsWithRefunds));
     console.log('=== End getProductsWithRefunds ===');
     return productsWithRefunds;
   }
-  
+
   // Get set of product IDs that have refunds
   const productsWithRefunds = getProductsWithRefunds();
-  
+
   // Filter only active (non-cancelled) products for refund status check
   const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
-  
+
   // Check if all ACTIVE products have refunds (order is completed)
   const isOrderCompleted = activeProducts.length > 0 && activeProducts.every((p: any) => productsWithRefunds.has(p.id));
   const hasAnyRefund = productsWithRefunds.size > 0;
-  
+
   // Partially completed = some ACTIVE products have SECURITY refunds but not all
   // NOTE: This is for security deposit refunds, NOT cancellation refunds!
   const isPartiallyCompleted = hasAnyRefund && !isOrderCompleted && activeProducts.length > 0;
-  
+
   console.log('=== Order Completion Check ===');
   console.log('Total products:', products.length);
   console.log('Active products (non-cancelled):', activeProducts.length);
@@ -1339,27 +1214,27 @@ export default function OrderDetailsPage() {
   console.log('Is partially completed? (some active products refunded):', isPartiallyCompleted);
   console.log('Is partially completed?', isPartiallyCompleted);
   console.log('=== End Order Completion Check ===');
-  
+
   // Helper to check if a specific product has refund
   function hasProductRefund(productId: number): boolean {
     return productsWithRefunds.has(productId);
   }
-  
+
   // Helper to check if a product is cancelled
   function isProductCancelled(product: any): boolean {
     return product.status === 'cancelled';
   }
-  
+
   // Helper function to check if product's drop date has passed
   function isProductDropDatePassed(product: any): boolean {
     const dropDate = product.booked_to || booking.booked_to;
     if (!dropDate) return false;
-    
+
     const drop = new Date(dropDate);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     drop.setHours(0, 0, 0, 0);
-    
+
     return drop < today;
   }
 
@@ -1397,7 +1272,7 @@ export default function OrderDetailsPage() {
                 let bgColor = 'bg-gray-100';
                 let textColor = 'text-gray-800';
                 let label = status.charAt(0).toUpperCase() + status.slice(1);
-                
+
                 if (status === 'pending') {
                   bgColor = 'bg-yellow-100';
                   textColor = 'text-yellow-800';
@@ -1423,7 +1298,7 @@ export default function OrderDetailsPage() {
                   textColor = 'text-purple-800';
                   label = 'In Progress';
                 }
-                
+
                 return (
                   <span className={`px-3 py-1 rounded-lg text-sm font-semibold ${bgColor} ${textColor}`}>
                     {label}
@@ -1491,7 +1366,7 @@ export default function OrderDetailsPage() {
           </div>
         </div>
       )}
-      
+
       {isPartiallyCompleted && (
         <div className="bg-yellow-50 border-l-4 border-yellow-500 rounded-lg p-4 mb-6">
           <div className="flex items-center">
@@ -1512,171 +1387,169 @@ export default function OrderDetailsPage() {
           {products.map((product: any, index: number) => {
             const isCancelled = isProductCancelled(product);
             return (
-            <div
-              key={index}
-              className={`bg-white border rounded-lg p-6 flex gap-6 ${
-                isCancelled ? 'opacity-60 border-red-300 bg-red-50' : 'border-gray-200'
-              }`}
-            >
-              <div className="w-32 h-40 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
-                {(() => {
-                  // Check multiple possible image fields: image, imageUrl, rawImage
-                  const imageData = product.image || product.imageUrl || product.rawImage;
-                  const hasImage = imageData && imageData !== null && imageData !== '';
-                  const imageUrl = hasImage ? getImageUrl(imageData) : null;
-                  
-                  if (imageUrl) {
-                    return (
-                      <img
-                        src={imageUrl}
-                        alt={product.name}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          const img = e.currentTarget;
-                          console.error(`Failed to load image for ${product.name} (${product.code}):`, {
-                            originalImage: product.image,
-                            imageUrl: product.imageUrl,
-                            rawImage: product.rawImage,
-                            processedUrl: imageUrl,
-                            error: 'Image file not found or server error'
-                          });
-                          // Replace with placeholder instead of hiding
-                          img.style.display = 'none';
-                          const parent = img.parentElement;
-                          if (parent && !parent.querySelector('.placeholder-icon')) {
-                            const placeholder = document.createElement('div');
-                            placeholder.className = 'w-full h-full flex items-center justify-center placeholder-icon';
-                            placeholder.innerHTML = '<span class="text-4xl">👔</span>';
-                            parent.appendChild(placeholder);
-                          }
-                        }}
-                        onLoad={(e) => {
-                          // Remove any placeholder if image loads successfully
-                          const parent = (e.currentTarget as HTMLImageElement).parentElement;
-                          const placeholder = parent?.querySelector('.placeholder-icon');
-                          if (placeholder) {
-                            placeholder.remove();
-                          }
-                        }}
-                      />
-                    );
-                  }
-                  return (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <span className="text-4xl">👔</span>
-                    </div>
-                  );
-                })()}
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="text-xl font-semibold text-gray-900">
-                    {product.name}
-                  </h3>
-                  {isCancelled && (
-                    <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-semibold">
-                      ❌ Cancelled
-                    </span>
-                  )}
-                </div>
-                {product.code && (
-                  <div className="flex items-center gap-2 mb-1">
-                    {(() => {
-                      const imageData = product.image || product.imageUrl || product.rawImage;
-                      const hasImage = imageData && imageData !== null && imageData !== '';
-                      const imageUrl = hasImage ? getImageUrl(imageData) : null;
-                      return imageUrl ? (
+              <div
+                key={index}
+                className={`bg-white border rounded-lg p-6 flex gap-6 ${isCancelled ? 'opacity-60 border-red-300 bg-red-50' : 'border-gray-200'
+                  }`}
+              >
+                <div className="w-32 h-40 bg-gray-100 rounded-lg overflow-hidden flex-shrink-0">
+                  {(() => {
+                    // Check multiple possible image fields: image, imageUrl, rawImage
+                    const imageData = product.image || product.imageUrl || product.rawImage;
+                    const hasImage = imageData && imageData !== null && imageData !== '';
+                    const imageUrl = hasImage ? getImageUrl(imageData) : null;
+
+                    if (imageUrl) {
+                      return (
                         <img
                           src={imageUrl}
                           alt={product.name}
-                          className="w-5 h-5 object-cover rounded border border-gray-200"
+                          className="w-full h-full object-cover"
                           onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
+                            const img = e.currentTarget;
+                            console.error(`Failed to load image for ${product.name} (${product.code}):`, {
+                              originalImage: product.image,
+                              imageUrl: product.imageUrl,
+                              rawImage: product.rawImage,
+                              processedUrl: imageUrl,
+                              error: 'Image file not found or server error'
+                            });
+                            // Replace with placeholder instead of hiding
+                            img.style.display = 'none';
+                            const parent = img.parentElement;
+                            if (parent && !parent.querySelector('.placeholder-icon')) {
+                              const placeholder = document.createElement('div');
+                              placeholder.className = 'w-full h-full flex items-center justify-center placeholder-icon';
+                              placeholder.innerHTML = '<span class="text-4xl">👔</span>';
+                              parent.appendChild(placeholder);
+                            }
+                          }}
+                          onLoad={(e) => {
+                            // Remove any placeholder if image loads successfully
+                            const parent = (e.currentTarget as HTMLImageElement).parentElement;
+                            const placeholder = parent?.querySelector('.placeholder-icon');
+                            if (placeholder) {
+                              placeholder.remove();
+                            }
                           }}
                         />
-                      ) : null;
-                    })()}
-                    <p className="text-xs text-gray-500 font-mono">Code: {product.code}</p>
-                  </div>
-                )}
-                <p className="text-gray-600 mb-4">
-                  ₹{Math.floor(product.rent || 0)} / Day
-                </p>
-                <div className="flex items-center gap-2">
-                  <div>
-                    <p className="text-sm text-gray-600 mb-1">Dates:</p>
-                    <p className="text-red-600 font-semibold">
-                      {new Date(
-                        product.booked_from || booking.booked_from
-                      ).toLocaleDateString('en-GB')}{' '}
-                      To{' '}
-                      {new Date(
-                        product.booked_to || booking.booked_to
-                      ).toLocaleDateString('en-GB')}
-                    </p>
-                  </div>
-                  {/* Hide edit button if product refund is completed or product is cancelled */}
-                  {!hasProductRefund(product.id) && !isCancelled && (
-                    <button
-                      onClick={() => handleEditDate(product)}
-                      className="ml-2 text-red-600 hover:text-red-700"
-                    >
-                      <svg
-                        className="w-5 h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
-                        />
-                      </svg>
-                    </button>
-                  )}
+                      );
+                    }
+                    return (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <span className="text-4xl">👔</span>
+                      </div>
+                    );
+                  })()}
                 </div>
-                {/* Measurements Button */}
-                <div className="mt-4">
-                  {hasProductRefund(product.id) || isProductDropDatePassed(product) || isCancelled ? (
-                    <div className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-300 text-gray-600 cursor-not-allowed">
-                      {isCancelled
-                        ? '📏 Measurements (Product Cancelled)'
-                        : hasProductRefund(product.id)
-                        ? '📏 Measurements (Locked - Refund Completed)'
-                        : '📏 Measurements (Locked)'}
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <h3 className="text-xl font-semibold text-gray-900">
+                      {product.name}
+                    </h3>
+                    {isCancelled && (
+                      <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-semibold">
+                        ❌ Cancelled
+                      </span>
+                    )}
+                  </div>
+                  {product.code && (
+                    <div className="flex items-center gap-2 mb-1">
+                      {(() => {
+                        const imageData = product.image || product.imageUrl || product.rawImage;
+                        const hasImage = imageData && imageData !== null && imageData !== '';
+                        const imageUrl = hasImage ? getImageUrl(imageData) : null;
+                        return imageUrl ? (
+                          <img
+                            src={imageUrl}
+                            alt={product.name}
+                            className="w-5 h-5 object-cover rounded border border-gray-200"
+                            onError={(e) => {
+                              const target = e.target as HTMLImageElement;
+                              target.style.display = 'none';
+                            }}
+                          />
+                        ) : null;
+                      })()}
+                      <p className="text-xs text-gray-500 font-mono">Code: {product.code}</p>
                     </div>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setSelectedProductForMeasurements(product);
-                        // Create unique key for this product instance
-                        const bookedFrom = product.booked_from || booking?.booked_from;
-                        const bookedTo = product.booked_to || booking?.booked_to;
-                        const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-                        
-                        // Always load from the main measurements state (which includes unsaved edits)
-                        // Use only unique key to ensure each product instance has independent measurements
-                        const productMeasurements = measurements[uniqueKey] || {};
-                        const hasMeasurements = Object.keys(productMeasurements).length > 0;
-                        
-                        // If measurements exist, load them for editing
-                        if (hasMeasurements) {
-                          setEditingMeasurements(productMeasurements);
-                          setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
-                          setIsEditingMeasurements(false); // Start in view mode
-                        } else {
-                          // No measurements - start in edit mode, but preserve any existing unsaved data
-                          setEditingMeasurements(productMeasurements);
-                          setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
-                          setIsEditingMeasurements(true);
-                        }
-                        setShowViewMeasurements(true);
-                      }}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        (() => {
+                  )}
+                  <p className="text-gray-600 mb-4">
+                    ₹{Math.floor(product.rent || 0)} / Day
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <div>
+                      <p className="text-sm text-gray-600 mb-1">Dates:</p>
+                      <p className="text-red-600 font-semibold">
+                        {new Date(
+                          product.booked_from || booking.booked_from
+                        ).toLocaleDateString('en-GB')}{' '}
+                        To{' '}
+                        {new Date(
+                          product.booked_to || booking.booked_to
+                        ).toLocaleDateString('en-GB')}
+                      </p>
+                    </div>
+                    {/* Hide edit button if product refund is completed or product is cancelled */}
+                    {!hasProductRefund(product.id) && !isCancelled && (
+                      <button
+                        onClick={() => handleEditDate(product)}
+                        className="ml-2 text-red-600 hover:text-red-700"
+                      >
+                        <svg
+                          className="w-5 h-5"
+                          fill="none"
+                          stroke="currentColor"
+                          viewBox="0 0 24 24"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"
+                          />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                  {/* Measurements Button */}
+                  <div className="mt-4">
+                    {hasProductRefund(product.id) || isProductDropDatePassed(product) || isCancelled ? (
+                      <div className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-300 text-gray-600 cursor-not-allowed">
+                        {isCancelled
+                          ? '📏 Measurements (Product Cancelled)'
+                          : hasProductRefund(product.id)
+                            ? '📏 Measurements (Locked - Refund Completed)'
+                            : '📏 Measurements (Locked)'}
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setSelectedProductForMeasurements(product);
+                          // Create unique key for this product instance
+                          const bookedFrom = product.booked_from || booking?.booked_from;
+                          const bookedTo = product.booked_to || booking?.booked_to;
+                          const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+
+                          // Always load from the main measurements state (which includes unsaved edits)
+                          // Use only unique key to ensure each product instance has independent measurements
+                          const productMeasurements = measurements[uniqueKey] || {};
+                          const hasMeasurements = Object.keys(productMeasurements).length > 0;
+
+                          // If measurements exist, load them for editing
+                          if (hasMeasurements) {
+                            setEditingMeasurements(productMeasurements);
+                            setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
+                            setIsEditingMeasurements(false); // Start in view mode
+                          } else {
+                            // No measurements - start in edit mode, but preserve any existing unsaved data
+                            setEditingMeasurements(productMeasurements);
+                            setEditingSpecialRequirements(specialRequirements[uniqueKey] || '');
+                            setIsEditingMeasurements(true);
+                          }
+                          setShowViewMeasurements(true);
+                        }}
+                        className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${(() => {
                           const bookedFrom = product.booked_from || booking?.booked_from;
                           const bookedTo = product.booked_to || booking?.booked_to;
                           const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
@@ -1685,23 +1558,23 @@ export default function OrderDetailsPage() {
                             ? 'bg-blue-600 text-white hover:bg-blue-700'
                             : 'bg-green-600 text-white hover:bg-green-700';
                         })()
-                      }`}
-                    >
-                      {(() => {
-                        const bookedFrom = product.booked_from || booking?.booked_from;
-                        const bookedTo = product.booked_to || booking?.booked_to;
-                        const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-                        const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
-                        return productMeas && Object.keys(productMeas).length > 0
-                          ? '📏 Measurements'
-                          : '➕ Add Measurements';
-                      })()}
-                    </button>
-                  )}
+                          }`}
+                      >
+                        {(() => {
+                          const bookedFrom = product.booked_from || booking?.booked_from;
+                          const bookedTo = product.booked_to || booking?.booked_to;
+                          const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
+                          const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
+                          return productMeas && Object.keys(productMeas).length > 0
+                            ? '📏 Measurements'
+                            : '➕ Add Measurements';
+                        })()}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
+            );
           })}
         </div>
 
@@ -1822,7 +1695,7 @@ export default function OrderDetailsPage() {
                     : parseFloat(String(product.rent || '0')) || 0;
                   return sum + rent;
                 }, 0);
-                
+
                 return (
                   <div className="flex justify-between">
                     <span className="text-gray-600">Subtotal</span>
@@ -1832,91 +1705,91 @@ export default function OrderDetailsPage() {
                   </div>
                 );
               })()}
-               {(() => {
-                 const isTransportationOpted = (booking.transport_charge || 0) > 0;
-                 
-                 // Parse transport_charge properly
-                 let transportationCharge = 0;
-                 if (booking.transport_charge !== null && booking.transport_charge !== undefined) {
-                   if (typeof booking.transport_charge === 'number') {
-                     transportationCharge = booking.transport_charge;
-                   } else if (typeof booking.transport_charge === 'string') {
-                     transportationCharge = parseFloat(booking.transport_charge) || 0;
-                   }
-                 }
-                 
-                 console.log('🚚 Transportation Display:', {
-                   isTransportationOpted,
-                   transport_charge_raw: booking.transport_charge,
-                   transport_charge_type: typeof booking.transport_charge,
-                   transportationCharge
-                 });
-                 
-                 if (isTransportationOpted) {
-                   if (transportationCharge === 0) {
-                     // Show input to add charges
-                     return (
-                       <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3">
-                         <div className="flex items-center justify-between mb-2">
-                           <div className="flex items-center gap-2">
-                             <span className="text-sm font-medium text-yellow-800">Local Transportation</span>
-                             <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded font-semibold">Opted</span>
-                           </div>
-                           <span className="text-sm text-yellow-700 font-semibold">₹0</span>
-                         </div>
-                         {!showTransportationInput ? (
-                           <button
-                             onClick={() => setShowTransportationInput(true)}
-                             className="w-full mt-2 text-xs px-3 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
-                           >
-                             Add Transportation Charges
-                           </button>
-                         ) : (
-                           <div className="mt-2 space-y-2">
-                             <div className="flex items-center gap-2">
-                               <span className="text-gray-700 font-medium text-sm">₹</span>
-                               <input
-                                 type="number"
-                                 value={transportationCharges}
-                                 onChange={(e) => {
-                                   const value = e.target.value;
-                                   if (value === '' || parseFloat(value) >= 0) {
-                                     setTransportationCharges(value);
-                                   }
-                                 }}
-                                 placeholder="Enter amount"
-                                 min="0"
-                                 step="1"
-                                 className="flex-1 px-2 py-1.5 text-sm border border-yellow-300 rounded focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
-                               />
-                             </div>
-                             <button
-                               onClick={saveTransportationCharges}
-                               className="w-full px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition-colors"
-                             >
-                               Save Charges
-                             </button>
-                           </div>
-                         )}
-                       </div>
-                     );
-                   } else {
-                     // Show the charges
-                     return (
-                       <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
-                         <div className="flex items-center gap-2">
-                           <span className="text-sm text-teal-700">Local Transportation</span>
-                           <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
-                         </div>
-                         <span className="text-sm text-teal-700 font-semibold">
-                           ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
-                         </span>
-                       </div>
-                     );
-                   }
-                 }
-                 return null;
-               })()}
+              {(() => {
+                const isTransportationOpted = (booking.transport_charge || 0) > 0;
+
+                // Parse transport_charge properly
+                let transportationCharge = 0;
+                if (booking.transport_charge !== null && booking.transport_charge !== undefined) {
+                  if (typeof booking.transport_charge === 'number') {
+                    transportationCharge = booking.transport_charge;
+                  } else if (typeof booking.transport_charge === 'string') {
+                    transportationCharge = parseFloat(booking.transport_charge) || 0;
+                  }
+                }
+
+                console.log('🚚 Transportation Display:', {
+                  isTransportationOpted,
+                  transport_charge_raw: booking.transport_charge,
+                  transport_charge_type: typeof booking.transport_charge,
+                  transportationCharge
+                });
+
+                if (isTransportationOpted) {
+                  if (transportationCharge === 0) {
+                    // Show input to add charges
+                    return (
+                      <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-yellow-800">Local Transportation</span>
+                            <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded font-semibold">Opted</span>
+                          </div>
+                          <span className="text-sm text-yellow-700 font-semibold">₹0</span>
+                        </div>
+                        {!showTransportationInput ? (
+                          <button
+                            onClick={() => setShowTransportationInput(true)}
+                            className="w-full mt-2 text-xs px-3 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                          >
+                            Add Transportation Charges
+                          </button>
+                        ) : (
+                          <div className="mt-2 space-y-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-gray-700 font-medium text-sm">₹</span>
+                              <input
+                                type="number"
+                                value={transportationCharges}
+                                onChange={(e) => {
+                                  const value = e.target.value;
+                                  if (value === '' || parseFloat(value) >= 0) {
+                                    setTransportationCharges(value);
+                                  }
+                                }}
+                                placeholder="Enter amount"
+                                min="0"
+                                step="1"
+                                className="flex-1 px-2 py-1.5 text-sm border border-yellow-300 rounded focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
+                              />
+                            </div>
+                            <button
+                              onClick={saveTransportationCharges}
+                              className="w-full px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition-colors"
+                            >
+                              Save Charges
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  } else {
+                    // Show the charges
+                    return (
+                      <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-teal-700">Local Transportation</span>
+                          <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
+                        </div>
+                        <span className="text-sm text-teal-700 font-semibold">
+                          ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                    );
+                  }
+                }
+                return null;
+              })()}
               <div className="flex justify-between">
                 <span className="text-gray-600">Security Deposit</span>
                 <span className="font-medium">
@@ -1935,7 +1808,8 @@ export default function OrderDetailsPage() {
                     if (!paymentSummary) return '0';
                     const totalRent = paymentSummary.charges.rent.due || 0;
                     const totalSecurity = paymentSummary.charges.security.due || 0;
-                    const total = totalRent + totalSecurity;
+                    const transportCharge = paymentSummary.charges.transport?.due || 0;
+                    const total = totalRent + totalSecurity + transportCharge;
                     return isNaN(total) ? '0' : Math.floor(total).toLocaleString('en-IN');
                   })()}
                 </span>
@@ -1948,36 +1822,36 @@ export default function OrderDetailsPage() {
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
               Payment Status
             </h3>
-            
+
             {/* Show Financial Summary for Fully Cancelled Bookings */}
             {(() => {
               const isFullyCancelled = booking?.status === 'cancelled';
-              
+
               if (isFullyCancelled) {
                 // Use backend payment summary for financial data
                 const totalDue = paymentSummary?.totals.total_due || 0;
                 const totalPaid = paymentSummary?.totals.total_paid || 0;
                 const balance = paymentSummary?.totals.balance || 0;
                 const penalties = paymentSummary?.charges.penalties.due || 0;
-                
+
                 // Get individual cancellation details from cancellation_refund transactions
-                const cancellationTransactions = transactions.filter((t: any) => 
+                const cancellationTransactions = transactions.filter((t: any) =>
                   t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
                 );
-                
+
                 // Group by cancellation (each cancellation has both penalty and refund)
                 const cancellationsByProduct: { [key: string]: { penalty: number; refund: number; rentPaid: number; notes: string } } = {};
-                
+
                 cancellationTransactions.forEach((t: any) => {
                   // Extract product code from notes if available
                   const notes = t.notes || '';
                   const productMatch = notes.match(/\(([^)]+)\)/); // Extract product code in parentheses
                   const productKey = productMatch ? productMatch[1] : 'Unknown';
-                  
+
                   if (!cancellationsByProduct[productKey]) {
                     cancellationsByProduct[productKey] = { penalty: 0, refund: 0, rentPaid: 0, notes: '' };
                   }
-                  
+
                   if (t.transaction_type === 'cancellation_penalty') {
                     cancellationsByProduct[productKey].penalty = parseFloat(t.amount) || 0;
                   } else if (t.transaction_type === 'cancellation_refund') {
@@ -1990,7 +1864,7 @@ export default function OrderDetailsPage() {
                     }
                   }
                 });
-                
+
                 return (
                   <div className="bg-red-50 border border-red-200 rounded-lg p-4">
                     <div className="flex items-center gap-2 mb-3">
@@ -1999,23 +1873,23 @@ export default function OrderDetailsPage() {
                       </svg>
                       <h4 className="text-sm font-semibold text-red-900">Booking Fully Cancelled</h4>
                     </div>
-                    
+
                     {/* Financial Summary */}
                     <div className="bg-white rounded-lg p-3 space-y-3">
                       <h5 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h5>
-                      
+
                       {/* Total Due */}
                       <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
                         <span className="text-xs text-gray-600">Total Due:</span>
                         <span className="text-sm font-bold text-gray-900">₹{Math.floor(totalDue).toLocaleString('en-IN')}</span>
                       </div>
-                      
+
                       {/* Total Paid */}
                       <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
                         <span className="text-xs text-gray-600">Total Paid by Customer:</span>
                         <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
                       </div>
-                      
+
                       {/* Individual Cancellation Breakdown */}
                       {Object.keys(cancellationsByProduct).length > 0 && (
                         <div className="space-y-2 py-2">
@@ -2051,7 +1925,7 @@ export default function OrderDetailsPage() {
                           ))}
                         </div>
                       )}
-                      
+
                       {/* Totals */}
                       {penalties > 0 && (
                         <div className="flex justify-between items-center py-1.5 border-t border-gray-200">
@@ -2059,7 +1933,7 @@ export default function OrderDetailsPage() {
                           <span className="text-sm font-bold text-red-600">₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
                         </div>
                       )}
-                      
+
                       {/* Balance */}
                       <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-2 border border-gray-300">
                         <span className="text-xs font-bold text-gray-800">Balance:</span>
@@ -2068,17 +1942,17 @@ export default function OrderDetailsPage() {
                         </span>
                       </div>
                     </div>
-                    
+
                     <p className="text-xs text-red-700 mt-3">
                       All products cancelled. Transaction history available in Payment History sections below.
                     </p>
                   </div>
                 );
               }
-              
+
               return null;
             })()}
-            
+
             {/* Detailed Payment Breakdown - uses backend payment summary */}
             {!hasAnyRefund && booking?.status !== 'cancelled' && paymentSummary && (
               <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
@@ -2176,38 +2050,23 @@ export default function OrderDetailsPage() {
               </div>
             )}
 
-            {/* Balance/Overpayment warning - uses backend payment summary */}
-            {paymentSummary && paymentSummary.overpayment > 0 && (
-              <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mt-2">
-                <div className="flex items-start">
-                  <svg className="w-5 h-5 text-yellow-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                  <div>
-                    <p className="font-bold text-yellow-800 text-sm">Overpayment</p>
-                    <p className="text-yellow-700 text-sm">
-                      Refund <span className="font-bold">₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}</span> to customer
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
+
           </div>
 
           {/* Check if refund exists */}
           {(() => {
             const hasRefund = transactions.some((t: any) => t.type === 'refund');
             if (!paymentSummary) return null;
-            
+
             const totalAmount = paymentSummary.charges.rent.due || 0;
             const paidAmount = paymentSummary.totals.total_paid;
             const securityDeposit = paymentSummary.charges.security.due || 0;
-            
+
             const rentalDue = paymentSummary.charges.rent.due || 0;
             const totalDue = paymentSummary.totals.balance;
             // Once refunds exist, payment phase is complete - we're now in refund/return phase
             const isFullyPaid = hasAnyRefund ? true : (totalDue <= 0);
-            
+
             // Show status based on refund completion
             if (isOrderCompleted) {
               return (
@@ -2229,171 +2088,115 @@ export default function OrderDetailsPage() {
                   {(() => {
                     const allRefundTransactions = transactions.filter((t: any) => t.type === 'refund');
                     if (allRefundTransactions.length === 0) return null;
-                    
-                    // Separate security deposit refunds from overpayment refunds
-                    const securityRefunds = allRefundTransactions.filter((t: any) => {
-                      const notes = String(t.notes || '').toLowerCase();
-                      return !notes.includes('overpayment refund');
-                    });
-                    
-                    const overpaymentRefunds = allRefundTransactions.filter((t: any) => {
-                      const notes = String(t.notes || '').toLowerCase();
-                      return notes.includes('overpayment refund');
-                    });
-                    
+
+                    // All refund transactions shown uniformly
+                    const securityRefunds = allRefundTransactions;
+
                     return (
                       <div className="bg-white border border-gray-200 rounded-lg p-6">
                         <h3 className="text-lg font-semibold text-gray-900 mb-4">📋 Refund Details</h3>
-                      <div className="space-y-3">
-                        {/* Security Deposit Refunds */}
-                        {securityRefunds.length > 0 && (
-                          <div>
-                            <h4 className="text-sm font-semibold text-gray-700 mb-2">Security Deposit Refunds</h4>
-                        {securityRefunds.map((refund: any) => {
-                          const refundAmount = typeof refund.amount === 'number' 
-                            ? refund.amount 
-                            : parseFloat(String(refund.amount || '0')) || 0;
-                          
-                          // Find the product this refund is for
-                          const notes = refund.notes || '';
-                          let matchedProduct = null;
-                          let chargesDeducted = 0;
-                          let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
-                          const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
-                          
-                          for (const product of products) {
-                            if (notes.includes(`(${product.code})`)) {
-                              matchedProduct = product;
-                              
-                              if (isCancellationRefund) {
-                                // For cancellation refunds, base amount is the product RENT (not security)
-                                baseAmount = typeof product.rent === 'number'
-                                  ? product.rent
-                                  : parseFloat(String(product.rent || '0')) || 0;
-                              } else {
-                                // For normal security refunds, base amount is the security deposit
-                                baseAmount = typeof product.security_deposit === 'number'
-                                  ? product.security_deposit
-                                  : parseFloat(String(product.security_deposit || '0')) || 0;
-                              }
-                              
-                              chargesDeducted = baseAmount - refundAmount;
-                              break;
-                            }
-                          }
-                          
-                          return (
-                            <div key={refund.id} className="bg-green-50 border border-green-200 rounded-lg p-4">
-                              {matchedProduct ? (
-                                <div>
-                                  <p className="text-sm font-semibold text-gray-900 mb-2">
-                                    {matchedProduct.name} ({matchedProduct.code})
-                                  </p>
-                                  <div className="grid grid-cols-3 gap-2 text-xs mb-3">
-                                    <div className="bg-blue-50 p-2 rounded">
-                                      <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
-                                      <p className="font-bold text-blue-600">
-                                        ₹{Math.floor(baseAmount).toLocaleString('en-IN')}
-                                      </p>
-                                    </div>
-                                    <div className="bg-green-50 p-2 rounded">
-                                      <p className="text-gray-600">Refunded</p>
-                                      <p className="font-bold text-green-600">
-                                        ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
-                                      </p>
-                                    </div>
-                                    {chargesDeducted > 0 && (
-                                      <div className="bg-red-50 p-2 rounded">
-                                        <p className="text-gray-600">Charges Deducted</p>
-                                        <p className="font-bold text-red-600">
-                                          -₹{Math.floor(chargesDeducted).toLocaleString('en-IN')}
+                        <div className="space-y-3">
+                          {/* Security Deposit Refunds */}
+                          {securityRefunds.length > 0 && (
+                            <div>
+                              <h4 className="text-sm font-semibold text-gray-700 mb-2">Security Deposit Refunds</h4>
+                              {securityRefunds.map((refund: any) => {
+                                const refundAmount = typeof refund.amount === 'number'
+                                  ? refund.amount
+                                  : parseFloat(String(refund.amount || '0')) || 0;
+
+                                // Find the product this refund is for
+                                const notes = refund.notes || '';
+                                let matchedProduct = null;
+                                let chargesDeducted = 0;
+                                let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
+                                const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
+
+                                for (const product of products) {
+                                  if (notes.includes(`(${product.code})`)) {
+                                    matchedProduct = product;
+
+                                    if (isCancellationRefund) {
+                                      // For cancellation refunds, base amount is the product RENT (not security)
+                                      baseAmount = typeof product.rent === 'number'
+                                        ? product.rent
+                                        : parseFloat(String(product.rent || '0')) || 0;
+                                    } else {
+                                      // For normal security refunds, base amount is the security deposit
+                                      baseAmount = typeof product.security_deposit === 'number'
+                                        ? product.security_deposit
+                                        : parseFloat(String(product.security_deposit || '0')) || 0;
+                                    }
+
+                                    chargesDeducted = baseAmount - refundAmount;
+                                    break;
+                                  }
+                                }
+
+                                return (
+                                  <div key={refund.id} className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                    {matchedProduct ? (
+                                      <div>
+                                        <p className="text-sm font-semibold text-gray-900 mb-2">
+                                          {matchedProduct.name} ({matchedProduct.code})
+                                        </p>
+                                        <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                                          <div className="bg-blue-50 p-2 rounded">
+                                            <p className="text-gray-600">{isCancellationRefund ? 'Product Rent' : 'Security Deposit'}</p>
+                                            <p className="font-bold text-blue-600">
+                                              ₹{Math.floor(baseAmount).toLocaleString('en-IN')}
+                                            </p>
+                                          </div>
+                                          <div className="bg-green-50 p-2 rounded">
+                                            <p className="text-gray-600">Refunded</p>
+                                            <p className="font-bold text-green-600">
+                                              ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
+                                            </p>
+                                          </div>
+                                          {chargesDeducted > 0 && (
+                                            <div className="bg-red-50 p-2 rounded">
+                                              <p className="text-gray-600">Charges Deducted</p>
+                                              <p className="font-bold text-red-600">
+                                                -₹{Math.floor(chargesDeducted).toLocaleString('en-IN')}
+                                              </p>
+                                            </div>
+                                          )}
+                                        </div>
+                                        <p className="text-xs text-gray-500 mb-1">
+                                          {new Date(refund.created_at).toLocaleDateString('en-IN', {
+                                            year: 'numeric',
+                                            month: 'short',
+                                            day: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                          })} • {refund.method || refund.payment_method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
+                                        </p>
+                                        {refund.notes && (
+                                          <div className="bg-white border-l-3 border-l-green-500 pl-3 py-2 mt-2">
+                                            <p className="text-xs font-semibold text-green-800 mb-1">
+                                              {chargesDeducted > 0 ? '💬 Reason for deduction:' : '💬 Notes:'}
+                                            </p>
+                                            <p className="text-sm text-gray-700">{refund.notes}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div>
+                                        <p className="text-sm font-medium text-gray-900">
+                                          Refunded: ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
+                                        </p>
+                                        <p className="text-xs text-gray-500">
+                                          {new Date(refund.created_at).toLocaleDateString('en-IN')} • {refund.method || refund.payment_method || 'N/A'}
                                         </p>
                                       </div>
                                     )}
                                   </div>
-                                  <p className="text-xs text-gray-500 mb-1">
-                                    {new Date(refund.created_at).toLocaleDateString('en-IN', {
-                                      year: 'numeric',
-                                      month: 'short',
-                                      day: 'numeric',
-                                      hour: '2-digit',
-                                      minute: '2-digit',
-                                    })} • {refund.method || refund.payment_method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
-                                  </p>
-                                  {refund.notes && (
-                                    <div className="bg-white border-l-3 border-l-green-500 pl-3 py-2 mt-2">
-                                      <p className="text-xs font-semibold text-green-800 mb-1">
-                                        {chargesDeducted > 0 ? '💬 Reason for deduction:' : '💬 Notes:'}
-                                      </p>
-                                      <p className="text-sm text-gray-700">{refund.notes}</p>
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                <div>
-                                  <p className="text-sm font-medium text-gray-900">
-                                    Refunded: ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
-                                  </p>
-                                  <p className="text-xs text-gray-500">
-                                    {new Date(refund.created_at).toLocaleDateString('en-IN')} • {refund.method || refund.payment_method || 'N/A'}
-                                  </p>
-                                </div>
-                              )}
+                                );
+                              })}
                             </div>
-                          );
-                        })}
-                          </div>
-                        )}
-                        
-                        {/* Overpayment Refunds */}
-                        {overpaymentRefunds.length > 0 && (
-                          <div className="mt-4 pt-4 border-t border-gray-200">
-                            <h4 className="text-sm font-semibold text-yellow-700 mb-2">Overpayment Refunds</h4>
-                            {overpaymentRefunds.map((refund: any) => {
-                              const refundAmount = typeof refund.amount === 'number' 
-                                ? refund.amount 
-                                : parseFloat(String(refund.amount || '0')) || 0;
-                              
-                              return (
-                                <div key={refund.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                                  <div>
-                                    <p className="text-sm font-semibold text-gray-900 mb-2">
-                                      Overpayment Refund
-                                    </p>
-                                    <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-                                      <div className="bg-yellow-100 p-2 rounded">
-                                        <p className="text-gray-600">Refunded</p>
-                                        <p className="font-bold text-yellow-700">
-                                          ₹{Math.floor(refundAmount).toLocaleString('en-IN')}
-                                        </p>
-                                      </div>
-                                      <div className="bg-white p-2 rounded">
-                                        <p className="text-gray-600">Type</p>
-                                        <p className="font-bold text-gray-700">Extra Payment</p>
-                                      </div>
-                                    </div>
-                                    <p className="text-xs text-gray-500 mb-1">
-                                      {new Date(refund.created_at).toLocaleDateString('en-IN', {
-                                        year: 'numeric',
-                                        month: 'short',
-                                        day: 'numeric',
-                                        hour: '2-digit',
-                                        minute: '2-digit',
-                                      })} • {refund.method || refund.payment_method || 'N/A'} • by {getRecordedByName(refund.recorded_by)}
-                                    </p>
-                                    {refund.notes && (
-                                      <div className="bg-white border-l-3 border-l-yellow-500 pl-3 py-2 mt-2">
-                                        <p className="text-xs font-semibold text-yellow-800 mb-1">💬 Notes:</p>
-                                        <p className="text-sm text-gray-700">{refund.notes}</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </div>
+                          )}
+
+                        </div>
                       </div>
                     );
                   })()}
@@ -2409,95 +2212,93 @@ export default function OrderDetailsPage() {
                         {transactions.filter((t: any) => {
                           const transactionType = String(t.transaction_type || '').toLowerCase().trim();
                           const method = String(t.method || '').toLowerCase().trim();
-                          // Exclude penalties that are automatic adjustments (from overpayment)
+                          // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
                           // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
                           const isAutoAdjustmentPenalty = (
-                            (transactionType === 'exchange_penalty' || 
-                             transactionType === 'downgrade_penalty' || 
-                             transactionType === 'cancellation_penalty') && 
+                            (transactionType === 'exchange_penalty' ||
+                              transactionType === 'downgrade_penalty' ||
+                              transactionType === 'cancellation_penalty') &&
                             method === 'adjustment'
                           );
                           return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
                         }).length > 0 && (
-                          <div className="space-y-3">
-                            {transactions
-                              .filter((t: any) => {
-                                const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                                const method = String(t.method || '').toLowerCase().trim();
-                                // Exclude penalties that are automatic adjustments (from overpayment)
-                                // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
-                                const isAutoAdjustmentPenalty = (
-                                  (transactionType === 'exchange_penalty' || 
-                                   transactionType === 'downgrade_penalty' || 
-                                   transactionType === 'cancellation_penalty') && 
-                                  method === 'adjustment'
-                                );
-                                return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
-                              })
-                              .map((transaction: any) => (
-                                <div
-                                  key={transaction.id}
-                                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                                        <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
-                                          transaction.type === 'payment'
+                            <div className="space-y-3">
+                              {transactions
+                                .filter((t: any) => {
+                                  const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                                  const method = String(t.method || '').toLowerCase().trim();
+                                  // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
+                                  // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                                  const isAutoAdjustmentPenalty = (
+                                    (transactionType === 'exchange_penalty' ||
+                                      transactionType === 'downgrade_penalty' ||
+                                      transactionType === 'cancellation_penalty') &&
+                                    method === 'adjustment'
+                                  );
+                                  return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                                })
+                                .map((transaction: any) => (
+                                  <div
+                                    key={transaction.id}
+                                    className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                          <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${transaction.type === 'payment'
                                             ? 'text-green-600 bg-green-50'
                                             : transaction.type === 'refund'
-                                            ? 'text-red-600 bg-red-50'
-                                            : 'text-blue-600 bg-blue-50'
-                                        }`}>
-                                          {transaction.type}
-                                        </span>
-                                        <span className="text-sm text-gray-600">
-                                          {new Date(transaction.created_at).toLocaleDateString('en-IN', {
-                                            year: 'numeric',
-                                            month: 'short',
-                                            day: 'numeric',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                          })}
-                                        </span>
-                                      </div>
-                                      {/* Transaction Type */}
-                                      <p className="text-sm text-gray-600 mb-1">
-                                        <span className="font-medium">Type:</span> {
-                                          transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
-                                          transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
-                                          transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
-                                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
-                                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
-                                          transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
-                                          'Booking'
-                                        }
-                                      </p>
-                                      {/* Payment Method */}
-                                      <p className="text-sm text-gray-600 mb-1">
-                                        <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
-                                      </p>
-                                      {transaction.notes && (
-                                        <p className="text-sm text-gray-600 break-words">
-                                          <span className="font-medium">Notes:</span> {transaction.notes}
+                                              ? 'text-red-600 bg-red-50'
+                                              : 'text-blue-600 bg-blue-50'
+                                            }`}>
+                                            {transaction.type}
+                                          </span>
+                                          <span className="text-sm text-gray-600">
+                                            {new Date(transaction.created_at).toLocaleDateString('en-IN', {
+                                              year: 'numeric',
+                                              month: 'short',
+                                              day: 'numeric',
+                                              hour: '2-digit',
+                                              minute: '2-digit',
+                                            })}
+                                          </span>
+                                        </div>
+                                        {/* Transaction Type */}
+                                        <p className="text-sm text-gray-600 mb-1">
+                                          <span className="font-medium">Type:</span> {
+                                            transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                                              transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                                                transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
+                                                  transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                                                    transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                                                      transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                                                        'Booking'
+                                          }
                                         </p>
-                                      )}
-                                      <p className="text-xs text-gray-500 mt-2">
-                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
-                                      </p>
-                                    </div>
-                                    <div className="flex-shrink-0 text-right min-w-[100px]">
-                                      <p className={`text-lg font-bold break-words ${
-                                        transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
-                                      }`}>
-                                        {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
-                                      </p>
+                                        {/* Payment Method */}
+                                        <p className="text-sm text-gray-600 mb-1">
+                                          <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
+                                        </p>
+                                        {transaction.notes && (
+                                          <p className="text-sm text-gray-600 break-words">
+                                            <span className="font-medium">Notes:</span> {transaction.notes}
+                                          </p>
+                                        )}
+                                        <p className="text-xs text-gray-500 mt-2">
+                                          Recorded by: {getRecordedByName(transaction.recorded_by)}
+                                        </p>
+                                      </div>
+                                      <div className="flex-shrink-0 text-right min-w-[100px]">
+                                        <p className={`text-lg font-bold break-words ${transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
+                                          }`}>
+                                          {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
+                                        </p>
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              ))}
-                          </div>
-                        )}
+                                ))}
+                            </div>
+                          )}
 
                         {/* Date Change Charges - Displayed Separately */}
                         {transactions.filter((t: any) => t.type === 'date_change_charge').length > 0 && (
@@ -2562,7 +2363,7 @@ export default function OrderDetailsPage() {
                 </div>
               );
             }
-            
+
             // Partially completed - some refunds done but not all
             if (isPartiallyCompleted) {
               return (
@@ -2618,21 +2419,21 @@ export default function OrderDetailsPage() {
                       <h3 className="text-lg font-semibold text-gray-900 mb-4">📋 Refund Details</h3>
                       <div className="space-y-3">
                         {transactions.filter((t: any) => t.type === 'refund').map((refund: any) => {
-                          const refundAmount = typeof refund.amount === 'number' 
-                            ? refund.amount 
+                          const refundAmount = typeof refund.amount === 'number'
+                            ? refund.amount
                             : parseFloat(String(refund.amount || '0')) || 0;
-                          
+
                           // Find the product this refund is for
                           const notes = refund.notes || '';
                           let matchedProduct = null;
                           let chargesDeducted = 0;
                           let baseAmount = 0; // The original amount before deduction (rent for cancellation, security for normal)
                           const isCancellationRefund = refund.transaction_type === 'cancellation_refund' || notes.includes('Cancellation refund');
-                          
+
                           for (const product of products) {
                             if (notes.includes(`(${product.code})`)) {
                               matchedProduct = product;
-                              
+
                               if (isCancellationRefund) {
                                 // For cancellation refunds, base amount is the product RENT (not security)
                                 baseAmount = typeof product.rent === 'number'
@@ -2644,12 +2445,12 @@ export default function OrderDetailsPage() {
                                   ? product.security_deposit
                                   : parseFloat(String(product.security_deposit || '0')) || 0;
                               }
-                              
+
                               chargesDeducted = baseAmount - refundAmount;
                               break;
                             }
                           }
-                          
+
                           return (
                             <div key={refund.id} className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                               {matchedProduct ? (
@@ -2733,86 +2534,84 @@ export default function OrderDetailsPage() {
                         {transactions.filter((t: any) => {
                           const transactionType = String(t.transaction_type || '').toLowerCase().trim();
                           const method = String(t.method || '').toLowerCase().trim();
-                          // Exclude penalties that are automatic adjustments (from overpayment)
+                          // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
                           // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
                           const isAutoAdjustmentPenalty = (
-                            (transactionType === 'exchange_penalty' || 
-                             transactionType === 'downgrade_penalty' || 
-                             transactionType === 'cancellation_penalty') && 
+                            (transactionType === 'exchange_penalty' ||
+                              transactionType === 'downgrade_penalty' ||
+                              transactionType === 'cancellation_penalty') &&
                             method === 'adjustment'
                           );
                           return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
                         }).length > 0 && (
-                          <div className="space-y-3">
-                            {transactions
-                              .filter((t: any) => {
-                                const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                                const method = String(t.method || '').toLowerCase().trim();
-                                // Exclude penalties that are automatic adjustments (from overpayment)
-                                // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
-                                const isAutoAdjustmentPenalty = (
-                                  (transactionType === 'exchange_penalty' || 
-                                   transactionType === 'downgrade_penalty' || 
-                                   transactionType === 'cancellation_penalty') && 
-                                  method === 'adjustment'
-                                );
-                                return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
-                              })
-                              .map((transaction: any) => (
-                                <div
-                                  key={transaction.id}
-                                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                                >
-                                  <div className="flex items-start justify-between gap-3">
-                                    <div className="flex-1 min-w-0">
-                                      <div className="flex items-center gap-2 mb-2 flex-wrap">
-                                        <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
-                                          transaction.type === 'payment'
+                            <div className="space-y-3">
+                              {transactions
+                                .filter((t: any) => {
+                                  const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                                  const method = String(t.method || '').toLowerCase().trim();
+                                  // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
+                                  // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                                  const isAutoAdjustmentPenalty = (
+                                    (transactionType === 'exchange_penalty' ||
+                                      transactionType === 'downgrade_penalty' ||
+                                      transactionType === 'cancellation_penalty') &&
+                                    method === 'adjustment'
+                                  );
+                                  return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                                })
+                                .map((transaction: any) => (
+                                  <div
+                                    key={transaction.id}
+                                    className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                          <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${transaction.type === 'payment'
                                             ? 'text-green-600 bg-green-50'
                                             : transaction.type === 'refund'
-                                            ? 'text-red-600 bg-red-50'
-                                            : 'text-blue-600 bg-blue-50'
-                                        }`}>
-                                          {transaction.type}
-                                        </span>
-                                        <span className="text-sm text-gray-600">
-                                          {new Date(transaction.created_at).toLocaleDateString('en-IN', {
-                                            year: 'numeric',
-                                            month: 'short',
-                                            day: 'numeric',
-                                            hour: '2-digit',
-                                            minute: '2-digit',
-                                          })}
+                                              ? 'text-red-600 bg-red-50'
+                                              : 'text-blue-600 bg-blue-50'
+                                            }`}>
+                                            {transaction.type}
+                                          </span>
+                                          <span className="text-sm text-gray-600">
+                                            {new Date(transaction.created_at).toLocaleDateString('en-IN', {
+                                              year: 'numeric',
+                                              month: 'short',
+                                              day: 'numeric',
+                                              hour: '2-digit',
+                                              minute: '2-digit',
+                                            })}
+                                          </span>
+                                        </div>
+                                        {transaction.method && (
+                                          <p className="text-sm text-gray-600 mb-2">
+                                            <span className="font-medium">Method:</span> {transaction.method}
+                                          </p>
+                                        )}
+                                        {transaction.notes && (
+                                          <p className="text-sm text-gray-700 mb-2 break-words">{transaction.notes}</p>
+                                        )}
+                                        <p className="text-xs text-gray-500">
+                                          Recorded by: {getRecordedByName(transaction.recorded_by)}
+                                        </p>
+                                      </div>
+                                      <div className="flex-shrink-0 text-right min-w-[100px]">
+                                        <span className={`text-lg font-bold break-words ${transaction.type === 'payment' ? 'text-green-600' : 'text-red-600'
+                                          }`}>
+                                          {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(
+                                            typeof transaction.amount === 'number'
+                                              ? transaction.amount
+                                              : parseFloat(transaction.amount || '0')
+                                          ).toLocaleString('en-IN')}
                                         </span>
                                       </div>
-                                      {transaction.method && (
-                                        <p className="text-sm text-gray-600 mb-2">
-                                          <span className="font-medium">Method:</span> {transaction.method}
-                                        </p>
-                                      )}
-                                      {transaction.notes && (
-                                        <p className="text-sm text-gray-700 mb-2 break-words">{transaction.notes}</p>
-                                      )}
-                                      <p className="text-xs text-gray-500">
-                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
-                                      </p>
-                                    </div>
-                                    <div className="flex-shrink-0 text-right min-w-[100px]">
-                                      <span className={`text-lg font-bold break-words ${
-                                        transaction.type === 'payment' ? 'text-green-600' : 'text-red-600'
-                                      }`}>
-                                        {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(
-                                          typeof transaction.amount === 'number'
-                                            ? transaction.amount
-                                            : parseFloat(transaction.amount || '0')
-                                        ).toLocaleString('en-IN')}
-                                      </span>
                                     </div>
                                   </div>
-                                </div>
-                              ))}
-                          </div>
-                        )}
+                                ))}
+                            </div>
+                          )}
 
                         {/* Date Change Charges - Displayed Separately */}
                         {transactions.filter((t: any) => t.type === 'date_change_charge').length > 0 && (
@@ -2917,82 +2716,80 @@ export default function OrderDetailsPage() {
                       {transactions.filter((t: any) => {
                         const transactionType = String(t.transaction_type || '').toLowerCase().trim();
                         const method = String(t.method || '').toLowerCase().trim();
-                        // Exclude penalties that are automatic adjustments (from overpayment)
+                        // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
                         // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
                         const isAutoAdjustmentPenalty = (
-                          (transactionType === 'exchange_penalty' || 
-                           transactionType === 'downgrade_penalty' || 
-                           transactionType === 'cancellation_penalty') && 
+                          (transactionType === 'exchange_penalty' ||
+                            transactionType === 'downgrade_penalty' ||
+                            transactionType === 'cancellation_penalty') &&
                           method === 'adjustment'
                         );
                         return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
                       }).length > 0 && (
-                        <div className="space-y-3">
-                          {transactions
-                            .filter((t: any) => {
-                              const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                              const method = String(t.method || '').toLowerCase().trim();
-                              // Exclude penalties that are automatic adjustments (from overpayment)
-                              // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
-                              const isAutoAdjustmentPenalty = (
-                                (transactionType === 'exchange_penalty' || 
-                                 transactionType === 'downgrade_penalty' || 
-                                 transactionType === 'cancellation_penalty') && 
-                                method === 'adjustment'
-                              );
-                              return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
-                            })
-                            .map((transaction: any) => (
-                              <div
-                                key={transaction.id}
-                                className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                              >
-                                <div className="flex items-start justify-between gap-3">
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                                      <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${
-                                        transaction.type === 'payment'
+                          <div className="space-y-3">
+                            {transactions
+                              .filter((t: any) => {
+                                const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                                const method = String(t.method || '').toLowerCase().trim();
+                                // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation)
+                                // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                                const isAutoAdjustmentPenalty = (
+                                  (transactionType === 'exchange_penalty' ||
+                                    transactionType === 'downgrade_penalty' ||
+                                    transactionType === 'cancellation_penalty') &&
+                                  method === 'adjustment'
+                                );
+                                return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                              })
+                              .map((transaction: any) => (
+                                <div
+                                  key={transaction.id}
+                                  className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                                >
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 mb-2 flex-wrap">
+                                        <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${transaction.type === 'payment'
                                           ? 'text-green-600 bg-green-50'
                                           : transaction.type === 'refund'
-                                          ? 'text-red-600 bg-red-50'
-                                          : 'text-blue-600 bg-blue-50'
-                                      }`}>
-                                        {transaction.type}
-                                      </span>
-                                      <span className="text-sm text-gray-600">
-                                        {new Date(transaction.created_at).toLocaleDateString('en-IN', {
-                                          year: 'numeric',
-                                          month: 'short',
-                                          day: 'numeric',
-                                          hour: '2-digit',
-                                          minute: '2-digit',
-                                        })}
-                                      </span>
-                                    </div>
-                                    <p className="text-sm text-gray-600 mb-1">
-                                      <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
-                                    </p>
-                                    {transaction.notes && (
-                                      <p className="text-sm text-gray-600 break-words">
-                                        <span className="font-medium">Notes:</span> {transaction.notes}
+                                            ? 'text-red-600 bg-red-50'
+                                            : 'text-blue-600 bg-blue-50'
+                                          }`}>
+                                          {transaction.type}
+                                        </span>
+                                        <span className="text-sm text-gray-600">
+                                          {new Date(transaction.created_at).toLocaleDateString('en-IN', {
+                                            year: 'numeric',
+                                            month: 'short',
+                                            day: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit',
+                                          })}
+                                        </span>
+                                      </div>
+                                      <p className="text-sm text-gray-600 mb-1">
+                                        <span className="font-medium">Method:</span> {transaction.method || transaction.payment_method || 'N/A'}
                                       </p>
-                                    )}
-                                    <p className="text-xs text-gray-500 mt-2">
-                                      Recorded by: {getRecordedByName(transaction.recorded_by)}
-                                    </p>
-                                  </div>
-                                  <div className="flex-shrink-0 text-right min-w-[100px]">
-                                    <p className={`text-lg font-bold break-words ${
-                                      transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
-                                    }`}>
-                                      {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
-                                    </p>
+                                      {transaction.notes && (
+                                        <p className="text-sm text-gray-600 break-words">
+                                          <span className="font-medium">Notes:</span> {transaction.notes}
+                                        </p>
+                                      )}
+                                      <p className="text-xs text-gray-500 mt-2">
+                                        Recorded by: {getRecordedByName(transaction.recorded_by)}
+                                      </p>
+                                    </div>
+                                    <div className="flex-shrink-0 text-right min-w-[100px]">
+                                      <p className={`text-lg font-bold break-words ${transaction.type === 'refund' ? 'text-red-600' : 'text-green-600'
+                                        }`}>
+                                        {transaction.type === 'refund' ? '-' : '+'}₹{Math.floor(parseFloat(transaction.amount || '0')).toLocaleString('en-IN')}
+                                      </p>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            ))}
-                        </div>
-                      )}
+                              ))}
+                          </div>
+                        )}
 
                       {/* Date Change Charges - Displayed Separately */}
                       {transactions.filter((t: any) => t.type === 'date_change_charge').length > 0 && (
@@ -3092,7 +2889,7 @@ export default function OrderDetailsPage() {
                     </svg>
                     Download
                   </button>
-                  
+
                   {/* WhatsApp Share Button */}
                   <button
                     onClick={() => setShowWhatsAppShareModal(true)}
@@ -3104,11 +2901,11 @@ export default function OrderDetailsPage() {
                       fill="currentColor"
                       viewBox="0 0 24 24"
                     >
-                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                     </svg>
                     WhatsApp
                   </button>
-                  
+
                   {/* Email Share Button */}
                   <button
                     onClick={handleShareEmail}
@@ -3130,7 +2927,7 @@ export default function OrderDetailsPage() {
                     </svg>
                     Email
                   </button>
-                  
+
                   {/* Close Button */}
                   <button
                     onClick={handleClosePreview}
@@ -3215,7 +3012,7 @@ export default function OrderDetailsPage() {
                     fill="currentColor"
                     viewBox="0 0 24 24"
                   >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -3235,7 +3032,7 @@ export default function OrderDetailsPage() {
                     fill="currentColor"
                     viewBox="0 0 24 24"
                   >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -3255,7 +3052,7 @@ export default function OrderDetailsPage() {
                     fill="currentColor"
                     viewBox="0 0 24 24"
                   >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -3308,7 +3105,7 @@ export default function OrderDetailsPage() {
                   const imageData = selectedProduct.image || selectedProduct.imageUrl || selectedProduct.rawImage;
                   const hasImage = imageData && imageData !== null && imageData !== '';
                   const imageUrl = hasImage ? getImageUrl(imageData) : null;
-                  
+
                   if (imageUrl) {
                     return (
                       <img
@@ -3412,11 +3209,11 @@ export default function OrderDetailsPage() {
                   )}
                 </div>
                 <p className="text-xs text-gray-500 mt-2">
-                  {dateChangeChargeSettings.charge_type === 'manual' 
+                  {dateChangeChargeSettings.charge_type === 'manual'
                     ? 'Enter the charge amount manually'
                     : dateChangeChargeSettings.charge_type === 'fixed'
-                    ? `Fixed charge: ₹${dateChangeChargeSettings.fixed_amount.toLocaleString('en-IN')}`
-                    : `Variable charge: ₹${dateChangeChargeSettings.variable_per_day.toLocaleString('en-IN')} per day changed`}
+                      ? `Fixed charge: ₹${dateChangeChargeSettings.fixed_amount.toLocaleString('en-IN')}`
+                      : `Variable charge: ₹${dateChangeChargeSettings.variable_per_day.toLocaleString('en-IN')} per day changed`}
                 </p>
               </div>
             )}
@@ -3545,45 +3342,43 @@ export default function OrderDetailsPage() {
                 {/* Payment Breakdown */}
                 <div className="bg-gray-50 rounded-lg p-6 mb-6 border border-gray-200">
                   <h3 className="text-lg font-bold text-gray-900 mb-4">Payment Breakdown</h3>
-                  
+
                   <div className="space-y-4">
-                    {/* Rental Due Status */}
+                    {/* Rental (+Transport) Due Status */}
                     <div className="flex justify-between items-center py-3 border-b border-gray-200">
-                      <span className="text-gray-700 font-medium">Due Rent:</span>
-                      <span className={`font-bold text-lg ${
-                        paymentBreakdown.rentDue === 'Fully Paid' 
-                          ? 'text-green-600' 
-                          : 'text-red-600'
-                      }`}>
+                      <span className="text-gray-700 font-medium">{paymentBreakdown.hasTransport ? 'Rent (+Transport) Due:' : 'Rent Due:'}</span>
+                      <span className={`font-bold text-lg ${paymentBreakdown.rentDue === 'Fully Paid'
+                        ? 'text-green-600'
+                        : 'text-red-600'
+                        }`}>
                         {paymentBreakdown.rentDue}
                       </span>
                     </div>
 
                     {/* Security Deposit Due Status - Only show if rental is fully paid */}
-                    {paymentBreakdown.rentDue === 'Fully Paid' && (
+                    {// paymentBreakdown.rentDue === 'Fully Paid' && (
                       <div className="flex justify-between items-center py-3 border-b border-gray-200">
                         <span className="text-gray-700 font-medium">Security Deposit Due:</span>
-                        <span className={`font-bold text-lg ${
-                          paymentBreakdown.securityDepositDue === 'Fully Paid' 
-                            ? 'text-green-600' 
-                            : 'text-red-600'
-                        }`}>
+                        <span className={`font-bold text-lg ${paymentBreakdown.securityDepositDue === 'Fully Paid'
+                          ? 'text-green-600'
+                          : 'text-red-600'
+                          }`}>
                           {paymentBreakdown.securityDepositDue}
                         </span>
                       </div>
-                    )}
+                    }
 
                     {/* Refund to Customer */}
                     {paymentBreakdown.refundToCustomer > 0 && (
-                      <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mt-4">
+                      <div className="bg-red-50 border-2 border-red-400 rounded-lg p-4 mt-4">
                         <div className="flex items-start">
-                          <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                          <svg className="w-6 h-6 text-red-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
                           </svg>
                           <div>
-                            <p className="font-bold text-yellow-800 mb-1">Overpayment Detected</p>
-                            <p className="text-yellow-700">
-                              Please pay <span className="font-bold">₹{Math.floor(paymentBreakdown.refundToCustomer).toLocaleString('en-IN')}</span> to customer
+                            <p className="font-bold text-red-800 mb-1">❌ Cannot Accept Extra Payment</p>
+                            <p className="text-red-700">
+                              Amount exceeds outstanding balance by <span className="font-bold">₹{Math.floor(paymentBreakdown.refundToCustomer).toLocaleString('en-IN')}</span>. Please reduce the payment amount.
                             </p>
                           </div>
                         </div>
@@ -3595,7 +3390,11 @@ export default function OrderDetailsPage() {
                 {/* Confirm Button */}
                 <button
                   onClick={confirmPaymentRecord}
-                  className="w-full max-w-sm mx-auto block px-6 py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
+                  disabled={paymentBreakdown.refundToCustomer > 0}
+                  className={`w-full max-w-sm mx-auto block px-6 py-3 rounded-lg font-bold transition-colors ${paymentBreakdown.refundToCustomer > 0
+                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                    }`}
                 >
                   CONFIRM & SAVE
                 </button>
@@ -3611,74 +3410,74 @@ export default function OrderDetailsPage() {
           <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto p-8">
             <div className="flex items-center justify-between mb-8 sticky top-0 bg-white pb-4 border-b">
               <div className="flex items-center">
-              <button
-                onClick={() => {
-                  setShowRecordRefund(false);
+                <button
+                  onClick={() => {
+                    setShowRecordRefund(false);
                     setItemRefunds({});
-                  setRefundMethod('Cash');
-                  setRefundNarration('');
-                }}
-                className="mr-4 text-gray-600 hover:text-gray-900"
-              >
-                <svg
-                  className="w-6 h-6"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+                    setRefundMethod('Cash');
+                    setRefundNarration('');
+                  }}
+                  className="mr-4 text-gray-600 hover:text-gray-900"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M15 19l-7-7 7-7"
-                  />
-                </svg>
-              </button>
-              <h2 className="text-3xl font-bold text-gray-900">Record Refund</h2>
-            </div>
-                  </div>
-
-                  <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Payment Method *
-                    </label>
-                    <select
-                      value={refundMethod}
-                      onChange={(e) => setRefundMethod(e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    >
-                      <option value="Cash">Cash</option>
-                      <option value="UPI">UPI</option>
-                      <option value="Bank Transfer">Bank Transfer</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </div>
-
-                  {/* General Narration Field */}
-                  <div className="mb-6">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Narration / Notes (Optional)
-                    </label>
-                    <textarea
-                      value={refundNarration}
-                      onChange={(e) => setRefundNarration(e.target.value)}
-                      placeholder="Enter transaction details, UPI ID, reference number, etc."
-                      rows={3}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+                  <svg
+                    className="w-6 h-6"
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M15 19l-7-7 7-7"
                     />
-                    <p className="text-xs text-gray-500 mt-1">
-                      💡 Add any additional details about this refund (e.g., UPI ID, reference number, bank details)
-                    </p>
-                  </div>
+                  </svg>
+                </button>
+                <h2 className="text-3xl font-bold text-gray-900">Record Refund</h2>
+              </div>
+            </div>
 
-                  <div className="mb-6">
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Payment Method *
+              </label>
+              <select
+                value={refundMethod}
+                onChange={(e) => setRefundMethod(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+              >
+                <option value="Cash">Cash</option>
+                <option value="UPI">UPI</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+
+            {/* General Narration Field */}
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Narration / Notes (Optional)
+              </label>
+              <textarea
+                value={refundNarration}
+                onChange={(e) => setRefundNarration(e.target.value)}
+                placeholder="Enter transaction details, UPI ID, reference number, etc."
+                rows={3}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Add any additional details about this refund (e.g., UPI ID, reference number, bank details)
+              </p>
+            </div>
+
+            <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Items for Refund</h3>
               <div className="space-y-4">
                 {(Array.isArray(booking?.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged') : []).map((product: any) => {
                   const productSecurityDeposit = typeof product.security_deposit === 'number'
                     ? product.security_deposit
                     : parseFloat(product.security_deposit || '0') || 0;
-                  
+
                   const productHasRefund = hasProductRefund(product.id);
                   const refundData = itemRefunds[product.id] || { selected: false, amount: '', notes: '' };
                   const refundAmountNum = parseFloat(refundData.amount) || 0;
@@ -3688,13 +3487,12 @@ export default function OrderDetailsPage() {
                   return (
                     <div
                       key={product.id}
-                      className={`border-2 rounded-lg p-4 ${
-                        productHasRefund
-                          ? 'border-gray-300 bg-gray-100 opacity-60'
-                          : refundData.selected
+                      className={`border-2 rounded-lg p-4 ${productHasRefund
+                        ? 'border-gray-300 bg-gray-100 opacity-60'
+                        : refundData.selected
                           ? 'border-red-500 bg-red-50'
                           : 'border-gray-200 bg-white'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-start gap-4">
                         {/* Checkbox */}
@@ -3768,9 +3566,8 @@ export default function OrderDetailsPage() {
                                   }}
                                   max={productSecurityDeposit}
                                   step="0.01"
-                                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                                    hasError ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                                  }`}
+                                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${hasError ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                                    }`}
                                 />
                                 {hasError && (
                                   <p className="text-red-600 text-sm mt-1">
@@ -3787,14 +3584,14 @@ export default function OrderDetailsPage() {
                               {/* Notes Input */}
                               <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Narration / Notes {requiresNotes && <span className="text-red-600">*</span>}
-                    </label>
-                    {requiresNotes && (
-                      <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg p-2 mb-2">
-                        ⚠️ Refund amount is less than security deposit. Please provide narration explaining the reason.
-                      </p>
-                    )}
-                    <textarea
+                                  Narration / Notes {requiresNotes && <span className="text-red-600">*</span>}
+                                </label>
+                                {requiresNotes && (
+                                  <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg p-2 mb-2">
+                                    ⚠️ Refund amount is less than security deposit. Please provide narration explaining the reason.
+                                  </p>
+                                )}
+                                <textarea
                                   value={refundData.notes}
                                   onChange={(e) => {
                                     setItemRefunds({
@@ -3806,16 +3603,15 @@ export default function OrderDetailsPage() {
                                     });
                                   }}
                                   rows={3}
-                      placeholder={requiresNotes ? "Required: Explain why refund is less than security deposit..." : "Optional: Add notes about this refund..."}
-                      className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                                    requiresNotes && !refundData.notes.trim() ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                      }`}
-                    />
+                                  placeholder={requiresNotes ? "Required: Explain why refund is less than security deposit..." : "Optional: Add notes about this refund..."}
+                                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${requiresNotes && !refundData.notes.trim() ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                                    }`}
+                                />
                                 {requiresNotes && !refundData.notes.trim() && (
-                      <p className="text-red-600 text-sm mt-1">
-                        Narration is required when refund is less than security deposit
-                      </p>
-                    )}
+                                  <p className="text-red-600 text-sm mt-1">
+                                    Narration is required when refund is less than security deposit
+                                  </p>
+                                )}
                               </div>
                             </div>
                           )}
@@ -3825,61 +3621,29 @@ export default function OrderDetailsPage() {
                   );
                 })}
               </div>
-                  </div>
+            </div>
 
-                  {/* Overpayment Refund Section - uses backend payment summary */}
-                  {paymentSummary && paymentSummary.overpayment > 0 && (
-                    <div className="mb-6">
-                      <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
-                        <div className="flex items-start">
-                          <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                          </svg>
-                          <div className="flex-1">
-                            <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
-                            <p className="text-yellow-800 text-sm mb-3">
-                              Customer has paid <span className="font-bold">₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}</span> extra. 
-                              This full overpayment amount will be automatically refunded along with product security deposits.
-                            </p>
-                            
-                            <div className="bg-white rounded-lg p-4">
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                  Overpayment Refund Amount
-                                </label>
-                                <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
-                                  ₹{Math.floor(paymentSummary.overpayment).toLocaleString('en-IN')}
-                                </div>
-                                <p className="text-gray-600 text-xs mt-2 text-center">
-                                  ✓ Full overpayment will be refunded and noted in payment history
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
+
 
             <div className="flex gap-3 sticky bottom-0 bg-white pt-4 border-t">
-                    <button
-                      onClick={() => {
-                        setShowRecordRefund(false);
+              <button
+                onClick={() => {
+                  setShowRecordRefund(false);
                   setItemRefunds({});
-                        setRefundMethod('Cash');
-                        setRefundNarration('');
-                      }}
-                      className="flex-1 px-6 py-3 bg-gray-200 text-gray-800 rounded-lg font-bold hover:bg-gray-300 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleRecordRefund}
-                      className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors"
-                    >
-                      CONFIRM REFUND
-                    </button>
-                  </div>
+                  setRefundMethod('Cash');
+                  setRefundNarration('');
+                }}
+                className="flex-1 px-6 py-3 bg-gray-200 text-gray-800 rounded-lg font-bold hover:bg-gray-300 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleRecordRefund}
+                className="flex-1 px-6 py-3 bg-red-600 text-white rounded-lg font-bold hover:bg-red-700 transition-colors"
+              >
+                CONFIRM REFUND
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3908,41 +3672,266 @@ export default function OrderDetailsPage() {
               const bookedFrom = product.booked_from || booking.booked_from;
               const bookedTo = product.booked_to || booking.booked_to;
               const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-              
-              return (
-              <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
-                <div className="flex gap-4 mb-4">
-                  <div className="w-16 h-20 bg-gray-200 rounded overflow-hidden flex-shrink-0">
-                    {(() => {
-                      const imageData = product.image || product.imageUrl || product.rawImage;
-                      const imageUrl = imageData ? getImageUrl(imageData) : null;
-                      return imageUrl ? (
-                        <img src={imageUrl} alt={product.name} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <span className="text-2xl">👔</span>
-                        </div>
-                      );
-                    })()}
-                  </div>
-                  <div className="flex-1">
-                    <div className="mb-1">
-                      <h4 className="font-semibold text-gray-900">{product.name}</h4>
-                      {product.code && (
-                        <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {product.code}</p>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-600 mt-1">₹{Math.floor(product.rent || 0)} / Day</p>
-                    <p className="text-sm text-red-600 mt-1">
-                      Dates: {new Date(bookedFrom).toLocaleDateString('en-GB')} To {new Date(bookedTo).toLocaleDateString('en-GB')}
-                    </p>
-                  </div>
-                </div>
 
-                {/* Measurement Fields - Different for Female vs Male Clothing */}
-                {isFemaleClothing(product.name) ? (
-                  // Female Clothing: Lehenga, Gown, Girlish Crop Top
-                  <div className="space-y-3">
+              return (
+                <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
+                  <div className="flex gap-4 mb-4">
+                    <div className="w-16 h-20 bg-gray-200 rounded overflow-hidden flex-shrink-0">
+                      {(() => {
+                        const imageData = product.image || product.imageUrl || product.rawImage;
+                        const imageUrl = imageData ? getImageUrl(imageData) : null;
+                        return imageUrl ? (
+                          <img src={imageUrl} alt={product.name} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <span className="text-2xl">👔</span>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div className="flex-1">
+                      <div className="mb-1">
+                        <h4 className="font-semibold text-gray-900">{product.name}</h4>
+                        {product.code && (
+                          <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {product.code}</p>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-600 mt-1">₹{Math.floor(product.rent || 0)} / Day</p>
+                      <p className="text-sm text-red-600 mt-1">
+                        Dates: {new Date(bookedFrom).toLocaleDateString('en-GB')} To {new Date(bookedTo).toLocaleDateString('en-GB')}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Measurement Fields - Different for Female vs Male Clothing */}
+                  {isFemaleClothing(product.name) ? (
+                    // Female Clothing: Lehenga, Gown, Girlish Crop Top
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-4 gap-3">
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Waist (in inches)"
+                            value={measurements[uniqueKey]?.waist || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'waist', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-waist`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-waist`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Bust (in inches)"
+                            value={measurements[uniqueKey]?.bust || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'bust', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-bust`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-bust`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Shoulder (in inches)"
+                            value={measurements[uniqueKey]?.shoulder || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'shoulder', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-shoulder`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-shoulder`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves Up (in inches)"
+                            value={measurements[uniqueKey]?.sleevesUp || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesUp', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesUp`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesUp`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesUp`]}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-3">
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves E (in inches)"
+                            value={measurements[uniqueKey]?.sleevesE || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesE', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesE`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesE`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesE`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves B (in inches)"
+                            value={measurements[uniqueKey]?.sleevesB || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesB', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesB`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesB`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesB`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Lehenga Length (in inches)"
+                            value={measurements[uniqueKey]?.lehengaLength || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'lehengaLength', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-lehengaLength`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-lehengaLength`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-lehengaLength`]}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : isMaleClothing(product.name) ? (
+                    // Male Clothing: Sherwani, Suit, Kurta Pajama, Indo Western
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-4 gap-3">
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Side Tight (in inches)"
+                            value={measurements[uniqueKey]?.sideTight || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sideTight', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sideTight`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sideTight`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideTight`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves Tight (in inches)"
+                            value={measurements[uniqueKey]?.sleevesTight || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesTight', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesTight`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesTight`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesTight`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves Length (in inches)"
+                            value={measurements[uniqueKey]?.sleevesLength || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLength', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesLength`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesLength`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLength`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Pant Length (in inches)"
+                            value={measurements[uniqueKey]?.pantLength || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLength', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-pantLength`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-pantLength`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLength`]}</p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-4 gap-3">
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Side Loose (in inches)"
+                            value={measurements[uniqueKey]?.sideLoose || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sideLoose', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sideLoose`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sideLoose`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideLoose`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves Loose (in inches)"
+                            value={measurements[uniqueKey]?.sleevesLoose || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLoose', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesLoose`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesLoose`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLoose`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Sleeves Length (in inches)"
+                            value={measurements[uniqueKey]?.sleevesLengthLoose || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLengthLoose', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-sleevesLengthLoose`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-sleevesLengthLoose`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLengthLoose`]}</p>
+                          )}
+                        </div>
+                        <div>
+                          <input
+                            type="text"
+                            placeholder="Pant Length (in inches)"
+                            value={measurements[uniqueKey]?.pantLengthLoose || ''}
+                            onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLengthLoose', e.target.value)}
+                            maxLength={2}
+                            className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-pantLengthLoose`] ? 'border-red-500' : 'border-gray-300'
+                              }`}
+                          />
+                          {measurementErrors[`${uniqueKey}-pantLengthLoose`] && (
+                            <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLengthLoose`]}</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    // Default measurements for other product types
                     <div className="grid grid-cols-4 gap-3">
                       <div>
                         <input
@@ -3951,9 +3940,8 @@ export default function OrderDetailsPage() {
                           value={measurements[uniqueKey]?.waist || ''}
                           onChange={(e) => handleMeasurementChange(uniqueKey, 'waist', e.target.value)}
                           maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
+                          className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
+                            }`}
                         />
                         {measurementErrors[`${uniqueKey}-waist`] && (
                           <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-waist`]}</p>
@@ -3966,12 +3954,25 @@ export default function OrderDetailsPage() {
                           value={measurements[uniqueKey]?.bust || ''}
                           onChange={(e) => handleMeasurementChange(uniqueKey, 'bust', e.target.value)}
                           maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
+                          className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
+                            }`}
                         />
                         {measurementErrors[`${uniqueKey}-bust`] && (
                           <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-bust`]}</p>
+                        )}
+                      </div>
+                      <div>
+                        <input
+                          type="text"
+                          placeholder="Chest (in inches)"
+                          value={measurements[uniqueKey]?.chest || ''}
+                          onChange={(e) => handleMeasurementChange(uniqueKey, 'chest', e.target.value)}
+                          maxLength={2}
+                          className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-chest`] ? 'border-red-500' : 'border-gray-300'
+                            }`}
+                        />
+                        {measurementErrors[`${uniqueKey}-chest`] && (
+                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-chest`]}</p>
                         )}
                       </div>
                       <div>
@@ -3981,293 +3982,37 @@ export default function OrderDetailsPage() {
                           value={measurements[uniqueKey]?.shoulder || ''}
                           onChange={(e) => handleMeasurementChange(uniqueKey, 'shoulder', e.target.value)}
                           maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
+                          className={`px-3 py-2 border rounded w-full ${measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
+                            }`}
                         />
                         {measurementErrors[`${uniqueKey}-shoulder`] && (
                           <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-shoulder`]}</p>
                         )}
                       </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves Up (in inches)"
-                          value={measurements[uniqueKey]?.sleevesUp || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesUp', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesUp`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesUp`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesUp`]}</p>
-                        )}
-                      </div>
                     </div>
-                    <div className="grid grid-cols-3 gap-3">
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves E (in inches)"
-                          value={measurements[uniqueKey]?.sleevesE || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesE', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesE`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesE`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesE`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves B (in inches)"
-                          value={measurements[uniqueKey]?.sleevesB || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesB', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesB`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesB`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesB`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Lehenga Length (in inches)"
-                          value={measurements[uniqueKey]?.lehengaLength || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'lehengaLength', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-lehengaLength`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-lehengaLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-lehengaLength`]}</p>
-                        )}
-                      </div>
-                    </div>
+                  )}
+
+                  {/* Special Requirements */}
+                  <div className="mt-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Special Requirements (if any):
+                    </label>
+                    <textarea
+                      placeholder="Enter any additional fitting requirements"
+                      value={specialRequirements[uniqueKey] || ''}
+                      onChange={(e) => {
+                        const newValue = e.target.value;
+                        console.log(`📝 Updating special requirements for ${uniqueKey}:`, newValue);
+                        setSpecialRequirements({
+                          ...specialRequirements,
+                          [uniqueKey]: newValue,
+                        });
+                      }}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                      rows={2}
+                    />
                   </div>
-                ) : isMaleClothing(product.name) ? (
-                  // Male Clothing: Sherwani, Suit, Kurta Pajama, Indo Western
-                  <div className="space-y-3">
-                    <div className="grid grid-cols-4 gap-3">
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Side Tight (in inches)"
-                          value={measurements[uniqueKey]?.sideTight || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sideTight', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sideTight`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sideTight`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideTight`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves Tight (in inches)"
-                          value={measurements[uniqueKey]?.sleevesTight || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesTight', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesTight`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesTight`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesTight`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves Length (in inches)"
-                          value={measurements[uniqueKey]?.sleevesLength || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLength', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesLength`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLength`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Pant Length (in inches)"
-                          value={measurements[uniqueKey]?.pantLength || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLength', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-pantLength`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-pantLength`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLength`]}</p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-4 gap-3">
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Side Loose (in inches)"
-                          value={measurements[uniqueKey]?.sideLoose || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sideLoose', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sideLoose`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sideLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sideLoose`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves Loose (in inches)"
-                          value={measurements[uniqueKey]?.sleevesLoose || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLoose', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesLoose`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLoose`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Sleeves Length (in inches)"
-                          value={measurements[uniqueKey]?.sleevesLengthLoose || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'sleevesLengthLoose', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-sleevesLengthLoose`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-sleevesLengthLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-sleevesLengthLoose`]}</p>
-                        )}
-                      </div>
-                      <div>
-                        <input
-                          type="text"
-                          placeholder="Pant Length (in inches)"
-                          value={measurements[uniqueKey]?.pantLengthLoose || ''}
-                          onChange={(e) => handleMeasurementChange(uniqueKey, 'pantLengthLoose', e.target.value)}
-                          maxLength={2}
-                          className={`px-3 py-2 border rounded w-full ${
-                            measurementErrors[`${uniqueKey}-pantLengthLoose`] ? 'border-red-500' : 'border-gray-300'
-                          }`}
-                        />
-                        {measurementErrors[`${uniqueKey}-pantLengthLoose`] && (
-                          <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-pantLengthLoose`]}</p>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  // Default measurements for other product types
-                  <div className="grid grid-cols-4 gap-3">
-                    <div>
-                      <input
-                        type="text"
-                        placeholder="Waist (in inches)"
-                        value={measurements[uniqueKey]?.waist || ''}
-                        onChange={(e) => handleMeasurementChange(uniqueKey, 'waist', e.target.value)}
-                        maxLength={2}
-                        className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${uniqueKey}-waist`] ? 'border-red-500' : 'border-gray-300'
-                        }`}
-                      />
-                      {measurementErrors[`${uniqueKey}-waist`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-waist`]}</p>
-                      )}
-                    </div>
-                    <div>
-                      <input
-                        type="text"
-                        placeholder="Bust (in inches)"
-                        value={measurements[uniqueKey]?.bust || ''}
-                        onChange={(e) => handleMeasurementChange(uniqueKey, 'bust', e.target.value)}
-                        maxLength={2}
-                        className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${uniqueKey}-bust`] ? 'border-red-500' : 'border-gray-300'
-                        }`}
-                      />
-                      {measurementErrors[`${uniqueKey}-bust`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-bust`]}</p>
-                      )}
-                    </div>
-                    <div>
-                      <input
-                        type="text"
-                        placeholder="Chest (in inches)"
-                        value={measurements[uniqueKey]?.chest || ''}
-                        onChange={(e) => handleMeasurementChange(uniqueKey, 'chest', e.target.value)}
-                        maxLength={2}
-                        className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${uniqueKey}-chest`] ? 'border-red-500' : 'border-gray-300'
-                        }`}
-                      />
-                      {measurementErrors[`${uniqueKey}-chest`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-chest`]}</p>
-                      )}
-                    </div>
-                    <div>
-                      <input
-                        type="text"
-                        placeholder="Shoulder (in inches)"
-                        value={measurements[uniqueKey]?.shoulder || ''}
-                        onChange={(e) => handleMeasurementChange(uniqueKey, 'shoulder', e.target.value)}
-                        maxLength={2}
-                        className={`px-3 py-2 border rounded w-full ${
-                          measurementErrors[`${uniqueKey}-shoulder`] ? 'border-red-500' : 'border-gray-300'
-                        }`}
-                      />
-                      {measurementErrors[`${uniqueKey}-shoulder`] && (
-                        <p className="text-xs text-red-600 mt-1">{measurementErrors[`${uniqueKey}-shoulder`]}</p>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                {/* Special Requirements */}
-                <div className="mt-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Special Requirements (if any):
-                  </label>
-                  <textarea
-                    placeholder="Enter any additional fitting requirements"
-                    value={specialRequirements[uniqueKey] || ''}
-                    onChange={(e) => {
-                      const newValue = e.target.value;
-                      console.log(`📝 Updating special requirements for ${uniqueKey}:`, newValue);
-                      setSpecialRequirements({
-                        ...specialRequirements,
-                        [uniqueKey]: newValue,
-                      });
-                    }}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    rows={2}
-                  />
                 </div>
-              </div>
               );
             })}
 
@@ -4286,7 +4031,7 @@ export default function OrderDetailsPage() {
                     // Use unique keys directly - no conversion needed
                     const measurementsData = { ...measurements };
                     // Ensure all special requirements are included, even empty strings
-                    const specialReqsData: {[key: string]: string} = {};
+                    const specialReqsData: { [key: string]: string } = {};
                     products.forEach((product: any) => {
                       const bookedFrom = product.booked_from || booking?.booked_from;
                       const bookedTo = product.booked_to || booking?.booked_to;
@@ -4305,7 +4050,7 @@ export default function OrderDetailsPage() {
                       toast.error('Invalid booking ID');
                       return;
                     }
-                    
+
                     await bookingsApi.update(bookingId, {
                       measurements: measurementsData,
                       special_requirements: JSON.stringify(specialReqsData)
@@ -4393,12 +4138,12 @@ export default function OrderDetailsPage() {
               const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
               const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
               const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
-              
+
               const productMeasurements = measurements[uniqueKey] || measurements[selectedProductForMeasurements.id] || {};
               const hasMeasurements = Object.keys(productMeasurements).length > 0;
               const isFemale = isFemaleClothing(selectedProductForMeasurements.name);
               const isMale = isMaleClothing(selectedProductForMeasurements.name);
-              
+
               // Use editing state if in edit mode, otherwise use saved measurements
               const currentMeasurements = isEditingMeasurements ? editingMeasurements : productMeasurements;
               const currentSpecialReqs = isEditingMeasurements ? editingSpecialRequirements : (specialRequirements[uniqueKey] || '');
@@ -4414,7 +4159,7 @@ export default function OrderDetailsPage() {
                   [field]: numericValue,
                 };
                 setEditingMeasurements(updatedEditingMeasurements);
-                
+
                 // Immediately update the main measurements state to preserve data when switching products
                 // Use unique key to avoid conflicts with same product but different dates
                 setMeasurements({
@@ -4627,7 +4372,7 @@ export default function OrderDetailsPage() {
                           <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                         </svg>
                         <p className="text-yellow-800 font-medium">
-                          {isOrderCompleted 
+                          {isOrderCompleted
                             ? 'Measurements cannot be changed after order completion.'
                             : 'Measurements cannot be changed after the product drop date has passed.'}
                         </p>
@@ -5084,13 +4829,13 @@ export default function OrderDetailsPage() {
                         const bookedFrom = selectedProductForMeasurements.booked_from || booking?.booked_from;
                         const bookedTo = selectedProductForMeasurements.booked_to || booking?.booked_to;
                         const uniqueKey = `${selectedProductForMeasurements.id}_${bookedFrom}_${bookedTo}`;
-                        
+
                         // Update measurements for this product using unique key
                         const updatedMeasurements = {
                           ...measurements,
                           [uniqueKey]: editingMeasurements,
                         };
-                        
+
                         const updatedSpecialReqs = {
                           ...specialRequirements,
                           [uniqueKey]: editingSpecialRequirements,
@@ -5100,13 +4845,13 @@ export default function OrderDetailsPage() {
                         // when same product is booked for different dates
                         const measurementsForDB: any = {};
                         const specialReqsForDB: any = {};
-                        
+
                         // Save all measurements using unique keys only
                         // This ensures each product instance (with different dates) has independent measurements
                         Object.keys(updatedMeasurements).forEach(key => {
                           measurementsForDB[key] = updatedMeasurements[key];
                         });
-                        
+
                         // Save all special requirements using unique keys only
                         Object.keys(updatedSpecialReqs).forEach(key => {
                           specialReqsForDB[key] = updatedSpecialReqs[key];
@@ -5118,12 +4863,12 @@ export default function OrderDetailsPage() {
                           return;
                         }
                         const bookingId = booking?.id || Number(params.id);
-                        
+
                         if (!bookingId || isNaN(bookingId)) {
                           toast.error('Invalid booking ID');
                           return;
                         }
-                        
+
                         console.log('Saving measurements for booking ID:', bookingId);
                         await bookingsApi.update(bookingId, {
                           measurements: measurementsForDB,
@@ -5134,7 +4879,7 @@ export default function OrderDetailsPage() {
                         setMeasurements(updatedMeasurements);
                         setSpecialRequirements(updatedSpecialReqs);
                         setIsEditingMeasurements(false);
-                        
+
                         await fetchBooking();
                         toast.success('Measurements saved successfully!');
                       } catch (error: any) {
@@ -5234,62 +4979,89 @@ export default function OrderDetailsPage() {
             >
               ×
             </button>
-            
+
             <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
             <p className="text-center text-gray-700 mb-4">
               Amount to collect: ₹{parseFloat(paymentAmount || '0').toLocaleString('en-IN')}
             </p>
-            
-            {/* Show QR based on booking ID (alternate between them) */}
-            {booking.id % 2 === 0 ? (
-              // Even booking ID - Show Ayushi Babel QR
-              <div>
+
+            {/* Tab-based QR — only one visible at a time */}
+            {(() => {
+              const rentRemaining = paymentSummary ? (paymentSummary.charges.rent.due + paymentSummary.charges.transport.due + paymentSummary.charges.penalties.due + paymentSummary.charges.fees.due) - (paymentSummary.charges.rent.paid + paymentSummary.charges.transport.paid + paymentSummary.charges.penalties.paid + paymentSummary.charges.fees.paid) : 0;
+              const securityRemaining = paymentSummary ? paymentSummary.charges.security.due - paymentSummary.charges.security.paid : 0;
+              const showRent = rentRemaining > 0;
+              const showSecurity = securityRemaining > 0;
+              const noQrConfigured = !rentQrCode && !securityQrCode;
+
+              if (noQrConfigured) return (
                 <div className="flex justify-center mb-4">
-                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                    <img 
-                      src="/upi-qr-ayushi.png" 
-                      alt="UPI QR Code" 
-                      className="rounded-lg"
-                      style={{ 
-                        maxWidth: '280px', 
-                        maxHeight: '310px', 
-                        width: 'auto', 
-                        height: 'auto'
-                      }}
-                    />
+                  <div className="bg-gray-50 rounded-lg border-2 border-dashed border-gray-300 p-8 text-center min-h-[200px] flex flex-col items-center justify-center">
+                    <svg className="w-12 h-12 text-gray-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                    </svg>
+                    <p className="text-sm font-medium text-gray-600">No QR code configured</p>
+                    <p className="text-xs text-gray-500 mt-1">Ask admin to upload QR codes in Settings</p>
                   </div>
                 </div>
-                <p className="text-center text-gray-600 mb-4">OR</p>
-                <p className="text-center text-sm text-gray-700 mb-6">
-                  Pay on UPI ID: <span className="font-semibold">ayushibabel22@oksbi</span>
-                </p>
-              </div>
-            ) : (
-              // Odd booking ID - Show Shubham Sahlot QR
-              <div>
-                <div className="flex justify-center mb-4">
-                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                    <img 
-                      src="/upi-qr.png" 
-                      alt="UPI QR Code" 
-                      className="rounded-lg"
-                      style={{ 
-                        maxWidth: '280px', 
-                        maxHeight: '310px', 
-                        width: 'auto', 
-                        height: 'auto'
-                      }}
-                    />
-                  </div>
+              );
+
+              // Determine which tab is active based on showSecurityQr state
+              const activeTab = showSecurityQr ? 'security' : 'rent';
+
+              return (
+                <div className="space-y-3">
+                  {/* Tab buttons — only if both QRs exist and both are due */}
+                  {showRent && showSecurity && rentQrCode && securityQrCode && (
+                    <div className="flex rounded-lg border border-gray-300 overflow-hidden">
+                      <button
+                        onClick={() => setShowSecurityQr(false)}
+                        className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${activeTab === 'rent' ? 'bg-blue-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                      >
+                        📋 Rent (₹{Math.floor(rentRemaining).toLocaleString('en-IN')})
+                      </button>
+                      <button
+                        onClick={() => setShowSecurityQr(true)}
+                        className={`flex-1 px-3 py-2.5 text-xs font-medium transition-colors ${activeTab === 'security' ? 'bg-green-600 text-white' : 'bg-gray-50 text-gray-600 hover:bg-gray-100'}`}
+                      >
+                        🔒 Security (₹{Math.floor(securityRemaining).toLocaleString('en-IN')})
+                      </button>
+                    </div>
+                  )}
+                  {/* Rent QR */}
+                  {activeTab === 'rent' && showRent && rentQrCode && (
+                    <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30">
+                      <h4 className="text-sm font-semibold text-blue-800 mb-1 text-center">📋 Rent Payment</h4>
+                      <p className="text-center text-blue-700 text-sm mb-3">Remaining: <span className="font-bold">₹{Math.floor(rentRemaining).toLocaleString('en-IN')}</span></p>
+                      <div className="flex justify-center">
+                        <div className="bg-white rounded-lg border-2 border-blue-200 p-3">
+                          <img src={rentQrCode} alt="Rent QR" className="rounded-lg" style={{ maxWidth: '240px', maxHeight: '260px', width: 'auto', height: 'auto' }} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* Security QR */}
+                  {activeTab === 'security' && showSecurity && securityQrCode && (
+                    <div className="border border-green-200 rounded-lg p-4 bg-green-50/30">
+                      <h4 className="text-sm font-semibold text-green-800 mb-1 text-center">🔒 Security Deposit</h4>
+                      <p className="text-center text-green-700 text-sm mb-3">Remaining: <span className="font-bold">₹{Math.floor(securityRemaining).toLocaleString('en-IN')}</span></p>
+                      <div className="flex justify-center">
+                        <div className="bg-white rounded-lg border-2 border-green-200 p-3">
+                          <img src={securityQrCode} alt="Security QR" className="rounded-lg" style={{ maxWidth: '240px', maxHeight: '260px', width: 'auto', height: 'auto' }} />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* If nothing is due */}
+                  {!showRent && !showSecurity && (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4 text-center">
+                      <p className="text-sm font-medium text-green-700">✅ All payments are fully collected!</p>
+                    </div>
+                  )}
                 </div>
-                <p className="text-center text-gray-600 mb-4">OR</p>
-                <p className="text-center text-sm text-gray-700 mb-6">
-                  Pay on UPI ID: <span className="font-semibold">anushahlot@okaxis</span>
-                </p>
-              </div>
-            )}
-            
-            <div className="space-y-3">
+              );
+            })()}
+
+            <div className="space-y-3 mt-4">
               <button
                 onClick={() => setShowQRScanner(true)}
                 className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"

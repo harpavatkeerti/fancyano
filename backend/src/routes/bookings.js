@@ -38,19 +38,19 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const bookingId = parseInt(id);
-    
+
     // Get booking details
     const booking = await bookingService.getBookingById(bookingId);
-    
+
     // Get payment summary
     const paymentSummary = await chargeAccountingService.getPaymentSummary(bookingId);
-    
+
     // Combine both
     const response = {
       ...booking,
       payment_summary: paymentSummary
     };
-    
+
     res.json(response);
   } catch (error) {
     if (error.message === 'Booking not found') {
@@ -64,8 +64,8 @@ router.get('/:id', async (req, res) => {
 // POST create booking
 router.post('/', async (req, res) => {
   try {
-    const { 
-      customer_name, 
+    const {
+      customer_name,
       customer_phone,
       customer_email,
       customer_address,
@@ -74,28 +74,28 @@ router.post('/', async (req, res) => {
       transport_charge = 0,
       created_by
     } = req.body;
-    
+
     // Validate required fields
     if (!customer_name || !customer_phone || !booking_date || !products || products.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Required fields missing',
         required: ['customer_name', 'customer_phone', 'booking_date', 'products']
       });
     }
-    
+
     // Fetch product details and calculate discounts using shared service
     const productIds = products.map(p => p.id || p.product_id);
     const productMap = await bookingCalculationService.fetchProductDetails(productIds);
-    
+
     // Transform product data with fetched details and calculated discounts
     const transformedProducts = products.map(p => {
       const productId = p.id || p.product_id;
       const productDetails = productMap[productId];
-      
+
       if (!productDetails) {
         throw new Error(`Product with id ${productId} not found`);
       }
-      
+
       return {
         productId,
         bookedFrom: p.booked_from,
@@ -109,7 +109,7 @@ router.post('/', async (req, res) => {
         discountValue: p.discountValue || 0
       };
     });
-    
+
     // Create booking using service (it will call DiscountCalculator internally)
     const result = await bookingService.createBooking({
       customerName: customer_name,
@@ -121,26 +121,26 @@ router.post('/', async (req, res) => {
       transportCharge: transport_charge,
       createdBy: created_by
     });
-    
+
     // Fetch complete booking details to return
     const booking = await bookingService.getBookingById(result.booking_id);
-    
+
     res.status(201).json(booking);
   } catch (error) {
     console.error('Error creating booking:', error);
-    
+
     if (error.message.includes('not found')) {
       return res.status(404).json({ error: error.message });
     }
-    
-    res.status(500).json({ 
+
+    res.status(500).json({
       error: 'Failed to create booking',
       details: error.message
     });
   }
 });
 
-// PUT update booking (measurements, special requirements)
+// PUT update booking — handles status changes, measurements, and special requirements
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -150,19 +150,24 @@ router.put('/:id', async (req, res) => {
     if (error.message === 'Booking not found') {
       return res.status(404).json({ error: 'Booking not found' });
     }
+    if (error.message.startsWith('Invalid status')) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error updating booking:', error);
     res.status(500).json({ error: 'Failed to update booking' });
   }
 });
+
+
 
 // PUT confirm booking
 router.put('/:id/confirm', async (req, res) => {
   try {
     const { id } = req.params;
     const { confirmed_by } = req.body;
-    
+
     const result = await bookingService.confirmBooking(parseInt(id), confirmed_by || 'system');
-    
+
     res.json(result);
   } catch (error) {
     if (error.message.includes('Cannot confirm')) {
@@ -216,9 +221,9 @@ router.post('/:id/finalize', async (req, res) => {
 router.put('/:id/status', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const result = await bookingService.updateBookingStatus(parseInt(id));
-    
+
     res.json(result);
   } catch (error) {
     if (error.message === 'Booking not found') {
@@ -233,11 +238,11 @@ router.put('/:id/status', async (req, res) => {
 router.delete('/:id', async (req, res) => {
   const pool = require('../database/connection');
   const client = await pool.connect();
-  
+
   try {
     await client.query('BEGIN');
     const { id } = req.params;
-    
+
     // Verify booking exists
     const bookingResult = await client.query(
       'SELECT id FROM bookings WHERE id = $1',
@@ -268,20 +273,20 @@ router.post('/:id/final-discount', async (req, res) => {
   try {
     const { id } = req.params;
     const { discount_amount, reason, applied_by } = req.body;
-    
+
     if (!discount_amount || discount_amount <= 0 || !applied_by) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: discount_amount (> 0), applied_by' 
+      return res.status(400).json({
+        error: 'Missing required fields: discount_amount (> 0), applied_by'
       });
     }
-    
+
     const result = await bookingService.applyFinalSettlementDiscount(
       parseInt(id),
       discount_amount,
       reason || 'Final settlement discount',
       applied_by
     );
-    
+
     res.json({
       message: 'Final settlement discount applied successfully',
       discount_details: result
@@ -302,9 +307,9 @@ router.post('/:id/final-discount', async (req, res) => {
 router.get('/:id/activity-log', async (req, res) => {
   try {
     const { id } = req.params;
-    
+
     const activityLog = await bookingService.getActivityLog(parseInt(id));
-    
+
     res.json({
       success: true,
       booking_id: parseInt(id),

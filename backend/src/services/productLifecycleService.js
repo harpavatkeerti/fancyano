@@ -1,6 +1,7 @@
 const pool = require('../database/connection');
 const policyService = require('./policyService');
 const chargeAccountingService = require('./chargeAccountingService');
+const bookingService = require('./bookingService');
 
 /**
  * ProductLifecycleService - Manages booking product lifecycle events
@@ -29,35 +30,35 @@ class ProductLifecycleService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       // Get existing booking product
       const bpResult = await client.query(
         'SELECT * FROM booking_products WHERE id = $1',
         [bookingProductId]
       );
-      
+
       if (bpResult.rows.length === 0) {
         throw new Error('Booking product not found');
       }
-      
+
       const oldBookingProduct = bpResult.rows[0];
-      
+
       if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(oldBookingProduct.status)) {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
       }
-      
+
       // Calculate exchange penalty based on EFFECTIVE rent (after discount)
       const penaltyResult = await policyService.calculateExchangePenalty(
         oldBookingProduct.effective_rent,  // Use effective_rent instead of rent
         oldBookingProduct.created_at
       );
-      
+
       // Mark old product as exchanged
       await client.query(
         'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['exchanged', bookingProductId]
       );
-      
+
       // Add exchange penalty charge to old product
       if (penaltyResult.amount > 0) {
         await chargeAccountingService.addCharge(
@@ -69,17 +70,17 @@ class ProductLifecycleService {
           client
         );
       }
-      
+
       // Calculate total new rent
       const newTotalRent = newProducts.reduce((sum, p) => sum + p.rent, 0);
-      
+
       // Use shared calculation logic with EFFECTIVE rent
       const { downgradePenalty } = this._calculateExchangePenalties(
         oldBookingProduct.effective_rent,  // Use effective_rent instead of rent
         penaltyResult.amount,
         newTotalRent
       );
-      
+
       // Add downgrade penalty if applicable
       if (downgradePenalty > 0) {
         await chargeAccountingService.addCharge(
@@ -91,7 +92,7 @@ class ProductLifecycleService {
           client
         );
       }
-      
+
       // Create new booking products
       const newBookingProductIds = [];
       for (const newProd of newProducts) {
@@ -112,10 +113,10 @@ class ProductLifecycleService {
             newProd.rent
           ]
         );
-        
+
         const newBookingProductId = newBpResult.rows[0].id;
         newBookingProductIds.push(newBookingProductId);
-        
+
         // Initialize charges for new product
         await chargeAccountingService.initializeProductCharges(
           newBookingProductId,
@@ -124,7 +125,7 @@ class ProductLifecycleService {
           client
         );
       }
-      
+
       // Record exchange history
       const exchangeResult = await client.query(
         `INSERT INTO booking_exchange_history 
@@ -141,7 +142,7 @@ class ProductLifecycleService {
           userId
         ]
       );
-      
+
       // Log in booking activity
       await client.query(
         `INSERT INTO booking_activity_log 
@@ -151,17 +152,17 @@ class ProductLifecycleService {
           oldBookingProduct.booking_id,
           'product_exchanged',
           exchangeResult.rows[0].id,
-          { 
-            old_product_id: oldBookingProduct.product_id, 
+          {
+            old_product_id: oldBookingProduct.product_id,
             new_product_ids: newProducts.map(p => p.productId),
             new_booking_product_ids: newBookingProductIds
           },
           userId
         ]
       );
-      
+
       await client.query('COMMIT');
-      
+
       return {
         old_booking_product_id: bookingProductId,
         new_booking_product_ids: newBookingProductIds,
@@ -189,23 +190,23 @@ class ProductLifecycleService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       // Get existing booking product with its charges
       const bpResult = await client.query(
         'SELECT * FROM booking_products WHERE id = $1',
         [bookingProductId]
       );
-      
+
       if (bpResult.rows.length === 0) {
         throw new Error('Booking product not found');
       }
-      
+
       const bookingProduct = bpResult.rows[0];
-      
+
       if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(bookingProduct.status)) {
         throw new Error(`Cannot cancel product with status: ${bookingProduct.status}`);
       }
-      
+
       // Get per-product paid amounts from product_charges (rent + security paid for THIS product)
       const chargesResult = await client.query(
         `SELECT charge_type, due_amount, paid_amount
@@ -213,20 +214,20 @@ class ProductLifecycleService {
          WHERE booking_product_id = $1 AND charge_type IN ('rent', 'security')`,
         [bookingProductId]
       );
-      
+
       let rentPaid = 0;
       let securityPaid = 0;
       for (const charge of chargesResult.rows) {
         if (charge.charge_type === 'rent') rentPaid = parseInt(charge.paid_amount) || 0;
         if (charge.charge_type === 'security') securityPaid = parseInt(charge.paid_amount) || 0;
       }
-      
+
       // Mark product as cancelled (keep due_amount INTACT per blueprint for audit trail)
       await client.query(
         'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['cancelled', bookingProductId]
       );
-      
+
       // Add cancellation penalty charge
       if (cancellationPenalty > 0) {
         await chargeAccountingService.addCharge(
@@ -238,10 +239,10 @@ class ProductLifecycleService {
           client
         );
       }
-      
+
       // Calculate refund: what was paid towards this product minus penalty
       const refundAmount = Math.max(0, rentPaid + securityPaid - cancellationPenalty);
-      
+
       // Record cancellation history
       const cancelResult = await client.query(
         `INSERT INTO booking_cancellation_history 
@@ -256,7 +257,7 @@ class ProductLifecycleService {
           userId
         ]
       );
-      
+
       // Log in booking activity
       await client.query(
         `INSERT INTO booking_activity_log 
@@ -270,16 +271,16 @@ class ProductLifecycleService {
           userId
         ]
       );
-      
+
       // Update booking date range (recalculate from remaining active products)
       await this.updateBookingDateRange(bookingProduct.booking_id, client);
-      
+
       await client.query('COMMIT');
-      
+
       // Update booking status (after commit, uses its own transaction)
       const bookingService = require('./bookingService');
       const statusResult = await bookingService.updateBookingStatus(bookingProduct.booking_id);
-      
+
       return {
         booking_product_id: bookingProductId,
         booking_id: bookingProduct.booking_id,
@@ -334,7 +335,7 @@ class ProductLifecycleService {
            (booking_id, amount, type, method, notes, recorded_by, transaction_date)
            VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
           [bookingId, refundAmount, refundMethod || 'Cash',
-           notes || 'Cancellation refund', recordedBy]
+            notes || 'Cancellation refund', recordedBy]
         );
 
         await client.query(
@@ -348,30 +349,67 @@ class ProductLifecycleService {
           }), recordedBy]
         );
       } else if (action === 'adjust') {
-        // Apply refund amount against outstanding dues using payment priority logic
-        const adjustBreakdown = await chargeAccountingService._applyPaymentInternal(
-          bookingId, refundAmount, client
+        // Get current outstanding balance
+        const balanceResult = await client.query(
+          `SELECT 
+             COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0) as remaining_balance
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1 AND bp.status != 'cancelled'`,
+          [bookingId]
         );
+        const remainingDues = Math.max(0, parseFloat(balanceResult.rows[0].remaining_balance));
 
-        await client.query(
-          `INSERT INTO payment_transactions 
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'adjustment', 'Adjustment', $3, $4, CURRENT_TIMESTAMP)`,
-          [bookingId, refundAmount,
-           notes || 'Cancellation refund adjusted against outstanding dues',
-           recordedBy]
-        );
+        // Cap adjustment at outstanding dues — remainder becomes an immediate refund
+        const adjustAmount = Math.min(refundAmount, remainingDues);
+        const refundRemainder = refundAmount - adjustAmount;
 
-        await client.query(
-          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
-           VALUES ($1, 'adjustment_applied', $2, $3)`,
-          [bookingId, JSON.stringify({
-            amount: refundAmount,
-            reason: 'Cancellation refund adjusted against dues',
-            notes,
-            breakdown: adjustBreakdown.applications
-          }), recordedBy]
-        );
+        // Apply adjustment against dues
+        if (adjustAmount > 0) {
+          await chargeAccountingService._applyPaymentInternal(bookingId, adjustAmount, client);
+
+          await client.query(
+            `INSERT INTO payment_transactions 
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+             VALUES ($1, $2, 'adjustment', 'Adjustment', $3, $4, CURRENT_TIMESTAMP)`,
+            [bookingId, adjustAmount,
+              notes || 'Cancellation refund adjusted against outstanding dues',
+              recordedBy]
+          );
+
+          await client.query(
+            `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+             VALUES ($1, 'adjustment_applied', $2, $3)`,
+            [bookingId, JSON.stringify({
+              amount: adjustAmount,
+              reason: 'Cancellation refund adjusted against dues',
+              notes
+            }), recordedBy]
+          );
+        }
+
+        // Refund any remainder that exceeds outstanding dues
+        if (refundRemainder > 0) {
+          await client.query(
+            `INSERT INTO payment_transactions 
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+             VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+            [bookingId, refundRemainder, refundMethod || 'Cash',
+              `Cancellation refund remainder after adjusting ₹${adjustAmount} against dues`,
+              recordedBy]
+          );
+
+          await client.query(
+            `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+             VALUES ($1, 'refund_issued', $2, $3)`,
+            [bookingId, JSON.stringify({
+              amount: refundRemainder,
+              method: refundMethod || 'Cash',
+              reason: 'Cancellation refund remainder after dues adjustment',
+              notes
+            }), recordedBy]
+          );
+        }
       }
 
       await client.query('COMMIT');
@@ -470,19 +508,19 @@ class ProductLifecycleService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       // Update product statuses to in_progress
       for (const bpId of bookingProductIds) {
         const result = await client.query(
           'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3 RETURNING id',
           ['in_progress', bpId, 'confirmed']
         );
-        
+
         if (result.rows.length === 0) {
           throw new Error(`Booking product ${bpId} not found or not in confirmed status`);
         }
       }
-      
+
       // Update booking status if applicable
       await client.query(
         `UPDATE bookings 
@@ -490,7 +528,7 @@ class ProductLifecycleService {
          WHERE id = $1 AND status = 'confirmed'`,
         [bookingId]
       );
-      
+
       // Log in booking activity
       await client.query(
         `INSERT INTO booking_activity_log 
@@ -503,9 +541,9 @@ class ProductLifecycleService {
           userId
         ]
       );
-      
+
       await client.query('COMMIT');
-      
+
       return {
         booking_id: bookingId,
         picked_up_count: bookingProductIds.length,
@@ -530,44 +568,44 @@ class ProductLifecycleService {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       let totalLateFees = 0;
       let totalDamageFees = 0;
-      
+
       // Get late fee policy
       const lateFeePolicy = await policyService.getLateFee();
-      
+
       for (const ret of returns) {
         const { bookingProductId, damageFee } = ret;
-        
+
         // Get booking product details to check expected return date
         const bpResult = await client.query(
           'SELECT booked_to FROM booking_products WHERE id = $1 AND status = $2',
           [bookingProductId, 'in_progress']
         );
-        
+
         if (bpResult.rows.length === 0) {
           throw new Error(`Booking product ${bookingProductId} not found or not in in_progress status`);
         }
-        
+
         const { booked_to } = bpResult.rows[0];
-        
+
         // Calculate late days: current date - expected return date
         const currentDate = new Date();
         const expectedReturnDate = new Date(booked_to);
         const lateDays = Math.max(0, Math.floor((currentDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
-        
+
         // Update product status to completed
         await client.query(
           'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           ['completed', bookingProductId]
         );
-        
+
         // Apply late fee if applicable
         if (lateDays > 0) {
           const lateFeeAmount = lateFeePolicy.amount * lateDays;
           totalLateFees += lateFeeAmount;
-          
+
           await chargeAccountingService.addCharge(
             bookingProductId,
             'late_fee',
@@ -577,11 +615,11 @@ class ProductLifecycleService {
             client
           );
         }
-        
+
         // Apply damage fee if applicable
         if (damageFee > 0) {
           totalDamageFees += damageFee;
-          
+
           await chargeAccountingService.addCharge(
             bookingProductId,
             'damage_fee',
@@ -592,7 +630,7 @@ class ProductLifecycleService {
           );
         }
       }
-      
+
       // Log in booking activity
       await client.query(
         `INSERT INTO booking_activity_log 
@@ -601,7 +639,7 @@ class ProductLifecycleService {
         [
           bookingId,
           'products_returned',
-          { 
+          {
             booking_product_ids: returns.map(r => r.bookingProductId),
             total_late_fees: totalLateFees,
             total_damage_fees: totalDamageFees
@@ -609,14 +647,18 @@ class ProductLifecycleService {
           userId
         ]
       );
-      
+
       await client.query('COMMIT');
-      
+
+      // Update booking status based on new product states (after commit, uses its own transaction)
+      const statusResult = await bookingService.updateBookingStatus(bookingId);
+
       return {
         booking_id: bookingId,
         returned_count: returns.length,
         total_late_fees: totalLateFees,
-        total_damage_fees: totalDamageFees
+        total_damage_fees: totalDamageFees,
+        booking_status: statusResult.status
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -636,13 +678,13 @@ class ProductLifecycleService {
       'SELECT effective_rent, created_at FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
-    
+
     if (result.rows.length === 0) {
       throw new Error('Booking product not found');
     }
-    
+
     const { effective_rent, created_at } = result.rows[0];
-    
+
     return await policyService.calculateCancellationPenalty(effective_rent, created_at);
   }
 
@@ -656,13 +698,13 @@ class ProductLifecycleService {
       'SELECT effective_rent, created_at FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
-    
+
     if (result.rows.length === 0) {
       throw new Error('Booking product not found');
     }
-    
+
     const { effective_rent, created_at } = result.rows[0];
-    
+
     return await policyService.calculateExchangePenalty(effective_rent, created_at);
   }
 
@@ -799,8 +841,8 @@ class ProductLifecycleService {
            (booking_id, amount, type, method, notes, recorded_by, transaction_date)
            VALUES ($1, $2, 'refund', 'Cash', $3, $4, CURRENT_TIMESTAMP)`,
           [booking_id, total_security,
-           `Security deposit refund for product #${bookingProductId}`,
-           recordedBy]
+            `Security deposit refund for product #${bookingProductId}`,
+            recordedBy]
         );
 
         // Log refund activity
@@ -1257,14 +1299,14 @@ class ProductLifecycleService {
            AND bp.status NOT IN ('cancelled', 'exchanged')`,
         [oldProduct.booking_id]
       );
-      
+
       let currentTotalRent = 0;
       let currentTotalSecurity = 0;
       for (const bp of allBpResult.rows) {
         currentTotalRent += parseFloat(bp.rent) || 0;
         currentTotalSecurity += parseFloat(bp.security_deposit) || 0;
       }
-      
+
       // After exchange: remove exchanged product, add new product(s)
       const afterExchangeRent = currentTotalRent - originalRent + totalNewRent;
       const afterExchangeSecurity = currentTotalSecurity - originalSecurity + totalNewSecurity;

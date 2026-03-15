@@ -45,18 +45,9 @@ export function PaymentManagement({
     notes: '',
   });
   // Product-wise refund state (for enhanced refund modal)
-  const [itemRefunds, setItemRefunds] = useState<{[key: number]: { selected: boolean; amount: string; notes: string }}>({});
+  const [itemRefunds, setItemRefunds] = useState<{ [key: number]: { selected: boolean; amount: string; notes: string } }>({});
   const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
-  
-  // Overpayment warning modal state
-  const [showOverpaymentWarning, setShowOverpaymentWarning] = useState(false);
-  const [overpaymentData, setOverpaymentData] = useState({
-    totalRequired: 0,
-    currentPaid: 0,
-    paymentAmount: 0,
-    newTotal: 0,
-    overpayment: 0
-  });
+
 
   useEffect(() => {
     fetchBookingData();
@@ -69,7 +60,7 @@ export function PaymentManagement({
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
     if (!recordedBy) return 'N/A';
-    
+
     // If it's a string
     if (typeof recordedBy === 'string') {
       try {
@@ -81,12 +72,12 @@ export function PaymentManagement({
         return recordedBy;
       }
     }
-    
+
     // If it's already an object
     if (typeof recordedBy === 'object') {
       return recordedBy.userName || recordedBy.name || 'N/A';
     }
-    
+
     return String(recordedBy);
   }
 
@@ -95,8 +86,8 @@ export function PaymentManagement({
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
       // Filter out cancelled products
-      const productsList = Array.isArray(booking.products) 
-        ? booking.products.filter((p: any) => p.status !== 'cancelled') 
+      const productsList = Array.isArray(booking.products)
+        ? booking.products.filter((p: any) => p.status !== 'cancelled')
         : [];
       setProducts(productsList);
     } catch (error) {
@@ -136,45 +127,7 @@ export function PaymentManagement({
     }
   }
 
-  async function proceedWithPayment() {
-    try {
-      const amount = parseFloat(formData.amount);
-      
-      toast.info(`Recording payment with ₹${overpaymentData.overpayment.toLocaleString('en-IN')} overpayment as confirmed.`);
-      
-      await paymentTransactionsApi.create({
-        booking_id: bookingId,
-        amount: amount,
-        type: transactionType,
-        method: formData.method,
-        recorded_by: 'Admin', // TODO: Get from auth context
-        notes: formData.notes || undefined,
-      });
 
-      toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
-      setShowRecordModal(false);
-      setShowOverpaymentWarning(false);
-      setFormData({ amount: '', method: '', notes: '' });
-      
-      // Refresh transactions and summary
-      await fetchTransactions();
-      await fetchSummary();
-      
-      // Update booking status based on new payment/refund
-      await calculateAndUpdateBookingStatus();
-      
-      // Notify parent to refresh booking data
-      onPaymentUpdate();
-    } catch (error) {
-      console.error('Error recording transaction:', error);
-      toast.error('Error recording transaction');
-    }
-  }
-
-  function cancelOverpayment() {
-    setShowOverpaymentWarning(false);
-    toast.info('Payment cancelled. Please adjust the amount.');
-  }
 
   async function handleSubmit() {
     try {
@@ -189,24 +142,15 @@ export function PaymentManagement({
         return;
       }
 
-      // Validate against overpayment for payment type only - use backend summary
+      // Hard cap: reject payment exceeding outstanding balance
       if (transactionType === 'payment' && summary) {
         const totalRequired = summary.totals?.total_due || 0;
         const currentPaid = summary.totals?.total_paid || 0;
-        const newTotal = currentPaid + amount;
-        const overpayment = newTotal - totalRequired;
-        
-        // Warn if overpayment detected
-        if (overpayment > 0) {
-          setOverpaymentData({
-            totalRequired,
-            currentPaid,
-            paymentAmount: amount,
-            newTotal,
-            overpayment
-          });
-          setShowOverpaymentWarning(true);
-          return; // Stop here and wait for user confirmation
+        const remainingBalance = Math.max(0, totalRequired - currentPaid);
+
+        if (amount > remainingBalance) {
+          toast.error(`Payment exceeds outstanding balance. Maximum allowed: ₹${Math.floor(remainingBalance).toLocaleString('en-IN')}`);
+          return;
         }
       }
 
@@ -222,14 +166,14 @@ export function PaymentManagement({
       toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
       setShowRecordModal(false);
       setFormData({ amount: '', method: '', notes: '' });
-      
+
       // Refresh transactions and summary
       await fetchTransactions();
       await fetchSummary();
-      
+
       // Update booking status based on new payment/refund
       await calculateAndUpdateBookingStatus();
-      
+
       // Notify parent to refresh booking data
       onPaymentUpdate();
     } catch (error) {
@@ -287,12 +231,8 @@ export function PaymentManagement({
     try {
       // Validate selections
       const selectedItems = Object.entries(itemRefunds).filter(([_, data]) => data.selected);
-      
-      // Use backend summary for overpayment
-      const overpaymentAmount = summary?.overpayment || 0;
-      
-      // Need at least one selected item OR overpayment
-      if (selectedItems.length === 0 && overpaymentAmount <= 0) {
+
+      if (selectedItems.length === 0) {
         toast.warning('Please select at least one product to refund');
         return;
       }
@@ -350,7 +290,7 @@ export function PaymentManagement({
         if (refundData.notes.trim()) {
           notes += `: ${refundData.notes.trim()}`;
         }
-        
+
         // Append general narration if provided
         if (refundNarration.trim()) {
           notes += ` | ${refundNarration.trim()}`;
@@ -366,39 +306,19 @@ export function PaymentManagement({
         });
       }
 
-      // Automatically add overpayment refund if it exists
-      if (overpaymentAmount > 0) {
-        let overpaymentNotes = `Overpayment Refund - ${formatCurrency(overpaymentAmount)}`;
-        
-        // Append general narration if provided
-        if (refundNarration.trim()) {
-          overpaymentNotes += ` | ${refundNarration.trim()}`;
-        }
-        
-        await paymentTransactionsApi.create({
-          booking_id: bookingId,
-          amount: overpaymentAmount,
-          type: 'refund',
-          method: formData.method,
-          recorded_by: 'Admin',
-          notes: overpaymentNotes,
-        });
-      }
-
-      const totalItems = selectedItems.length + (overpaymentAmount > 0 ? 1 : 0);
-      toast.success(`Refund recorded successfully for ${totalItems} item(s)!`);
+      toast.success(`Refund recorded successfully for ${selectedItems.length} item(s)!`);
       setShowRecordModal(false);
       setFormData({ amount: '', method: '', notes: '' });
       setItemRefunds({});
       setRefundNarration('');
-      
+
       // Refresh transactions and summary
       await fetchTransactions();
       await fetchSummary();
-      
+
       // Update booking status
       await calculateAndUpdateBookingStatus();
-      
+
       // Notify parent
       onPaymentUpdate();
     } catch (error) {
@@ -415,243 +335,219 @@ export function PaymentManagement({
     <div className="space-y-6">
       {/* Payment Summary - Hide for fully cancelled bookings */}
       {!isFullyCancelled && (
-      <div className="bg-white border border-gray-200 rounded-lg p-6">
-        {/* Use backend payment summary - all calculations done by backend */}
-        {(() => {
-          // If summary not loaded yet, show loading or use props as fallback
-          if (!summary) {
-            return <div className="text-center py-4 text-gray-500">Loading payment summary...</div>;
-          }
+        <div className="bg-white border border-gray-200 rounded-lg p-6">
+          {/* Use backend payment summary - all calculations done by backend */}
+          {(() => {
+            // If summary not loaded yet, show loading or use props as fallback
+            if (!summary) {
+              return <div className="text-center py-4 text-gray-500">Loading payment summary...</div>;
+            }
 
-          // All values come from backend payment-summary API
-          const totalRequired = summary.totals?.total_due || 0;
-          const totalPaid = summary.totals?.total_paid || 0;
-          const balanceDue = summary.totals?.balance || 0;
-          const overpayment = summary.overpayment || 0;
-          const isFullyPaid = balanceDue <= 0;
-          
-          // Check for refunds in transactions
-          const hasAnyRefund = transactions.some((t: any) => t.type === 'refund');
-          
-          return (
-            <>
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Payment Summary</h3>
-                {userRole === 'admin' ? (
-                  // Admin: Always show both buttons
-                  <div className="flex gap-3">
-                    <Button
-                      onClick={() => {
-                        setTransactionType('payment');
-                        setFormData({ amount: '', method: '', notes: '' });
-                        setShowRecordModal(true);
-                      }}
-                      className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
-                    >
-                      💰 Collect Payment
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setTransactionType('refund');
-                        setFormData({ amount: '', method: '', notes: '' });
-                        setItemRefunds({}); // Reset product selections
-                        setShowRecordModal(true);
-                      }}
-                      className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
-                    >
-                      💸 Refund Payment
-                    </Button>
-                  </div>
-                ) : (
-                  // Salesman: Show single button based on payment status (old logic)
-                  isFullyPaid ? (
-                    <Button
-                      onClick={() => {
-                        setTransactionType('refund');
-                        setFormData({ amount: '', method: '', notes: '' });
-                        setItemRefunds({}); // Reset product selections
-                        setShowRecordModal(true);
-                      }}
-                      className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
-                    >
-                      💸 Refund Payment
-                    </Button>
+            // All values come from backend payment-summary API
+            const totalRequired = summary.totals?.total_due || 0;
+            const totalPaid = summary.totals?.total_paid || 0;
+            const balanceDue = summary.totals?.balance || 0;
+            const isFullyPaid = balanceDue <= 0;
+            // Check for refunds in transactions
+            const hasAnyRefund = transactions.some((t: any) => t.type === 'refund');
+
+            return (
+              <>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900">Payment Summary</h3>
+                  {userRole === 'admin' ? (
+                    // Admin: Always show both buttons
+                    <div className="flex gap-3">
+                      <Button
+                        onClick={() => {
+                          setTransactionType('payment');
+                          setFormData({ amount: '', method: '', notes: '' });
+                          setShowRecordModal(true);
+                        }}
+                        className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
+                      >
+                        💰 Collect Payment
+                      </Button>
+                      <Button
+                        onClick={() => {
+                          setTransactionType('refund');
+                          setFormData({ amount: '', method: '', notes: '' });
+                          setItemRefunds({}); // Reset product selections
+                          setShowRecordModal(true);
+                        }}
+                        className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
+                      >
+                        💸 Refund Payment
+                      </Button>
+                    </div>
                   ) : (
-                    <Button
-                      onClick={() => {
-                        setTransactionType('payment');
-                        setFormData({ amount: '', method: '', notes: '' });
-                        setShowRecordModal(true);
-                      }}
-                      className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
-                    >
-                      💰 Collect Payment
-                    </Button>
-                  )
-                )}
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-xs text-gray-600 mb-1">Total Required</p>
-                  <p className="text-xl font-bold text-gray-900">
-                    {formatCurrency(totalRequired)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-xs text-gray-600 mb-1">Total Paid</p>
-                  <p className="text-xl font-bold text-green-600">
-                    {formatCurrency(totalPaid)}
-                  </p>
-                </div>
-                <div className="bg-gray-50 p-4 rounded-lg">
-                  <p className="text-xs text-gray-600 mb-1">Balance Due</p>
-                  <p className={`text-xl font-bold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    {formatCurrency(balanceDue)}
-                  </p>
-                </div>
-              </div>
-
-              {/* Payment Breakdown from backend summary */}
-              <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {/* Rent Section */}
-                  <div className="bg-white rounded-lg p-3 border border-blue-200">
-                    <p className="text-xs text-gray-600 mb-2">🏠 Rental Amount</p>
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-700">Due:</span>
-                        <span className="font-bold text-gray-900">{formatCurrency(summary.charges.rent.due)}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-700">Paid:</span>
-                        <span className="font-bold text-green-600">{formatCurrency(summary.charges.rent.paid)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Security Section */}
-                  <div className="bg-white rounded-lg p-3 border border-blue-200">
-                    <p className="text-xs text-gray-600 mb-2">🔒 Security Deposit</p>
-                    <div className="space-y-1">
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-700">Due:</span>
-                        <span className="font-bold text-gray-900">{formatCurrency(summary.charges.security.due)}</span>
-                      </div>
-                      <div className="flex justify-between text-sm">
-                        <span className="text-gray-700">Paid:</span>
-                        <span className="font-bold text-green-600">{formatCurrency(summary.charges.security.paid)}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Penalties Section - Show if penalties exist */}
-                  {(summary.charges.penalties.due > 0 || summary.charges.fees.due > 0) && (
-                    <div className="bg-white rounded-lg p-3 border border-red-200">
-                      <p className="text-xs text-gray-600 mb-2">⚠️ Penalties & Fees</p>
-                      <div className="space-y-1">
-                        {summary.charges.penalties.due > 0 && (
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-700">Penalties:</span>
-                            <span className="font-bold text-red-600">{formatCurrency(summary.charges.penalties.due)}</span>
-                          </div>
-                        )}
-                        {summary.charges.fees.due > 0 && (
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-700">Fees:</span>
-                            <span className="font-bold text-red-600">{formatCurrency(summary.charges.fees.due)}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
+                    // Salesman: Show single button based on payment status (old logic)
+                    isFullyPaid ? (
+                      <Button
+                        onClick={() => {
+                          setTransactionType('refund');
+                          setFormData({ amount: '', method: '', notes: '' });
+                          setItemRefunds({}); // Reset product selections
+                          setShowRecordModal(true);
+                        }}
+                        className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
+                      >
+                        💸 Refund Payment
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={() => {
+                          setTransactionType('payment');
+                          setFormData({ amount: '', method: '', notes: '' });
+                          setShowRecordModal(true);
+                        }}
+                        className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
+                      >
+                        💰 Collect Payment
+                      </Button>
+                    )
                   )}
+                </div>
 
-                  {/* Transport Section - Show if transport exists */}
-                  {summary.charges.transport.due > 0 && (
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <p className="text-xs text-gray-600 mb-1">Total Required</p>
+                    <p className="text-xl font-bold text-gray-900">
+                      {formatCurrency(totalRequired)}
+                    </p>
+                  </div>
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <p className="text-xs text-gray-600 mb-1">Total Paid</p>
+                    <p className="text-xl font-bold text-green-600">
+                      {formatCurrency(totalPaid)}
+                    </p>
+                  </div>
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <p className="text-xs text-gray-600 mb-1">Balance Due</p>
+                    <p className={`text-xl font-bold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {formatCurrency(balanceDue)}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Payment Breakdown from backend summary */}
+                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Rent Section */}
                     <div className="bg-white rounded-lg p-3 border border-blue-200">
-                      <p className="text-xs text-gray-600 mb-2">🚚 Transport</p>
+                      <p className="text-xs text-gray-600 mb-2">🏠 Rental Amount</p>
                       <div className="space-y-1">
                         <div className="flex justify-between text-sm">
                           <span className="text-gray-700">Due:</span>
-                          <span className="font-bold text-gray-900">{formatCurrency(summary.charges.transport.due)}</span>
+                          <span className="font-bold text-gray-900">{formatCurrency(summary.charges.rent.due)}</span>
                         </div>
                         <div className="flex justify-between text-sm">
                           <span className="text-gray-700">Paid:</span>
-                          <span className="font-bold text-green-600">{formatCurrency(summary.charges.transport.paid)}</span>
+                          <span className="font-bold text-green-600">{formatCurrency(summary.charges.rent.paid)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Security Section */}
+                    <div className="bg-white rounded-lg p-3 border border-blue-200">
+                      <p className="text-xs text-gray-600 mb-2">🔒 Security Deposit</p>
+                      <div className="space-y-1">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-700">Due:</span>
+                          <span className="font-bold text-gray-900">{formatCurrency(summary.charges.security.due)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-700">Paid:</span>
+                          <span className="font-bold text-green-600">{formatCurrency(summary.charges.security.paid)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Penalties Section - Show if penalties exist */}
+                    {(summary.charges.penalties.due > 0 || summary.charges.fees.due > 0) && (
+                      <div className="bg-white rounded-lg p-3 border border-red-200">
+                        <p className="text-xs text-gray-600 mb-2">⚠️ Penalties & Fees</p>
+                        <div className="space-y-1">
+                          {summary.charges.penalties.due > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-700">Penalties:</span>
+                              <span className="font-bold text-red-600">{formatCurrency(summary.charges.penalties.due)}</span>
+                            </div>
+                          )}
+                          {summary.charges.fees.due > 0 && (
+                            <div className="flex justify-between text-sm">
+                              <span className="text-gray-700">Fees:</span>
+                              <span className="font-bold text-red-600">{formatCurrency(summary.charges.fees.due)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Transport Section - Show if transport exists */}
+                    {summary.charges.transport.due > 0 && (
+                      <div className="bg-white rounded-lg p-3 border border-blue-200">
+                        <p className="text-xs text-gray-600 mb-2">🚚 Transport</p>
+                        <div className="space-y-1">
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-700">Due:</span>
+                            <span className="font-bold text-gray-900">{formatCurrency(summary.charges.transport.due)}</span>
+                          </div>
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-700">Paid:</span>
+                            <span className="font-bold text-green-600">{formatCurrency(summary.charges.transport.paid)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Payment Status - uses backend summary values */}
+                <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
+                  {balanceDue > 0 ? (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-red-800 mb-1">Payment Due</p>
+                          <p className="text-red-700">
+                            Amount due: <span className="font-bold text-lg">{formatCurrency(balanceDue)}</span>
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-gray-600">Total Required</p>
+                          <p className="text-lg font-bold">{formatCurrency(totalRequired)}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-green-800 mb-1">✅ Fully Paid</p>
+                          <p className="text-green-700">
+                            All payments received. Total: {formatCurrency(totalRequired)}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-sm text-gray-600">Amount Paid</p>
+                          <p className="text-lg font-bold text-green-600">{formatCurrency(totalPaid)}</p>
                         </div>
                       </div>
                     </div>
                   )}
                 </div>
-              </div>
-
-              {/* Payment Status - uses backend summary values */}
-              <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-                {overpayment > 0 ? (
-                  <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4">
-                    <div className="flex items-start">
-                      <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                      </svg>
-                      <div className="flex-1">
-                        <p className="font-bold text-yellow-800 mb-1">⚠️ Overpayment Detected</p>
-                        <p className="text-yellow-700 mb-2">
-                          Customer has paid <span className="font-bold">{formatCurrency(overpayment)}</span> more than required.
-                        </p>
-                        <p className="text-sm text-yellow-700">
-                          <strong>Total Required:</strong> {formatCurrency(totalRequired)} | 
-                          <strong> Amount Paid:</strong> {formatCurrency(totalPaid)} | 
-                          <strong> Overpayment:</strong> {formatCurrency(overpayment)}
-                        </p>
-                        <p className="text-sm text-yellow-700 mt-2">
-                          💡 <strong>Action Required:</strong> Record a refund of {formatCurrency(overpayment)} to return the excess amount to the customer.
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : balanceDue > 0 ? (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-red-800 mb-1">Payment Due</p>
-                        <p className="text-red-700">
-                          Amount due: <span className="font-bold text-lg">{formatCurrency(balanceDue)}</span>
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm text-gray-600">Total Required</p>
-                        <p className="text-lg font-bold">{formatCurrency(totalRequired)}</p>
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="font-bold text-green-800 mb-1">✅ Fully Paid</p>
-                        <p className="text-green-700">
-                          All payments received. Total: {formatCurrency(totalRequired)}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm text-gray-600">Amount Paid</p>
-                        <p className="text-lg font-bold text-green-600">{formatCurrency(totalPaid)}</p>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </>
-          );
-        })()}
-      </div>
+              </>
+            );
+          })()}
+        </div>
       )}
 
       {/* Transaction History */}
       <div className="bg-white border border-gray-200 rounded-lg p-6">
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Transaction History</h3>
-        
+
         {transactions.length === 0 ? (
           <p className="text-gray-500 text-center py-8">No transactions yet</p>
         ) : (
@@ -660,83 +556,83 @@ export function PaymentManagement({
             {transactions.filter((t: any) => {
               const transactionType = String(t.transaction_type || '').toLowerCase().trim();
               const method = String(t.method || '').toLowerCase().trim();
-              // Exclude penalties that are automatic adjustments (from overpayment)
+              // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation penalty adjustments)
               // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
               const isAutoAdjustmentPenalty = (
-                (transactionType === 'exchange_penalty' || 
-                 transactionType === 'downgrade_penalty' || 
-                 transactionType === 'cancellation_penalty') && 
+                (transactionType === 'exchange_penalty' ||
+                  transactionType === 'downgrade_penalty' ||
+                  transactionType === 'cancellation_penalty') &&
                 method === 'adjustment'
               );
               return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
             }).length > 0 && (
-          <div className="space-y-3">
-                {transactions
-                  .filter((t: any) => {
-                    const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-                    const method = String(t.method || '').toLowerCase().trim();
-                    // Exclude penalties that are automatic adjustments (from overpayment)
-                    // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
-                    const isAutoAdjustmentPenalty = (
-                      (transactionType === 'exchange_penalty' || 
-                       transactionType === 'downgrade_penalty' || 
-                       transactionType === 'cancellation_penalty') && 
-                      method === 'adjustment'
-                    );
-                    return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
-                  })
-                  .map((transaction) => (
-              <div
-                key={transaction.id}
-                className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${getTransactionColor(transaction.type)}`}>
-                        {transaction.type}
-                      </span>
-                      <span className="text-sm text-gray-600">
-                        {formatDate(transaction.created_at)}
-                      </span>
-                    </div>
-                    {/* Transaction Type */}
-                    <div className="flex items-center gap-4 mb-2">
-                      <span className="text-sm text-gray-600">
-                        <span className="font-medium">Type:</span> {
-                          transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
-                          transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
-                          transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
-                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
-                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
-                          transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
-                          transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
-                          'Booking'
-                        }
-                      </span>
-                      {transaction.method && (
-                        <span className="text-sm text-gray-600">
-                          <span className="font-medium">Method:</span> {transaction.method}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg font-bold text-gray-900">
-                        {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
-                      </span>
-                    </div>
-                    {transaction.notes && (
-                      <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
-                    )}
-                    <p className="text-xs text-gray-500">
-                      Recorded by: {getRecordedByName(transaction.recorded_by)}
-                    </p>
-                  </div>
+                <div className="space-y-3">
+                  {transactions
+                    .filter((t: any) => {
+                      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
+                      const method = String(t.method || '').toLowerCase().trim();
+                      // Exclude penalties recorded as automatic adjustments (e.g. exchange/cancellation adjustments)
+                      // Keep penalties where customer actually paid (upgrade, cancellation with actual payment)
+                      const isAutoAdjustmentPenalty = (
+                        (transactionType === 'exchange_penalty' ||
+                          transactionType === 'downgrade_penalty' ||
+                          transactionType === 'cancellation_penalty') &&
+                        method === 'adjustment'
+                      );
+                      return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                    })
+                    .map((transaction) => (
+                      <div
+                        key={transaction.id}
+                        className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${getTransactionColor(transaction.type)}`}>
+                                {transaction.type}
+                              </span>
+                              <span className="text-sm text-gray-600">
+                                {formatDate(transaction.created_at)}
+                              </span>
+                            </div>
+                            {/* Transaction Type */}
+                            <div className="flex items-center gap-4 mb-2">
+                              <span className="text-sm text-gray-600">
+                                <span className="font-medium">Type:</span> {
+                                  transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                                    transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                                      transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
+                                        transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                                            transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
+                                              transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                                                'Booking'
+                                }
+                              </span>
+                              {transaction.method && (
+                                <span className="text-sm text-gray-600">
+                                  <span className="font-medium">Method:</span> {transaction.method}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-lg font-bold text-gray-900">
+                                {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
+                              </span>
+                            </div>
+                            {transaction.notes && (
+                              <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
+                            )}
+                            <p className="text-xs text-gray-500">
+                              Recorded by: {getRecordedByName(transaction.recorded_by)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                 </div>
-              </div>
-            ))}
-              </div>
-            )}
+              )}
 
             {/* Date Change Charges - Displayed Separately */}
             {transactions.filter((t: any) => t.type === 'date_change_charge').length > 0 && (
@@ -890,202 +786,167 @@ export function PaymentManagement({
                   </div>
                 </div>
               ) : (
-              <div className="space-y-4">
-                {products.map((product: any) => {
-                  const productSecurityDeposit = typeof product.security_deposit === 'number'
-                    ? product.security_deposit
-                    : parseFloat(product.security_deposit || '0') || 0;
-                  
-                  const productHasRefund = hasProductRefund(product.id);
-                  const refundData = itemRefunds[product.id] || { selected: false, amount: '', notes: '' };
-                  const refundAmountNum = parseFloat(refundData.amount) || 0;
-                  const requiresNotes = refundData.selected && refundAmountNum > 0 && refundAmountNum < productSecurityDeposit;
-                  const hasError = refundData.selected && refundAmountNum > productSecurityDeposit;
+                <div className="space-y-4">
+                  {products.map((product: any) => {
+                    const productSecurityDeposit = typeof product.security_deposit === 'number'
+                      ? product.security_deposit
+                      : parseFloat(product.security_deposit || '0') || 0;
 
-                  return (
-                    <div
-                      key={product.id}
-                      className={`border-2 rounded-lg p-4 ${
-                        productHasRefund
+                    const productHasRefund = hasProductRefund(product.id);
+                    const refundData = itemRefunds[product.id] || { selected: false, amount: '', notes: '' };
+                    const refundAmountNum = parseFloat(refundData.amount) || 0;
+                    const requiresNotes = refundData.selected && refundAmountNum > 0 && refundAmountNum < productSecurityDeposit;
+                    const hasError = refundData.selected && refundAmountNum > productSecurityDeposit;
+
+                    return (
+                      <div
+                        key={product.id}
+                        className={`border-2 rounded-lg p-4 ${productHasRefund
                           ? 'border-gray-300 bg-gray-100 opacity-60'
                           : refundData.selected
-                          ? 'border-red-500 bg-red-50'
-                          : 'border-gray-200 bg-white'
-                      }`}
-                    >
-                      <div className="flex items-start gap-4">
-                        {/* Checkbox */}
-                        <div className="flex items-center pt-1">
-                          <input
-                            type="checkbox"
-                            checked={refundData.selected}
-                            disabled={productHasRefund}
-                            onChange={(e) => {
-                              if (!productHasRefund) {
-                                setItemRefunds({
-                                  ...itemRefunds,
-                                  [product.id]: {
-                                    selected: e.target.checked,
-                                    amount: e.target.checked ? String(productSecurityDeposit) : '',
-                                    notes: e.target.checked ? refundData.notes : '',
-                                  },
-                                });
-                              }
-                            }}
-                            className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                          />
-                        </div>
-
-                        {/* Product Info */}
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-2">
-                            <div>
-                              <h4 className={`font-semibold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
-                                {product.name}
-                                {productHasRefund && <span className="ml-2 text-xs text-green-600 font-normal">(Refund Completed)</span>}
-                              </h4>
-                              <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Code: {product.code}</p>
-                            </div>
-                            <div className="text-right">
-                              <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Security Deposit</p>
-                              <p className={`font-bold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
-                                ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
-                              </p>
-                            </div>
+                            ? 'border-red-500 bg-red-50'
+                            : 'border-gray-200 bg-white'
+                          }`}
+                      >
+                        <div className="flex items-start gap-4">
+                          {/* Checkbox */}
+                          <div className="flex items-center pt-1">
+                            <input
+                              type="checkbox"
+                              checked={refundData.selected}
+                              disabled={productHasRefund}
+                              onChange={(e) => {
+                                if (!productHasRefund) {
+                                  setItemRefunds({
+                                    ...itemRefunds,
+                                    [product.id]: {
+                                      selected: e.target.checked,
+                                      amount: e.target.checked ? String(productSecurityDeposit) : '',
+                                      notes: e.target.checked ? refundData.notes : '',
+                                    },
+                                  });
+                                }
+                              }}
+                              className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
                           </div>
 
-                          {productHasRefund && (
-                            <div className="mt-4 pt-4 border-t border-gray-200">
-                              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                                <p className="text-sm text-green-800 font-medium">
-                                  ✓ Refund already completed for this item
+                          {/* Product Info */}
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-2">
+                              <div>
+                                <h4 className={`font-semibold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
+                                  {product.name}
+                                  {productHasRefund && <span className="ml-2 text-xs text-green-600 font-normal">(Refund Completed)</span>}
+                                </h4>
+                                <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Code: {product.code}</p>
+                              </div>
+                              <div className="text-right">
+                                <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Security Deposit</p>
+                                <p className={`font-bold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
+                                  ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
                                 </p>
                               </div>
                             </div>
-                          )}
 
-                          {!productHasRefund && refundData.selected && (
-                            <div className="mt-4 space-y-4 pt-4 border-t border-gray-200">
-                              {/* Refund Amount Input */}
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1">
-                                  Refund Amount (₹) *
-                                </label>
-                                <input
-                                  type="number"
-                                  placeholder="Enter refund amount"
-                                  value={refundData.amount}
-                                  onChange={(e) => {
-                                    setItemRefunds({
-                                      ...itemRefunds,
-                                      [product.id]: {
-                                        ...refundData,
-                                        amount: e.target.value,
-                                      },
-                                    });
-                                  }}
-                                  max={productSecurityDeposit}
-                                  step="0.01"
-                                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                                    hasError ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                                  }`}
-                                />
-                                {hasError && (
-                                  <p className="text-red-600 text-sm mt-1">
-                                    Amount cannot exceed security deposit of ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
+                            {productHasRefund && (
+                              <div className="mt-4 pt-4 border-t border-gray-200">
+                                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                                  <p className="text-sm text-green-800 font-medium">
+                                    ✓ Refund already completed for this item
                                   </p>
-                                )}
-                                {refundData.selected && refundAmountNum > 0 && refundAmountNum <= productSecurityDeposit && (
-                                  <div className="flex justify-between text-xs mt-1">
-                                    <p className="text-gray-500">
-                                      Maximum: ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
+                                </div>
+                              </div>
+                            )}
+
+                            {!productHasRefund && refundData.selected && (
+                              <div className="mt-4 space-y-4 pt-4 border-t border-gray-200">
+                                {/* Refund Amount Input */}
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Refund Amount (₹) *
+                                  </label>
+                                  <input
+                                    type="number"
+                                    placeholder="Enter refund amount"
+                                    value={refundData.amount}
+                                    onChange={(e) => {
+                                      setItemRefunds({
+                                        ...itemRefunds,
+                                        [product.id]: {
+                                          ...refundData,
+                                          amount: e.target.value,
+                                        },
+                                      });
+                                    }}
+                                    max={productSecurityDeposit}
+                                    step="0.01"
+                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${hasError ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                                      }`}
+                                  />
+                                  {hasError && (
+                                    <p className="text-red-600 text-sm mt-1">
+                                      Amount cannot exceed security deposit of ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
                                     </p>
-                                    {refundAmountNum < productSecurityDeposit && (
-                                      <p className="text-orange-600 font-semibold">
-                                        Deduction: ₹{Math.floor(productSecurityDeposit - refundAmountNum).toLocaleString('en-IN')}
+                                  )}
+                                  {refundData.selected && refundAmountNum > 0 && refundAmountNum <= productSecurityDeposit && (
+                                    <div className="flex justify-between text-xs mt-1">
+                                      <p className="text-gray-500">
+                                        Maximum: ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
                                       </p>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
+                                      {refundAmountNum < productSecurityDeposit && (
+                                        <p className="text-orange-600 font-semibold">
+                                          Deduction: ₹{Math.floor(productSecurityDeposit - refundAmountNum).toLocaleString('en-IN')}
+                                        </p>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
 
-                              {/* Notes Input */}
-                              <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-1">
-                                  Narration / Notes {requiresNotes && <span className="text-red-600">*</span>}
-                                </label>
-                                {requiresNotes && (
-                                  <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg p-2 mb-2">
-                                    ⚠️ Refund amount is less than security deposit. Please provide narration explaining the reason.
-                                  </p>
-                                )}
-                                <textarea
-                                  value={refundData.notes}
-                                  onChange={(e) => {
-                                    setItemRefunds({
-                                      ...itemRefunds,
-                                      [product.id]: {
-                                        ...refundData,
-                                        notes: e.target.value,
-                                      },
-                                    });
-                                  }}
-                                  rows={3}
-                                  placeholder={requiresNotes ? "Required: Explain deduction reason (e.g., 'Stain on sleeve', 'Missing button')..." : "Optional: Add notes about this refund..."}
-                                  className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${
-                                    requiresNotes && !refundData.notes.trim() ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                                  }`}
-                                />
-                                {requiresNotes && !refundData.notes.trim() && (
-                                  <p className="text-red-600 text-sm mt-1">
-                                    Narration is required when refund is less than security deposit
-                                  </p>
-                                )}
+                                {/* Notes Input */}
+                                <div>
+                                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    Narration / Notes {requiresNotes && <span className="text-red-600">*</span>}
+                                  </label>
+                                  {requiresNotes && (
+                                    <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg p-2 mb-2">
+                                      ⚠️ Refund amount is less than security deposit. Please provide narration explaining the reason.
+                                    </p>
+                                  )}
+                                  <textarea
+                                    value={refundData.notes}
+                                    onChange={(e) => {
+                                      setItemRefunds({
+                                        ...itemRefunds,
+                                        [product.id]: {
+                                          ...refundData,
+                                          notes: e.target.value,
+                                        },
+                                      });
+                                    }}
+                                    rows={3}
+                                    placeholder={requiresNotes ? "Required: Explain deduction reason (e.g., 'Stain on sleeve', 'Missing button')..." : "Optional: Add notes about this refund..."}
+                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${requiresNotes && !refundData.notes.trim() ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                                      }`}
+                                  />
+                                  {requiresNotes && !refundData.notes.trim() && (
+                                    <p className="text-red-600 text-sm mt-1">
+                                      Narration is required when refund is less than security deposit
+                                    </p>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
-            {/* Overpayment Refund Section - uses backend summary */}
-            {(summary?.overpayment || 0) > 0 && (
-              <div className="mb-6">
-                <div className="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-6">
-                  <div className="flex items-start mb-4">
-                    <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                    </svg>
-                    <div className="flex-1">
-                      <h3 className="text-lg font-semibold text-yellow-900 mb-1">Overpayment Detected</h3>
-                      <p className="text-yellow-800 text-sm mb-3">
-                        Customer has paid <span className="font-bold">{formatCurrency(summary!.overpayment)}</span> extra. 
-                        This full overpayment amount will be automatically refunded along with product security deposits.
-                      </p>
-                      
-                      <div className="bg-white rounded-lg p-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Overpayment Refund Amount
-                          </label>
-                          <div className="w-full px-4 py-3 border-2 border-yellow-400 bg-yellow-50 rounded-lg font-bold text-xl text-yellow-900 text-center">
-                            {formatCurrency(summary!.overpayment)}
-                          </div>
-                          <p className="text-gray-600 text-xs mt-2 text-center">
-                            ✓ Full overpayment will be refunded and noted in payment history
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
+
 
             {/* Summary of selected refunds */}
             {products.length > 0 && Object.values(itemRefunds).some(r => r.selected) && (
@@ -1098,8 +959,8 @@ export function PaymentManagement({
                       const product = products.find(p => p.id === parseInt(productIdStr));
                       if (!product) return null;
                       const amount = parseFloat(data.amount) || 0;
-                      const security = typeof product.security_deposit === 'number' 
-                        ? product.security_deposit 
+                      const security = typeof product.security_deposit === 'number'
+                        ? product.security_deposit
                         : parseFloat(product.security_deposit || '0') || 0;
                       const deduction = security - amount;
                       return (
@@ -1213,13 +1074,12 @@ export function PaymentManagement({
               </Button>
               <Button
                 onClick={handleSubmit}
-                className={`flex-1 text-white ${
-                  transactionType === 'payment'
-                    ? 'bg-green-600 hover:bg-green-700'
-                    : transactionType === 'refund'
+                className={`flex-1 text-white ${transactionType === 'payment'
+                  ? 'bg-green-600 hover:bg-green-700'
+                  : transactionType === 'refund'
                     ? 'bg-red-600 hover:bg-red-700'
                     : 'bg-blue-600 hover:bg-blue-700'
-                }`}
+                  }`}
               >
                 Confirm
               </Button>
@@ -1228,95 +1088,7 @@ export function PaymentManagement({
         </div>
       ) : null}
 
-      {/* Overpayment Warning Modal */}
-      {showOverpaymentWarning && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60] p-4">
-          <div className="bg-white rounded-lg max-w-lg w-full overflow-hidden shadow-2xl">
-            {/* Header */}
-            <div className="bg-gradient-to-r from-orange-500 to-red-500 px-6 py-4">
-              <div className="flex items-center text-white">
-                <svg className="w-8 h-8 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-                <h3 className="text-xl font-bold">⚠️ Overpayment Warning</h3>
-              </div>
-            </div>
 
-            {/* Content */}
-            <div className="p-6">
-              <p className="text-gray-700 mb-6 text-lg">
-                This payment will result in an <strong className="text-red-600">overpayment</strong>. Has the customer agreed to pay extra?
-              </p>
-
-              {/* Payment Breakdown */}
-              <div className="bg-gradient-to-br from-orange-50 to-red-50 border-2 border-orange-200 rounded-lg p-4 mb-6">
-                <h4 className="font-bold text-gray-900 mb-3 text-center">Payment Breakdown</h4>
-                <div className="space-y-2">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-700">Total Required:</span>
-                    <span className="font-bold text-gray-900">{formatCurrency(overpaymentData.totalRequired)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-gray-700">Already Paid:</span>
-                    <span className="font-bold text-green-600">{formatCurrency(overpaymentData.currentPaid)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm border-t border-orange-200 pt-2">
-                    <span className="text-gray-700">Remaining Due:</span>
-                    <span className="font-bold text-blue-600">{formatCurrency(Math.max(0, overpaymentData.totalRequired - overpaymentData.currentPaid))}</span>
-                  </div>
-                  <div className="flex justify-between text-sm bg-yellow-100 -mx-2 px-2 py-2 rounded">
-                    <span className="text-gray-700 font-semibold">Payment Amount:</span>
-                    <span className="font-bold text-yellow-800">{formatCurrency(overpaymentData.paymentAmount)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm border-t-2 border-orange-300 pt-2">
-                    <span className="text-gray-700 font-semibold">New Total Paid:</span>
-                    <span className="font-bold text-gray-900">{formatCurrency(overpaymentData.newTotal)}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Overpayment Amount (Highlighted) */}
-              <div className="bg-red-100 border-2 border-red-400 rounded-lg p-4 mb-6 text-center">
-                <p className="text-sm text-red-700 mb-1">Overpayment Amount</p>
-                <p className="text-3xl font-bold text-red-600">
-                  +{formatCurrency(overpaymentData.overpayment)}
-                </p>
-              </div>
-
-              {/* Warning Message */}
-              <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-4 mb-6">
-                <div className="flex items-start">
-                  <svg className="w-5 h-5 text-yellow-600 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                  <div>
-                    <p className="text-sm text-yellow-800 font-semibold">Important:</p>
-                    <p className="text-sm text-yellow-700 mt-1">
-                      Overpayments should only be recorded if the customer has explicitly agreed to pay extra (e.g., for negotiations, late fees, or additional charges).
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex gap-3">
-                <Button
-                  onClick={cancelOverpayment}
-                  className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold"
-                >
-                  ❌ Cancel & Edit Amount
-                </Button>
-                <Button
-                  onClick={proceedWithPayment}
-                  className="flex-1 bg-gradient-to-r from-orange-600 to-red-600 hover:from-orange-700 hover:to-red-700 text-white font-semibold"
-                >
-                  ✅ Proceed with Overpayment
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

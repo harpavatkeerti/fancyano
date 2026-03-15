@@ -592,7 +592,8 @@ export default function OrderDetailsPage() {
                   if (!paymentSummary) return '0';
                   const totalRent = paymentSummary.charges.rent.due || 0;
                   const totalSecurity = paymentSummary.charges.security.due || 0;
-                  const total = totalRent + totalSecurity;
+                  const transportCharge = paymentSummary.charges.transport?.due || 0;
+                  const total = totalRent + totalSecurity + transportCharge;
                   return Math.floor(total).toLocaleString('en-IN');
                 })()}</span>
               </div>

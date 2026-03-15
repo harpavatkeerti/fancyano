@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { bookingCancellationApi } from '@/lib/api';
+import { bookingCancellationApi, paymentTransactionsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
 interface Product {
@@ -77,25 +77,26 @@ export function BookingCancellation({
   const [loading, setLoading] = useState(false);
   const [fetchingPreview, setFetchingPreview] = useState(false);
   const [fetchingSummary, setFetchingSummary] = useState(false);
-  
+
   // Product selection for partial cancellation
   const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
-  
+
   // Manual penalty editing
-  const [editingPenalties, setEditingPenalties] = useState<{[key: number]: string}>({});
-  
+  const [editingPenalties, setEditingPenalties] = useState<{ [key: number]: string }>({});
+
   // Extra refund fields
   const [extraRefund, setExtraRefund] = useState<string>('');
   const [extraRefundNote, setExtraRefundNote] = useState('');
-  
+
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust'>('refund');
   const [refundMethod, setRefundMethod] = useState('Cash');
-  
+  const [remainingDues, setRemainingDues] = useState(0);
+
   // Debounce timer ref
   const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canBeCancelled = bookingStatus !== 'cancelled' && bookingStatus !== 'completed';
+  const canBeCancelled = bookingStatus !== 'pending' && bookingStatus !== 'cancelled' && bookingStatus !== 'completed';
 
   // Build penalty overrides map from editing state
   const getPenaltyOverrides = useCallback((): { [key: number]: number } => {
@@ -142,13 +143,13 @@ export function BookingCancellation({
   // Debounced summary fetch — triggers whenever inputs change
   useEffect(() => {
     if (!preview || !showCancelModal) return;
-    
+
     if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
     summaryTimerRef.current = setTimeout(() => {
       const extra = parseFloat(extraRefund) || 0;
       fetchSummary(selectedProducts, getPenaltyOverrides(), extra);
     }, 300);
-    
+
     return () => {
       if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
     };
@@ -175,11 +176,20 @@ export function BookingCancellation({
       setFetchingPreview(true);
       const response = await bookingCancellationApi.preview(bookingId);
       setPreview(response.data);
-      
+
       // Initialize all products as selected if none selected yet
       if (selectedProducts.length === 0 && response.data.all_products.length > 0) {
         const allIds = response.data.all_products.map((p: Product) => p.product_id);
         setSelectedProducts(allIds);
+      }
+
+      // Fetch payment summary to know remaining dues
+      try {
+        const summaryResponse = await paymentTransactionsApi.getSummary(bookingId);
+        const balance = summaryResponse.data?.totals?.balance || 0;
+        setRemainingDues(Math.max(0, balance));
+      } catch (e) {
+        setRemainingDues(0);
       }
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
@@ -224,7 +234,7 @@ export function BookingCancellation({
       toast.error('Please select at least one product to cancel');
       return;
     }
-    
+
     if (!cancellationReason.trim()) {
       toast.error('Please provide a cancellation reason');
       return;
@@ -236,14 +246,14 @@ export function BookingCancellation({
   async function handleConfirmCancellation() {
     try {
       setLoading(true);
-      
+
       // Build penalty overrides for products that were manually edited
       const penaltyOverrides = getPenaltyOverrides();
       const cancellationPenalties = Object.entries(penaltyOverrides).map(([id, amount]) => ({
         booking_product_id: parseInt(id),
         penalty_amount: amount,
       }));
-      
+
       const result = await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
         cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
@@ -261,7 +271,7 @@ export function BookingCancellation({
       toast.success(
         (isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully') + settlementMsg
       );
-      
+
       setShowCancelModal(false);
       setShowConfirmation(false);
       setCancellationReason('');
@@ -273,6 +283,7 @@ export function BookingCancellation({
       setEditingPenalties({});
       setSettlementAction('refund');
       setRefundMethod('Cash');
+      setRemainingDues(0);
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
@@ -292,11 +303,10 @@ export function BookingCancellation({
         <button
           onClick={handleOpenCancelModal}
           disabled={!canBeCancelled}
-          className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-            canBeCancelled
-              ? 'bg-red-600 text-white hover:bg-red-700'
-              : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-          }`}
+          className={`px-4 py-2 rounded-lg font-medium transition-colors ${canBeCancelled
+            ? 'bg-red-600 text-white hover:bg-red-700'
+            : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+            }`}
         >
           Cancel Booking
         </button>
@@ -366,13 +376,12 @@ export function BookingCancellation({
                         const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
                         const calculatedPenalty = penaltyProduct ? penaltyProduct.penalty_amount : 0;
                         const currentPenalty = penaltyProduct ? getDisplayPenalty(penaltyProduct) : calculatedPenalty;
-                        
+
                         return (
                           <div
                             key={product.product_id}
-                            className={`border rounded-lg p-4 ${
-                              isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                            }`}
+                            className={`border rounded-lg p-4 ${isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
+                              }`}
                           >
                             <div className="flex items-start space-x-3">
                               <input
@@ -392,7 +401,7 @@ export function BookingCancellation({
                                     <p className="text-sm text-gray-600">Security: ₹{product.security_deposit.toLocaleString('en-IN')}</p>
                                   </div>
                                 </div>
-                                
+
                                 {isSelected && (
                                   <div className="mt-3 bg-white rounded p-3 border border-gray-200">
                                     <div className="flex items-center justify-between">
@@ -585,95 +594,67 @@ export function BookingCancellation({
               </div>
 
               {summary && (
-              <div className="bg-gray-50 rounded-lg p-4 mb-6">
-                <div className="text-sm space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Products:</span>
-                    <span className="font-medium">{summary.selected_count}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Cancelled Product Rent:</span>
-                    <span className="font-medium">₹{Math.floor(summary.selected_rent).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Cancelled Product Security:</span>
-                    <span className="font-medium">₹{Math.floor(summary.selected_security).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Cancellation Penalty ({preview?.penalty_percentage || 0}%):</span>
-                    <span className="font-medium text-red-600">₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500 pt-1">
-                    <span>Rent Paid (for cancelled products):</span>
-                    <span>₹{Math.floor(summary.selected_rent_paid).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>Security Paid (for cancelled products):</span>
-                    <span>₹{Math.floor(summary.selected_security_paid).toLocaleString('en-IN')}</span>
-                  </div>
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>Penalty Deduction:</span>
-                    <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
-                  </div>
-                  {summary.extra_refund > 0 && (
-                    <div className="flex justify-between text-xs text-gray-500">
-                      <span>Extra Refund:</span>
-                      <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
+                <div className="bg-gray-50 rounded-lg p-4 mb-6">
+                  <div className="text-sm space-y-2">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Products:</span>
+                      <span className="font-medium">{summary.selected_count}</span>
                     </div>
-                  )}
-                  <div className="flex justify-between pt-2 border-t border-gray-200">
-                    <span className="font-semibold">Refund Amount:</span>
-                    <span className="font-bold text-green-600">
-                      ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
-                    </span>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Cancelled Product Rent:</span>
+                      <span className="font-medium">₹{Math.floor(summary.selected_rent).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Cancelled Product Security:</span>
+                      <span className="font-medium">₹{Math.floor(summary.selected_security).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600">Cancellation Penalty ({preview?.penalty_percentage || 0}%):</span>
+                      <span className="font-medium text-red-600">₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500 pt-1">
+                      <span>Rent Paid (for cancelled products):</span>
+                      <span>₹{Math.floor(summary.selected_rent_paid).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Security Paid (for cancelled products):</span>
+                      <span>₹{Math.floor(summary.selected_security_paid).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500">
+                      <span>Penalty Deduction:</span>
+                      <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
+                    </div>
+                    {summary.extra_refund > 0 && (
+                      <div className="flex justify-between text-xs text-gray-500">
+                        <span>Extra Refund:</span>
+                        <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between pt-2 border-t border-gray-200">
+                      <span className="font-semibold">Refund Amount:</span>
+                      <span className="font-bold text-green-600">
+                        ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
+                      </span>
+                    </div>
                   </div>
                 </div>
-              </div>
               )}
 
-              {/* Settlement Action: Refund or Adjust */}
+              {/* Settlement Options — context-aware based on remaining dues */}
               {summary && summary.refund_amount > 0 && (
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
                   <h4 className="font-semibold text-green-900 mb-3">
                     How would you like to handle the ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund?
                   </h4>
-                  <div className="space-y-3">
-                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
-                      <input
-                        type="radio"
-                        name="settlement"
-                        value="refund"
-                        checked={settlementAction === 'refund'}
-                        onChange={() => setSettlementAction('refund')}
-                        className="mt-1 w-4 h-4 text-green-600"
-                      />
-                      <div>
-                        <p className="font-medium text-green-900">Refund to Customer</p>
-                        <p className="text-xs text-green-700">Return ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} directly to the customer</p>
-                      </div>
-                    </label>
-                    <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
-                      <input
-                        type="radio"
-                        name="settlement"
-                        value="adjust"
-                        checked={settlementAction === 'adjust'}
-                        onChange={() => setSettlementAction('adjust')}
-                        className="mt-1 w-4 h-4 text-green-600"
-                      />
-                      <div>
-                        <p className="font-medium text-green-900">Adjust Against Dues</p>
-                        <p className="text-xs text-green-700">Apply ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} against any outstanding dues on this booking</p>
-                      </div>
-                    </label>
-                  </div>
 
-                  {/* Refund Method selector (only shown when refund is selected) */}
-                  {settlementAction === 'refund' && (
-                    <div className="mt-3 pt-3 border-t border-green-200">
-                      <label className="block text-sm font-medium text-green-800 mb-2">
-                        Refund Method
-                      </label>
+                  {remainingDues <= 0 ? (
+                    // No dues — single option, just pick refund method
+                    <div className="p-3 rounded-lg border border-green-300 bg-green-100">
+                      <p className="font-medium text-green-900">Refund to Customer</p>
+                      <p className="text-xs text-green-700 mb-3">
+                        ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} will be returned to the customer (no outstanding dues)
+                      </p>
+                      <label className="block text-sm font-medium text-green-800 mb-1">Refund Method</label>
                       <select
                         value={refundMethod}
                         onChange={(e) => setRefundMethod(e.target.value)}
@@ -685,6 +666,66 @@ export function BookingCancellation({
                         <option value="Card">Card</option>
                         <option value="Cheque">Cheque</option>
                       </select>
+                    </div>
+                  ) : (
+                    // Has dues — two smart options
+                    <div className="space-y-3">
+                      <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
+                        <input
+                          type="radio"
+                          name="settlement"
+                          value="refund"
+                          checked={settlementAction === 'refund'}
+                          onChange={() => setSettlementAction('refund')}
+                          className="mt-1 w-4 h-4 text-green-600"
+                        />
+                        <div>
+                          <p className="font-medium text-green-900">Refund ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} to Customer</p>
+                          <p className="text-xs text-green-700">Return the full amount directly to the customer</p>
+                        </div>
+                      </label>
+                      <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
+                        <input
+                          type="radio"
+                          name="settlement"
+                          value="adjust"
+                          checked={settlementAction === 'adjust'}
+                          onChange={() => setSettlementAction('adjust')}
+                          className="mt-1 w-4 h-4 text-green-600"
+                        />
+                        <div>
+                          <p className="font-medium text-green-900">
+                            Adjust ₹{Math.floor(Math.min(summary.refund_amount, remainingDues)).toLocaleString('en-IN')} against dues
+                            {summary.refund_amount > remainingDues && (
+                              <span> + Refund ₹{Math.floor(summary.refund_amount - remainingDues).toLocaleString('en-IN')} to customer</span>
+                            )}
+                          </p>
+                          <p className="text-xs text-green-700">
+                            Clears ₹{Math.floor(Math.min(summary.refund_amount, remainingDues)).toLocaleString('en-IN')} of outstanding dues
+                            {summary.refund_amount > remainingDues
+                              ? `, remaining ₹${Math.floor(summary.refund_amount - remainingDues).toLocaleString('en-IN')} refunded`
+                              : ''}
+                          </p>
+                        </div>
+                      </label>
+
+                      {/* Refund method — shown for both options when there's money going back */}
+                      {(settlementAction === 'refund' || summary.refund_amount > remainingDues) && (
+                        <div className="mt-2 pt-3 border-t border-green-200">
+                          <label className="block text-sm font-medium text-green-800 mb-1">Refund Method</label>
+                          <select
+                            value={refundMethod}
+                            onChange={(e) => setRefundMethod(e.target.value)}
+                            className="w-full px-3 py-2 border border-green-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-green-500"
+                          >
+                            <option value="Cash">Cash</option>
+                            <option value="UPI">UPI</option>
+                            <option value="Bank Transfer">Bank Transfer</option>
+                            <option value="Card">Card</option>
+                            <option value="Cheque">Cheque</option>
+                          </select>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

@@ -64,21 +64,20 @@ export interface Booking {
   customer_email?: string;
   customer_address?: string;
   alternate_phone?: string;
-  
+
   // Booking lifecycle
   status: 'pending' | 'confirmed' | 'in_progress' | 'partially_completed' | 'completed' | 'cancelled';
   booking_date: string;
   booked_from: string;
   booked_to: string;
-  
+
   // Transport (booking-level)
   transport_charge: number;
   transport_paid: number;
-  
+
   // Financial
   final_discount: number;
-  overpayment: number;
-  
+
   // Other
   special_requirements?: string;
   created_by?: string;
@@ -93,10 +92,10 @@ export interface Booking {
     inseam?: string;
     notes?: string;
   };
-  
+
   // Products (can be array of IDs or full objects)
   products?: BookingProduct[];
-  
+
   created_at: string;
   updated_at: string;
 }
@@ -152,7 +151,6 @@ export interface PaymentSummary {
     total_paid: number;
     balance: number;
   };
-  overpayment: number;
   final_discount: number;
 }
 

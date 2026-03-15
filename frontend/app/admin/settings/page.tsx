@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { settingsApi } from '@/lib/settingsApi';
 import { policiesApi } from '@/lib/api';
 import { Button, Input } from '@/components/common';
@@ -20,6 +20,7 @@ interface SalesmanPermissions {
   cancellation_allowed: boolean;
   exchange_allowed: boolean;
   update_payment_methods: boolean;
+  discount_allowed: boolean;
 }
 
 export default function SettingsPage() {
@@ -27,28 +28,35 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingPolicyType, setEditingPolicyType] = useState<'exchange' | 'cancellation' | null>(null);
-  
+
   // Policy tiers from rental_policies table
   const [exchangeTiers, setExchangeTiers] = useState<PolicyTier[]>([]);
   const [cancellationTiers, setCancellationTiers] = useState<PolicyTier[]>([]);
-  
+
   // Modal state for editing
   const [modalPenalties, setModalPenalties] = useState<number[]>([10, 10, 20, 50]);
   const [modalDays, setModalDays] = useState<number[]>([3, 5, 7, -1]);
-  
+
   const [salesmanPermissions, setSalesmanPermissions] = useState<SalesmanPermissions>({
     rental_price_update: true,
     cancellation_allowed: false,
     exchange_allowed: false,
     update_payment_methods: false,
+    discount_allowed: false,
   });
-  
+
   const [lateCharges, setLateCharges] = useState<string>('');
   const [exchangeCharges, setExchangeCharges] = useState<string>('');
-  
+
   // Late fee policy (from rental_policies table)
   const [lateFeePolicy, setLateFeePolicy] = useState<any>(null);
   const [lateFeeValue, setLateFeeValue] = useState<string>('200');
+
+  // Payment QR Codes (dual)
+  const [rentQrCode, setRentQrCode] = useState<string>('');
+  const [securityQrCode, setSecurityQrCode] = useState<string>('');
+  const rentQrFileInputRef = useRef<HTMLInputElement>(null);
+  const securityQrFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetchSettings();
@@ -90,7 +98,7 @@ export default function SettingsPage() {
   async function fetchSettings() {
     try {
       setLoading(true);
-      
+
       // Fetch exchange penalty policies from rental_policies table
       try {
         const exchangeResponse = await policiesApi.getAll('exchange_penalty');
@@ -141,6 +149,16 @@ export default function SettingsPage() {
         console.log('Exchange charges not found');
       }
 
+      // Fetch payment QR codes (rent + security)
+      try {
+        const rentQr = await settingsApi.getByKey('payment_qr_rent');
+        if (rentQr.data?.setting_value) setRentQrCode(rentQr.data.setting_value);
+      } catch (error) { console.log('Rent QR not found'); }
+      try {
+        const secQr = await settingsApi.getByKey('payment_qr_security');
+        if (secQr.data?.setting_value) setSecurityQrCode(secQr.data.setting_value);
+      } catch (error) { console.log('Security QR not found'); }
+
       // Fetch late fee policy from rental_policies table
       try {
         const policiesResponse = await policiesApi.getAll('late_fee');
@@ -170,7 +188,7 @@ export default function SettingsPage() {
   ): Promise<PolicyTier[]> {
     const prefix = policyType === 'exchange_penalty' ? 'exchange' : 'cancellation';
     const label = policyType === 'exchange_penalty' ? 'Exchange' : 'Cancellation';
-    
+
     // Build tier definitions from the modal values
     // days = [3, 5, 7, -1], percentages = [10, 10, 20, 50]
     // → tier 0: 0..3, tier 1: 4..5, tier 2: 6..7, tier 3: 8..null
@@ -182,16 +200,16 @@ export default function SettingsPage() {
       days_from_booking_min: number;
       days_from_booking_max: number | null;
     }> = [];
-    
+
     let prevMax = -1;
     for (let i = 0; i < days.length; i++) {
       const min = prevMax + 1;
       const max = days[i] === -1 ? null : days[i];
       const tierKey = `${prefix}_penalty_tier_${i}`;
-      const tierName = max !== null 
-        ? `${label} Penalty (${min}-${max} days)` 
+      const tierName = max !== null
+        ? `${label} Penalty (${min}-${max} days)`
         : `${label} Penalty (After ${min - 1} days)`;
-      
+
       tiers.push({
         policy_key: tierKey,
         policy_name: tierName,
@@ -200,13 +218,13 @@ export default function SettingsPage() {
         days_from_booking_min: min,
         days_from_booking_max: max,
       });
-      
+
       prevMax = max !== null ? max : 999999;
     }
 
     // Batch replace: deactivates old policies, creates new ones in a transaction
     const response = await policiesApi.batchReplace(policyType, tiers);
-    
+
     return (response.data?.policies || []).map((p: any) => ({
       id: p.id,
       policy_key: p.policy_key,
@@ -242,6 +260,20 @@ export default function SettingsPage() {
           type: 'number',
           category: 'charges',
           description: 'Exchange charges',
+        },
+        {
+          key: 'payment_qr_rent',
+          value: rentQrCode,
+          type: 'string',
+          category: 'payment',
+          description: 'UPI QR Code for Rent Collection (base64)',
+        },
+        {
+          key: 'payment_qr_security',
+          value: securityQrCode,
+          type: 'string',
+          category: 'payment',
+          description: 'UPI QR Code for Security Deposit Collection (base64)',
         },
       ];
 
@@ -312,7 +344,7 @@ export default function SettingsPage() {
     setEditingPolicyType(type);
     const tiers = type === 'exchange' ? exchangeTiers : cancellationTiers;
     const { days, percentages } = tiersToDisplay(tiers);
-    
+
     setModalPenalties([...percentages]);
     setModalDays([...days]);
     setShowEditModal(true);
@@ -328,19 +360,19 @@ export default function SettingsPage() {
 
     try {
       const policyType = editingPolicyType === 'exchange' ? 'exchange_penalty' : 'cancellation_penalty';
-      
+
       const savedTiers = await savePolicyTiers(
         policyType as 'exchange_penalty' | 'cancellation_penalty',
         modalDays,
         modalPenalties
       );
-      
+
       if (editingPolicyType === 'exchange') {
         setExchangeTiers(savedTiers);
       } else {
         setCancellationTiers(savedTiers);
       }
-      
+
       toast.success('Policy saved successfully!');
       closeEditModal();
     } catch (error: any) {
@@ -383,7 +415,7 @@ export default function SettingsPage() {
             EDIT
           </button>
         </div>
-        
+
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
@@ -397,15 +429,15 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-          
+
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
             <div className="grid grid-cols-4 gap-6">
               {exchangeDisplay.days.map((day, i) => (
                 <div key={i} className="text-center">
                   <p className="text-xs text-gray-600 mb-2">
-                    {day === -1 
-                      ? `After ${exchangeDisplay.days[i - 1] || 7} days` 
+                    {day === -1
+                      ? `After ${exchangeDisplay.days[i - 1] || 7} days`
                       : `Within ${day} days`}
                   </p>
                   <p className="text-base font-semibold text-gray-900">{exchangeDisplay.percentages[i]}%</p>
@@ -427,7 +459,7 @@ export default function SettingsPage() {
             EDIT
           </button>
         </div>
-        
+
         <div className="space-y-5">
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Penalty:</p>
@@ -441,15 +473,15 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-          
+
           <div>
             <p className="text-sm font-medium text-gray-700 mb-3">Within Days (From Date of Booking):</p>
             <div className="grid grid-cols-4 gap-6">
               {cancellationDisplay.days.map((day, i) => (
                 <div key={i} className="text-center">
                   <p className="text-xs text-gray-600 mb-2">
-                    {day === -1 
-                      ? `After ${cancellationDisplay.days[i - 1] || 7} days` 
+                    {day === -1
+                      ? `After ${cancellationDisplay.days[i - 1] || 7} days`
                       : `Within ${day} days`}
                   </p>
                   <p className="text-base font-semibold text-gray-900">{cancellationDisplay.percentages[i]}%</p>
@@ -469,14 +501,12 @@ export default function SettingsPage() {
             <span className="text-sm font-medium text-gray-700">Rental price update</span>
             <button
               onClick={() => togglePermission('rental_price_update')}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
-                salesmanPermissions.rental_price_update ? 'bg-red-600' : 'bg-gray-300'
-              }`}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.rental_price_update ? 'bg-red-600' : 'bg-gray-300'
+                }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  salesmanPermissions.rental_price_update ? 'translate-x-6' : 'translate-x-1'
-                }`}
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.rental_price_update ? 'translate-x-6' : 'translate-x-1'
+                  }`}
               />
             </button>
           </div>
@@ -486,14 +516,12 @@ export default function SettingsPage() {
             <span className="text-sm font-medium text-gray-700">Cancellation Allowed</span>
             <button
               onClick={() => togglePermission('cancellation_allowed')}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
-                salesmanPermissions.cancellation_allowed ? 'bg-red-600' : 'bg-gray-300'
-              }`}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.cancellation_allowed ? 'bg-red-600' : 'bg-gray-300'
+                }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  salesmanPermissions.cancellation_allowed ? 'translate-x-6' : 'translate-x-1'
-                }`}
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.cancellation_allowed ? 'translate-x-6' : 'translate-x-1'
+                  }`}
               />
             </button>
           </div>
@@ -503,31 +531,42 @@ export default function SettingsPage() {
             <span className="text-sm font-medium text-gray-700">Exchange Allowed</span>
             <button
               onClick={() => togglePermission('exchange_allowed')}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
-                salesmanPermissions.exchange_allowed ? 'bg-red-600' : 'bg-gray-300'
-              }`}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.exchange_allowed ? 'bg-red-600' : 'bg-gray-300'
+                }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  salesmanPermissions.exchange_allowed ? 'translate-x-6' : 'translate-x-1'
-                }`}
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.exchange_allowed ? 'translate-x-6' : 'translate-x-1'
+                  }`}
               />
             </button>
           </div>
 
           {/* Update Payment Methods */}
-          <div className="flex items-center justify-between py-3">
+          <div className="flex items-center justify-between py-3 border-b border-gray-200">
             <span className="text-sm font-medium text-gray-700">Update Payment Methods</span>
             <button
               onClick={() => togglePermission('update_payment_methods')}
-              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${
-                salesmanPermissions.update_payment_methods ? 'bg-red-600' : 'bg-gray-300'
-              }`}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.update_payment_methods ? 'bg-red-600' : 'bg-gray-300'
+                }`}
             >
               <span
-                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                  salesmanPermissions.update_payment_methods ? 'translate-x-6' : 'translate-x-1'
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.update_payment_methods ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+              />
+            </button>
+          </div>
+
+          {/* Discount Allowed */}
+          <div className="flex items-center justify-between py-3">
+            <span className="text-sm font-medium text-gray-700">Discount Allowed</span>
+            <button
+              onClick={() => togglePermission('discount_allowed')}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.discount_allowed ? 'bg-red-600' : 'bg-gray-300'
                 }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.discount_allowed ? 'translate-x-6' : 'translate-x-1'
+                  }`}
               />
             </button>
           </div>
@@ -583,7 +622,7 @@ export default function SettingsPage() {
             Configure the late fee charged per day when products are returned after their scheduled return date
           </p>
         </div>
-        
+
         <div className="space-y-5">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -605,12 +644,92 @@ export default function SettingsPage() {
               Fixed amount charged per day for late returns (e.g., ₹200/day). This fee is automatically calculated and applied by the system when products are returned after their scheduled date.
             </p>
           </div>
-          
+
           <div className="bg-blue-50 border-l-4 border-blue-400 p-3">
             <p className="text-xs text-blue-800">
               <strong>Note:</strong> Late fees are automatically calculated by the backend when products are returned. The system multiplies this daily rate by the number of days delayed.
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Payment QR Codes Section */}
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <div className="mb-5">
+          <h2 className="text-xl font-semibold text-gray-800">Payment QR Codes</h2>
+          <p className="text-sm text-gray-600 mt-1">
+            Upload separate UPI QR codes for rent collection and security deposit collection. These will be shown on all portals when collecting payments.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Rent Collection QR */}
+          <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30">
+            <h3 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
+              📋 Rent Collection QR
+            </h3>
+            <div className="flex flex-col items-center">
+              {rentQrCode ? (
+                <div className="relative group mb-3">
+                  <img src={rentQrCode} alt="Rent QR" className="w-40 h-40 object-contain border-2 border-blue-200 rounded-lg bg-white p-2" />
+                  <button onClick={() => setRentQrCode('')} className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700" title="Remove">×</button>
+                </div>
+              ) : (
+                <div className="w-40 h-40 border-2 border-dashed border-blue-300 rounded-lg flex flex-col items-center justify-center text-blue-400 bg-white mb-3">
+                  <svg className="w-10 h-10 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                  <span className="text-xs">No QR uploaded</span>
+                </div>
+              )}
+              <input ref={rentQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (file.size > 5 * 1024 * 1024) { toast.error('Image too large (max 5MB).'); return; }
+                const reader = new FileReader();
+                reader.onload = (ev) => { setRentQrCode(ev.target?.result as string); toast.success('Rent QR loaded! Click Save Changes to apply.'); };
+                reader.readAsDataURL(file);
+              }} />
+              <button onClick={() => rentQrFileInputRef.current?.click()} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors">
+                📷 {rentQrCode ? 'Change' : 'Upload'}
+              </button>
+            </div>
+          </div>
+
+          {/* Security Deposit QR */}
+          <div className="border border-green-200 rounded-lg p-4 bg-green-50/30">
+            <h3 className="text-sm font-semibold text-green-800 mb-3 flex items-center gap-2">
+              🔒 Security Deposit QR
+            </h3>
+            <div className="flex flex-col items-center">
+              {securityQrCode ? (
+                <div className="relative group mb-3">
+                  <img src={securityQrCode} alt="Security QR" className="w-40 h-40 object-contain border-2 border-green-200 rounded-lg bg-white p-2" />
+                  <button onClick={() => setSecurityQrCode('')} className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700" title="Remove">×</button>
+                </div>
+              ) : (
+                <div className="w-40 h-40 border-2 border-dashed border-green-300 rounded-lg flex flex-col items-center justify-center text-green-400 bg-white mb-3">
+                  <svg className="w-10 h-10 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                  <span className="text-xs">No QR uploaded</span>
+                </div>
+              )}
+              <input ref={securityQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (!file) return;
+                if (file.size > 5 * 1024 * 1024) { toast.error('Image too large (max 5MB).'); return; }
+                const reader = new FileReader();
+                reader.onload = (ev) => { setSecurityQrCode(ev.target?.result as string); toast.success('Security QR loaded! Click Save Changes to apply.'); };
+                reader.readAsDataURL(file);
+              }} />
+              <button onClick={() => securityQrFileInputRef.current?.click()} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors">
+                📷 {securityQrCode ? 'Change' : 'Upload'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-amber-50 border-l-4 border-amber-400 p-3 mt-4">
+          <p className="text-xs text-amber-800">
+            <strong>Note:</strong> After uploading, click <strong>SAVE CHANGES</strong> below to apply. Rent QR is shown for rent/penalty payments, Security QR is shown for security deposit collection.
+          </p>
         </div>
       </div>
 

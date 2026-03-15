@@ -9,7 +9,7 @@ describe('ChargeAccountingService', () => {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      
+
       // Create test booking
       const bookingResult = await client.query(
         `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status, transport_charge, transport_paid)
@@ -17,7 +17,7 @@ describe('ChargeAccountingService', () => {
          RETURNING id`
       );
       testBookingId = bookingResult.rows[0].id;
-      
+
       // Create test product
       const productResult = await client.query(
         `INSERT INTO products (name, code, category, size, rent, security_deposit)
@@ -25,7 +25,7 @@ describe('ChargeAccountingService', () => {
          RETURNING id`
       );
       const productId = productResult.rows[0].id;
-      
+
       // Create booking_products
       const bp1 = await client.query(
         `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
@@ -34,7 +34,7 @@ describe('ChargeAccountingService', () => {
         [testBookingId, productId]
       );
       testProductIds.push(bp1.rows[0].id);
-      
+
       const bp2 = await client.query(
         `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
          VALUES ($1, $2, 1, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 1500, 1000, 1500)
@@ -42,11 +42,11 @@ describe('ChargeAccountingService', () => {
         [testBookingId, productId]
       );
       testProductIds.push(bp2.rows[0].id);
-      
+
       // Initialize charges
       await chargeAccountingService.initializeProductCharges(testProductIds[0], 2500, 1000, client);
       await chargeAccountingService.initializeProductCharges(testProductIds[1], 1500, 1000, client);
-      
+
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK');
@@ -77,7 +77,7 @@ describe('ChargeAccountingService', () => {
     // Test: Returns a complete financial summary with all charges, payments, and totals for a booking
     test('should return complete payment summary', async () => {
       const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
-      
+
       expect(summary.booking_id).toBe(testBookingId);
       expect(summary.products).toHaveLength(2);
       expect(summary.charges.rent.due).toBe(4000); // 2500 + 1500
@@ -95,9 +95,9 @@ describe('ChargeAccountingService', () => {
         'UPDATE booking_products SET status = $1 WHERE id = $2',
         ['exchanged', testProductIds[0]]
       );
-      
+
       const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
-      
+
       // Should only include second product (1500 rent + 1000 security)
       expect(summary.charges.rent.due).toBe(1500);
       expect(summary.charges.security.due).toBe(1000);
@@ -109,7 +109,7 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Pay some rent on first product, then cancel it
         await client.query(
           'UPDATE product_charges SET paid_amount = 1000 WHERE booking_product_id = $1 AND charge_type = $2',
@@ -119,11 +119,11 @@ describe('ChargeAccountingService', () => {
           'UPDATE booking_products SET status = $1 WHERE id = $2',
           ['cancelled', testProductIds[0]]
         );
-        
+
         await client.query('COMMIT');
-        
+
         const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
-        
+
         // Paid amount should include payment from cancelled product
         expect(summary.charges.rent.paid).toBe(1000);
         // But due should not include cancelled product
@@ -144,18 +144,18 @@ describe('ChargeAccountingService', () => {
     // Test: Applies payment to rent charges first (Priority 1) before any other charge category
     test('should apply payment to rent first (priority 1)', async () => {
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        1000, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        1000,
+        'Cash',
+        'test-user',
         'Partial payment'
       );
-      
+
       expect(result.total_applied).toBe(1000);
       expect(result.breakdown).toHaveLength(1);
       expect(result.breakdown[0].category).toBe('rent');
       expect(result.breakdown[0].amount).toBe(1000);
-      
+
       // Verify rent charge updated
       const charges = await pool.query(
         'SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
@@ -168,19 +168,19 @@ describe('ChargeAccountingService', () => {
     test('should apply to transport after rent is paid (priority 2)', async () => {
       // Pay full rent (4000) + some transport (100)
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        4100, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        4100,
+        'Cash',
+        'test-user',
         'Payment'
       );
-      
+
       expect(result.breakdown).toHaveLength(3);
       expect(result.breakdown[0].category).toBe('rent'); // 2500
       expect(result.breakdown[1].category).toBe('rent'); // 1500
       expect(result.breakdown[2].category).toBe('transport'); // 100
       expect(result.breakdown[2].amount).toBe(100);
-      
+
       // Verify transport updated
       const booking = await pool.query(
         'SELECT transport_paid FROM bookings WHERE id = $1',
@@ -194,31 +194,31 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add exchange penalty
         await chargeAccountingService.addCharge(
-          testProductIds[0], 
-          'exchange_penalty', 
-          500, 
-          'test_policy', 
+          testProductIds[0],
+          'exchange_penalty',
+          500,
+          'test_policy',
           'Test penalty',
           client
         );
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
       }
-      
+
       // Pay rent (4000) + transport (100) + partial penalty (200)
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        4300, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        4300,
+        'Cash',
+        'test-user',
         'Payment'
       );
-      
+
       // Should have applied to rent, transport, then penalty
       const penaltyApp = result.breakdown.find(a => a.category === 'penalties');
       expect(penaltyApp).toBeDefined();
@@ -230,31 +230,31 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add late fee
         await chargeAccountingService.addCharge(
-          testProductIds[0], 
-          'late_fee', 
-          300, 
-          'late_policy', 
+          testProductIds[0],
+          'late_fee',
+          300,
+          'late_policy',
           'Late return',
           client
         );
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
       }
-      
+
       // Pay everything up to fees: rent (4000) + transport (100) + partial fee (150)
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        4250, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        4250,
+        'Cash',
+        'test-user',
         'Payment'
       );
-      
+
       const feeApp = result.breakdown.find(a => a.category === 'fees');
       expect(feeApp).toBeDefined();
       expect(feeApp.amount).toBe(150);
@@ -264,40 +264,30 @@ describe('ChargeAccountingService', () => {
     test('should apply to security after fees (priority 5)', async () => {
       // Pay rent (4000) + transport (100) + partial security (500)
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        4600, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        4600,
+        'Cash',
+        'test-user',
         'Payment'
       );
-      
+
       const securityApp = result.breakdown.find(a => a.category === 'security');
       expect(securityApp).toBeDefined();
       expect(securityApp.amount).toBe(500);
     });
 
-    // Test: After all charges are fully paid, records any excess as overpayment (Priority 6)
-    test('should create overpayment after all charges paid (priority 6)', async () => {
-      // Pay more than total due: rent (4000) + transport (100) + security (2000) + extra (500)
-      const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        6600, 
-        'Cash', 
-        'test-user', 
-        'Payment with excess'
-      );
-      
-      const overpaymentApp = result.breakdown.find(a => a.category === 'overpayment');
-      expect(overpaymentApp).toBeDefined();
-      expect(overpaymentApp.amount).toBe(500);
-      expect(result.residual_amount).toBe(500);
-      
-      // Verify overpayment in booking
-      const booking = await pool.query(
-        'SELECT overpayment FROM bookings WHERE id = $1',
-        [testBookingId]
-      );
-      expect(booking.rows[0].overpayment).toBe(500);
+    // Test: Payment exceeding outstanding balance is rejected (hard cap)
+    test('should reject payment exceeding outstanding balance', async () => {
+      // Try to pay more than total due: rent (4000) + transport (100) + security (2000) = 6100
+      await expect(
+        chargeAccountingService.applyPayment(
+          testBookingId,
+          6600, // 500 more than total due
+          'Cash',
+          'test-user',
+          'Payment with excess'
+        )
+      ).rejects.toThrow('exceeds outstanding balance');
     });
 
     // Test: Verifies strict priority order - payment only goes to next priority after current is fully paid
@@ -305,28 +295,28 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add all charge types
         await chargeAccountingService.addCharge(testProductIds[0], 'exchange_penalty', 500, null, null, client);
         await chargeAccountingService.addCharge(testProductIds[0], 'late_fee', 300, null, null, client);
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
       }
-      
+
       // Apply exactly enough for rent + transport
       const result = await chargeAccountingService.applyPayment(
-        testBookingId, 
-        4100, 
-        'Cash', 
-        'test-user', 
+        testBookingId,
+        4100,
+        'Cash',
+        'test-user',
         'Payment'
       );
-      
+
       // Should have applied to rent and transport only
       expect(result.breakdown.every(a => ['rent', 'transport'].includes(a.category))).toBe(true);
-      
+
       // Penalties and fees should be untouched
       const penalty = await pool.query(
         'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
@@ -342,7 +332,7 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Create new product
         const bp = await client.query(
           `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
@@ -351,21 +341,21 @@ describe('ChargeAccountingService', () => {
           [testBookingId]
         );
         const newProductId = bp.rows[0].id;
-        
+
         await chargeAccountingService.initializeProductCharges(newProductId, 3000, 1500, client);
-        
+
         const charges = await client.query(
           'SELECT * FROM product_charges WHERE booking_product_id = $1 ORDER BY charge_type',
           [newProductId]
         );
-        
+
         expect(charges.rows).toHaveLength(2);
         expect(charges.rows[0].charge_type).toBe('rent');
         expect(charges.rows[0].due_amount).toBe(3000);
         expect(charges.rows[0].paid_amount).toBe(0);
         expect(charges.rows[1].charge_type).toBe('security');
         expect(charges.rows[1].due_amount).toBe(1500);
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
@@ -379,7 +369,7 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         const charge = await chargeAccountingService.addCharge(
           testProductIds[0],
           'late_fee',
@@ -388,13 +378,13 @@ describe('ChargeAccountingService', () => {
           'Late by 1 day',
           client
         );
-        
+
         expect(charge.charge_type).toBe('late_fee');
         expect(charge.due_amount).toBe(200);
         expect(charge.paid_amount).toBe(0);
         expect(charge.policy_reference).toBe('late_policy_key');
         expect(charge.notes).toBe('Late by 1 day');
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
@@ -406,16 +396,16 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add first late fee
         await chargeAccountingService.addCharge(testProductIds[0], 'late_fee', 200, null, 'Day 1', client);
-        
+
         // Add second late fee (should increment)
         const charge = await chargeAccountingService.addCharge(testProductIds[0], 'late_fee', 200, null, 'Day 2', client);
-        
+
         expect(charge.due_amount).toBe(400); // 200 + 200
         expect(charge.notes).toBe('Day 2'); // Latest notes
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
@@ -439,7 +429,7 @@ describe('ChargeAccountingService', () => {
       expect(result.residual_amount).toBe(0);
       expect(result.breakdown).toBeDefined();
       expect(result.breakdown[0].category).toBe('rent'); // First priority
-      
+
       // Verify payment transaction created
       const transaction = await pool.query(
         'SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = $2',
@@ -449,25 +439,18 @@ describe('ChargeAccountingService', () => {
       expect(parseInt(transaction.rows[0].amount)).toBe(2000);
     });
 
-    // Test: Returns residual amount when adjustment exceeds total due
-    test('should return residual when adjustment exceeds total due', async () => {
-      const result = await chargeAccountingService.applyAdjustment(
-        testBookingId,
-        10000, // More than total due (6100)
-        'Adjustment',
-        'admin',
-        'Overpayment test'
-      );
-
-      expect(result.total_applied).toBe(6100);
-      expect(result.residual_amount).toBe(3900);
-      
-      // Verify overpayment recorded
-      const booking = await pool.query(
-        'SELECT overpayment FROM bookings WHERE id = $1',
-        [testBookingId]
-      );
-      expect(booking.rows[0].overpayment).toBe(3900);
+    // Test: Adjustment exceeding outstanding balance is rejected (hard cap)
+    test('should reject adjustment exceeding outstanding balance', async () => {
+      // Total due: rent (4000) + transport (100) + security (2000) = 6100
+      await expect(
+        chargeAccountingService.applyAdjustment(
+          testBookingId,
+          10000, // More than total due (6100)
+          'Adjustment',
+          'admin',
+          'Excess adjustment test'
+        )
+      ).rejects.toThrow('exceeds outstanding balance');
     });
 
     // Test: Applies adjustment to multiple charge types in correct priority
@@ -475,10 +458,10 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add additional charges
         await chargeAccountingService.addCharge(testProductIds[0], 'late_fee', 500, null, 'Late', client);
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
@@ -495,7 +478,7 @@ describe('ChargeAccountingService', () => {
 
       expect(result.total_applied).toBe(4300);
       expect(result.residual_amount).toBe(0);
-      
+
       // Should have rent, transport, and fees in breakdown
       const categories = result.breakdown.map(b => b.category);
       expect(categories).toContain('rent');
@@ -517,10 +500,10 @@ describe('ChargeAccountingService', () => {
         'SELECT * FROM booking_activity_log WHERE booking_id = $1 AND event_type = $2',
         [testBookingId, 'adjustment_applied']
       );
-      
+
       expect(activityLog.rows).toHaveLength(1);
       expect(activityLog.rows[0].performed_by).toBe('admin');
-      
+
       const details = activityLog.rows[0].details;
       expect(details.amount).toBe(1000);
       expect(details.payment_method).toBe('Adjustment');
@@ -550,12 +533,12 @@ describe('ChargeAccountingService', () => {
       const client = await pool.connect();
       try {
         await client.query('BEGIN');
-        
+
         // Add all types of charges
         await chargeAccountingService.addCharge(testProductIds[0], 'exchange_penalty', 300, null, 'Exchange', client);
         await chargeAccountingService.addCharge(testProductIds[0], 'late_fee', 200, null, 'Late', client);
         await chargeAccountingService.addCharge(testProductIds[0], 'damage_fee', 100, null, 'Damage', client);
-        
+
         await client.query('COMMIT');
       } finally {
         client.release();
@@ -572,7 +555,7 @@ describe('ChargeAccountingService', () => {
 
       expect(result.total_applied).toBe(6700);
       expect(result.residual_amount).toBe(0);
-      
+
       // Verify all charges are paid
       const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
       expect(summary.totals.balance).toBe(0);
@@ -592,12 +575,122 @@ describe('ChargeAccountingService', () => {
         'SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = $2 ORDER BY id DESC LIMIT 1',
         [testBookingId, 'adjustment']
       );
-      
+
       expect(transaction.rows).toHaveLength(1);
       expect(transaction.rows[0].type).toBe('adjustment');
       expect(transaction.rows[0].method).toBe('Cash Adjustment');
       expect(transaction.rows[0].recorded_by).toBe('manager');
       expect(transaction.rows[0].notes).toContain('Manager approval');
+    });
+  });
+
+  describe('recordRefund', () => {
+    // Test: Records a refund transaction with type 'refund' (not 'payment')
+    test('should record refund transaction with correct type', async () => {
+      const result = await chargeAccountingService.recordRefund(
+        testBookingId,
+        500,
+        'Cash',
+        'admin',
+        'Security refund'
+      );
+
+      expect(result.booking_id).toBe(testBookingId);
+      expect(result.amount).toBe(500);
+      expect(result.method).toBe('Cash');
+      expect(result.recorded_by).toBe('admin');
+
+      // Verify transaction stored as 'refund' type
+      const transaction = await pool.query(
+        'SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = $2',
+        [testBookingId, 'refund']
+      );
+      expect(transaction.rows).toHaveLength(1);
+      expect(parseInt(transaction.rows[0].amount)).toBe(500);
+      expect(transaction.rows[0].notes).toBe('Security refund');
+    });
+
+    // Test: Refund does NOT apply to charges — paid_amount must remain unchanged
+    test('should not modify any charge paid_amount', async () => {
+      // First apply a payment to cover rent
+      await chargeAccountingService.applyPayment(
+        testBookingId, 2500, 'Cash', 'test-user', 'Partial payment'
+      );
+
+      // Get charge state before refund
+      const chargesBefore = await pool.query(
+        'SELECT charge_type, paid_amount FROM product_charges WHERE booking_product_id = ANY($1) ORDER BY charge_type',
+        [testProductIds]
+      );
+
+      // Record a refund
+      await chargeAccountingService.recordRefund(
+        testBookingId, 1000, 'Cash', 'admin', 'Test refund'
+      );
+
+      // Charges must be identical
+      const chargesAfter = await pool.query(
+        'SELECT charge_type, paid_amount FROM product_charges WHERE booking_product_id = ANY($1) ORDER BY charge_type',
+        [testProductIds]
+      );
+
+      expect(chargesAfter.rows).toEqual(chargesBefore.rows);
+    });
+
+    // Test: Refund does NOT affect charge paid_amounts
+    test('should not affect charge paid_amounts when refund is issued', async () => {
+      await chargeAccountingService.applyPayment(
+        testBookingId, 6100, 'Cash', 'test-user', 'Full payment'
+      );
+
+      const summaryBefore = await chargeAccountingService.getPaymentSummary(testBookingId);
+      expect(summaryBefore.totals.balance).toBe(0);
+
+      await chargeAccountingService.recordRefund(
+        testBookingId, 2000, 'Cash', 'admin', 'Security refund'
+      );
+
+      // Balance field comes from product_charges, not payment_transactions — unchanged by refund
+      const summaryAfter = await chargeAccountingService.getPaymentSummary(testBookingId);
+      expect(summaryAfter.totals.balance).toBe(0);
+    });
+
+    // Test: Creates activity log entry with refund details
+    test('should create activity log entry', async () => {
+      await chargeAccountingService.recordRefund(
+        testBookingId, 1000, 'UPI', 'admin', 'Refund notes'
+      );
+
+      const activityLog = await pool.query(
+        'SELECT * FROM booking_activity_log WHERE booking_id = $1 AND event_type = $2',
+        [testBookingId, 'refund_issued']
+      );
+
+      expect(activityLog.rows).toHaveLength(1);
+      expect(activityLog.rows[0].performed_by).toBe('admin');
+
+      const details = activityLog.rows[0].details;
+      expect(details.amount).toBe(1000);
+      expect(details.method).toBe('UPI');
+      expect(details.notes).toBe('Refund notes');
+    });
+
+    // Test: Throws error for non-existent booking
+    test('should throw error for non-existent booking', async () => {
+      await expect(
+        chargeAccountingService.recordRefund(999999, 500, 'Cash', 'admin', 'Test')
+      ).rejects.toThrow('Booking not found');
+    });
+
+    // Test: Throws error for invalid amount
+    test('should throw error for zero or negative amount', async () => {
+      await expect(
+        chargeAccountingService.recordRefund(testBookingId, 0, 'Cash', 'admin', 'Test')
+      ).rejects.toThrow('Refund amount must be greater than 0');
+
+      await expect(
+        chargeAccountingService.recordRefund(testBookingId, -100, 'Cash', 'admin', 'Test')
+      ).rejects.toThrow('Refund amount must be greater than 0');
     });
   });
 });

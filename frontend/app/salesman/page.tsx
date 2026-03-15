@@ -9,6 +9,7 @@ import { getImageUrl } from '@/lib/imageHelper';
 export default function SalesmanHome() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const [genderFilter, setGenderFilter] = useState<'Male' | 'Female'>('Male');
 
   useEffect(() => {
     fetchProducts();
@@ -25,11 +26,16 @@ export default function SalesmanHome() {
     }
   }
 
-  // Get newly added products (last 4)
-  const newlyAdded = products.slice(-4);
+  // Filter products by selected gender
+  const filteredProducts = products.filter(
+    (p) => (p as any).gender === genderFilter
+  );
 
-  // Get products for continue browsing (first 4)
-  const continueBrowsing = products.slice(0, 4);
+  // Get newly added products (last 4 of filtered)
+  const newlyAdded = filteredProducts.slice(-4);
+
+  // Get products for continue browsing (first 4 of filtered)
+  const continueBrowsing = filteredProducts.slice(0, 4);
 
   if (loading) {
     return (
@@ -42,23 +48,59 @@ export default function SalesmanHome() {
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       {/* Hero Banner */}
-      <div className="bg-gradient-to-r from-yellow-100 to-yellow-200 rounded-lg p-12 mb-8 relative overflow-hidden">
-        <div className="flex items-center justify-between">
-          <div className="flex-1">
-            <div className="mb-4">
-              <span className="text-sm font-semibold text-gray-700">FOR MEN</span>
-            </div>
-            <h1 className="text-4xl font-bold text-red-600 mb-2">
-              EXPLORE NEW TRENDS
-            </h1>
-            <p className="text-red-500 text-lg">
-              one stop destination for all your rental needs
-            </p>
-          </div>
-          <div className="flex-1 text-right">
-            <span className="text-sm font-semibold text-gray-700">FOR WOMEN</span>
-          </div>
+      <div className="bg-gradient-to-r from-yellow-100 to-yellow-200 rounded-lg p-12 mb-4 relative overflow-hidden">
+        <div className="text-center">
+          <h1 className="text-4xl font-bold text-red-600 mb-2">
+            EXPLORE NEW TRENDS
+          </h1>
+          <p className="text-red-500 text-lg">
+            one stop destination for all your rental needs
+          </p>
         </div>
+      </div>
+
+      {/* Gender Filter Buttons - Compact */}
+      <div className="flex gap-3 mb-8">
+        <button
+          onClick={() => setGenderFilter('Male')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold transition-all duration-200 cursor-pointer
+            ${genderFilter === 'Male'
+              ? 'bg-red-600 text-white shadow-md shadow-red-200'
+              : 'bg-white text-gray-600 border border-gray-300 hover:border-red-300 hover:text-red-600'
+            }`}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="7" r="4" fill="currentColor" />
+            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="currentColor" />
+          </svg>
+          FOR MEN
+          {genderFilter === 'Male' && (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </button>
+
+        <button
+          onClick={() => setGenderFilter('Female')}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold transition-all duration-200 cursor-pointer
+            ${genderFilter === 'Female'
+              ? 'bg-red-600 text-white shadow-md shadow-red-200'
+              : 'bg-white text-gray-600 border border-gray-300 hover:border-red-300 hover:text-red-600'
+            }`}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="12" cy="7" r="4" fill="currentColor" />
+            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="currentColor" />
+            <rect x="10" y="3" width="4" height="1" rx="0.5" fill="currentColor" opacity="0.5" />
+          </svg>
+          FOR WOMEN
+          {genderFilter === 'Female' && (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          )}
+        </button>
       </div>
 
       {/* Categories Section */}
@@ -73,7 +115,7 @@ export default function SalesmanHome() {
           </Link>
         </div>
         <div className="grid grid-cols-4 gap-6">
-          {products.slice(0, 4).map((product, idx) => (
+          {filteredProducts.slice(0, 4).map((product, idx) => (
             <Link
               key={product.id}
               href={`/salesman/products/${product.id}`}
@@ -172,4 +214,3 @@ export default function SalesmanHome() {
     </div>
   );
 }
-

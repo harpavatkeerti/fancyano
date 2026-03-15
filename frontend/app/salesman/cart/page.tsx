@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { bookingsApi } from '@/lib/api';
+import { settingsApi } from '@/lib/settingsApi';
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
 import { PhoneInput, QRScanner } from '@/components/common';
@@ -24,26 +25,30 @@ export default function CartPage() {
   const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
   const [bookingPreview, setBookingPreview] = useState<any>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  
+
   // Customer details
   const [customerName, setCustomerName] = useState('');
   const [customerPhone, setCustomerPhone] = useState('');
   const [customerPhoneCountry, setCustomerPhoneCountry] = useState('IN');
   const [alternatePhone, setAlternatePhone] = useState('');
   const [alternatePhoneCountry, setAlternatePhoneCountry] = useState('IN');
-  
+
   // Discount state
   const [discountType, setDiscountType] = useState<'percentage' | 'amount' | null>(null);
   const [discountValue, setDiscountValue] = useState(0);
-  
+
   // Measurements
-  const [measurements, setMeasurements] = useState<{[key: number]: any}>({});
-  const [measurementErrors, setMeasurementErrors] = useState<{[key: string]: string}>({});
-  const [specialRequirements, setSpecialRequirements] = useState<{[key: number]: string}>({});
-  
+  const [measurements, setMeasurements] = useState<{ [key: number]: any }>({});
+  const [measurementErrors, setMeasurementErrors] = useState<{ [key: string]: string }>({});
+  const [specialRequirements, setSpecialRequirements] = useState<{ [key: number]: string }>({});
+
   // Cart timeout timer
   const [timeRemaining, setTimeRemaining] = useState<{ minutes: number; seconds: number } | null>(null);
-  
+
+  // Permission & collapsible state
+  const [discountAllowed, setDiscountAllowed] = useState(false);
+  const [showAdditionalSettings, setShowAdditionalSettings] = useState(false);
+
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
@@ -95,7 +100,7 @@ export default function CartPage() {
         setCartItems([]);
         setTimeRemaining(null);
         window.dispatchEvent(new Event('cartUpdated'));
-        
+
         // Show notification to user
         toast.info('Your cart has been cleared because no payment was recorded within 5 minutes of adding the first product.');
       }
@@ -103,6 +108,22 @@ export default function CartPage() {
       console.error('Error checking cart timeout:', error);
     }
   }
+
+  // Fetch salesman discount permission
+  useEffect(() => {
+    async function fetchPermissions() {
+      try {
+        const response = await settingsApi.getByKey('salesman_permissions');
+        if (response.data?.setting_value) {
+          const permissions = JSON.parse(response.data.setting_value);
+          setDiscountAllowed(permissions.discount_allowed || false);
+        }
+      } catch (error) {
+        console.error('Error fetching salesman permissions:', error);
+      }
+    }
+    fetchPermissions();
+  }, []);
 
   useEffect(() => {
     // Load cart from localStorage
@@ -167,13 +188,13 @@ export default function CartPage() {
     const newCart = cartItems.filter((_, i) => i !== index);
     setCartItems(newCart);
     localStorage.setItem('salesman_cart', JSON.stringify(newCart));
-    
+
     // If cart is now empty, clear the timestamp and timer
     if (newCart.length === 0) {
       localStorage.removeItem('salesman_cart_created_at');
       setTimeRemaining(null);
     }
-    
+
     // Dispatch event to update cart count in header
     window.dispatchEvent(new Event('cartUpdated'));
   }
@@ -228,12 +249,12 @@ export default function CartPage() {
         // Check against existing bookings
         for (const booking of bookings) {
           if (!booking.booked_from || !booking.booked_to) continue;
-          
+
           const bookingFrom = new Date(booking.booked_from);
           const bookingTo = new Date(booking.booked_to);
           bookingFrom.setHours(0, 0, 0, 0);
           bookingTo.setHours(0, 0, 0, 0);
-          
+
           // Check if dates overlap
           if (fromDate <= bookingTo && toDate >= bookingFrom) {
             errors.push(
@@ -298,7 +319,7 @@ export default function CartPage() {
       toast.error(`Cannot proceed with checkout:\n\n${validation.errors.join('\n')}\n\nPlease remove conflicting items or update dates.`);
       return;
     }
-    
+
     // Check real-time availability from database
     const dbCheck = await checkDatabaseAvailability();
     if (!dbCheck.success) {
@@ -316,19 +337,19 @@ export default function CartPage() {
 
     await createBooking();
   }
-  
+
   async function checkDatabaseAvailability() {
     try {
       const { availabilityApi } = await import('@/lib/api');
-      
+
       const products = cartItems.map(item => ({
         product_id: item.product.id,
         date_from: item.dateFrom,
         date_to: item.dateTo
       }));
-      
+
       const response = await availabilityApi.checkBulk({ products });
-      
+
       if (!response.data.all_available) {
         const unavailableDetails = response.data.results
           .filter((r: any) => !r.available)
@@ -339,13 +360,13 @@ export default function CartPage() {
             return `• ${cartItem?.product.name} (${cartItem?.product.code})\n  Selected: ${fromDate} to ${toDate}`;
           })
           .join('\n\n');
-        
+
         return {
           success: false,
           message: `⚠️ Product Already Booked!\n\nThe following products are already booked for your selected dates:\n\n${unavailableDetails}\n\nPlease select other dates or remove these items from your cart.`
         };
       }
-      
+
       return { success: true, message: '' };
     } catch (error) {
       console.error('Error checking database availability:', error);
@@ -370,7 +391,7 @@ export default function CartPage() {
           if (otherBooking.status === 'cancelled' || otherBooking.status === 'completed') continue;
 
           const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-          
+
           for (const otherProduct of otherProducts) {
             if (otherProduct.id !== item.product.id && otherProduct.code !== item.product.code) {
               continue;
@@ -422,7 +443,7 @@ export default function CartPage() {
       // Try multiple possible keys where user name might be stored
       const userData = localStorage.getItem('user');
       let salesmanName = 'Salesman';
-      
+
       if (userData) {
         try {
           const user = JSON.parse(userData);
@@ -434,10 +455,10 @@ export default function CartPage() {
       } else {
         salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
       }
-      
+
       // Trim whitespace to ensure consistent matching
       salesmanName = salesmanName.trim();
-      
+
       console.log('📝 Creating booking with created_by:', salesmanName);
 
       // Create one booking with all products
@@ -472,7 +493,7 @@ export default function CartPage() {
       setTimeRemaining(null);
       // Dispatch event to update cart count in header
       window.dispatchEvent(new Event('cartUpdated'));
-      
+
       // Redirect to order details page using the booking ID from response
       const bookingId = bookingResponse.data?.id;
       if (bookingId) {
@@ -486,7 +507,7 @@ export default function CartPage() {
       const errorMessage = errorData.error || errorData.details || error.message || 'Unknown error occurred';
       const errorDetail = errorData.detail || '';
       const errorHint = errorData.hint || '';
-      
+
       let fullErrorMessage = `Error creating booking: ${errorMessage}`;
       if (errorDetail) {
         fullErrorMessage += `\n\nDetails: ${errorDetail}`;
@@ -494,7 +515,7 @@ export default function CartPage() {
       if (errorHint) {
         fullErrorMessage += `\n\nHint: ${errorHint}`;
       }
-      
+
       toast.error(fullErrorMessage);
     }
   }
@@ -502,7 +523,7 @@ export default function CartPage() {
   function handleMeasurementChange(productId: number, field: string, value: string) {
     // Remove any non-digit characters
     const numericValue = value.replace(/\D/g, '');
-    
+
     // Check if more than 2 digits
     if (numericValue.length > 2) {
       const errorKey = `${productId}-${field}`;
@@ -512,14 +533,14 @@ export default function CartPage() {
       });
       return;
     }
-    
+
     // Clear error if valid
     const errorKey = `${productId}-${field}`;
     setMeasurementErrors({
       ...measurementErrors,
       [errorKey]: '',
     });
-    
+
     setMeasurements({
       ...measurements,
       [productId]: {
@@ -562,13 +583,12 @@ export default function CartPage() {
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Cart</h1>
         {timeRemaining && (
-          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 ${
-            timeRemaining.minutes < 1 
-              ? 'bg-red-50 border-red-500 text-red-700' 
-              : timeRemaining.minutes < 2
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 ${timeRemaining.minutes < 1
+            ? 'bg-red-50 border-red-500 text-red-700'
+            : timeRemaining.minutes < 2
               ? 'bg-yellow-50 border-yellow-500 text-yellow-700'
               : 'bg-blue-50 border-blue-500 text-blue-700'
-          }`}>
+            }`}>
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -621,8 +641,8 @@ export default function CartPage() {
                                 <span className="line-through text-gray-400">₹{Math.floor(previewProduct.rent)}</span>
                                 <span className="font-semibold text-green-600">₹{Math.floor(previewProduct.effective_rent)}</span>
                                 <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">
-                                  {previewProduct.discount_type === 'percentage' 
-                                    ? `${item.discountValue}% off` 
+                                  {previewProduct.discount_type === 'percentage'
+                                    ? `${item.discountValue}% off`
                                     : `-₹${previewProduct.discount_amount}`}
                                 </span>
                               </div>
@@ -654,61 +674,68 @@ export default function CartPage() {
                   </svg>
                 </button>
               </div>
-              
-              {/* Per-Product Discount Controls */}
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <label className="block text-xs font-medium text-gray-700 mb-2">
-                  💰 Product Discount (Optional)
-                </label>
-                <div className="flex gap-2 items-center">
-                  <select
-                    value={item.discountType || ''}
-                    onChange={(e) => {
-                      const newType = e.target.value as 'percentage' | 'fixed' | '';
-                      const updatedItems = [...cartItems];
-                      updatedItems[index] = {
-                        ...updatedItems[index],
-                        discountType: newType || null,
-                        discountValue: newType ? (updatedItems[index].discountValue || 0) : 0
-                      };
-                      setCartItems(updatedItems);
-                      localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
-                    }}
-                    className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  >
-                    <option value="">No Discount</option>
-                    <option value="percentage">Percentage %</option>
-                    <option value="fixed">Fixed ₹</option>
-                  </select>
-                  
-                  {item.discountType && (
-                    <div className="flex items-center gap-1">
-                      <input
-                        type="number"
-                        min="0"
-                        max={item.discountType === 'percentage' ? 100 : item.product.rent}
-                        step={item.discountType === 'percentage' ? 1 : 10}
-                        value={item.discountValue || 0}
-                        onChange={(e) => {
-                          const value = parseFloat(e.target.value) || 0;
-                          const updatedItems = [...cartItems];
-                          updatedItems[index] = {
-                            ...updatedItems[index],
-                            discountValue: value
-                          };
-                          setCartItems(updatedItems);
-                          localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
-                        }}
-                        placeholder="0"
-                        className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      />
-                      <span className="text-sm text-gray-600">
-                        {item.discountType === 'percentage' ? '%' : '₹'}
-                      </span>
-                    </div>
+
+              {/* Per-Product Discount Controls — only shown if Additional Settings is open */}
+              {showAdditionalSettings && (
+                <div className={`mt-4 pt-4 border-t border-gray-200 ${!discountAllowed ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className="block text-xs font-medium text-gray-700 mb-2">
+                    💰 Product Discount (Optional)
+                  </label>
+                  <div className="flex gap-2 items-center">
+                    <select
+                      value={item.discountType || ''}
+                      disabled={!discountAllowed}
+                      onChange={(e) => {
+                        const newType = e.target.value as 'percentage' | 'fixed' | '';
+                        const updatedItems = [...cartItems];
+                        updatedItems[index] = {
+                          ...updatedItems[index],
+                          discountType: newType || null,
+                          discountValue: newType ? (updatedItems[index].discountValue || 0) : 0
+                        };
+                        setCartItems(updatedItems);
+                        localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                      }}
+                      className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                    >
+                      <option value="">No Discount</option>
+                      <option value="percentage">Percentage %</option>
+                      <option value="fixed">Fixed ₹</option>
+                    </select>
+
+                    {item.discountType && (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number"
+                          min="0"
+                          max={item.discountType === 'percentage' ? 100 : item.product.rent}
+                          step={item.discountType === 'percentage' ? 1 : 10}
+                          value={item.discountValue || 0}
+                          disabled={!discountAllowed}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value) || 0;
+                            const updatedItems = [...cartItems];
+                            updatedItems[index] = {
+                              ...updatedItems[index],
+                              discountValue: value
+                            };
+                            setCartItems(updatedItems);
+                            localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                          }}
+                          placeholder="0"
+                          className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                        />
+                        <span className="text-sm text-gray-600">
+                          {item.discountType === 'percentage' ? '%' : '₹'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  {!discountAllowed && (
+                    <p className="text-xs text-red-500 mt-1">⚠️ Discount not allowed. Contact admin.</p>
                   )}
                 </div>
-              </div>
+              )}
             </div>
           ))}
 
@@ -740,7 +767,7 @@ export default function CartPage() {
                 No
               </label>
             </div>
-            
+
             {/* Transportation Charge Input - Shows when Yes is selected */}
             {transportationRequired === 'yes' && (
               <div className="mt-3">
@@ -770,95 +797,122 @@ export default function CartPage() {
             )}
           </div>
 
-          {/* Discount Section */}
-          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mt-6">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              💰 Apply Discount (Optional)
-            </label>
-            <p className="text-xs text-gray-600 mb-2">
-              Note: Discount applies only on product rent, not on transportation charges
-            </p>
-            <div className="flex gap-4 mb-3">
-              <label className="flex items-center">
-                <input
-                  type="radio"
-                  checked={!discountType}
-                  onChange={() => {
-                    setDiscountType(null);
-                    setDiscountValue(0);
-                  }}
-                  className="mr-2"
-                />
-                No Discount
-              </label>
-              <label className="flex items-center">
-                <input
-                  type="radio"
-                  checked={discountType === 'percentage'}
-                  onChange={() => {
-                    setDiscountType('percentage');
-                    setDiscountValue(0);
-                  }}
-                  className="mr-2"
-                />
-                Percentage (%)
-              </label>
-              <label className="flex items-center">
-                <input
-                  type="radio"
-                  checked={discountType === 'amount'}
-                  onChange={() => {
-                    setDiscountType('amount');
-                    setDiscountValue(0);
-                  }}
-                  className="mr-2"
-                />
-                Fixed Amount (₹)
-              </label>
-            </div>
-            
-            {/* Discount Input - Shows when discount type is selected */}
-            {discountType && (
-              <div className="mt-3">
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {discountType === 'percentage' ? 'Enter Discount Percentage*' : 'Enter Discount Amount*'}
-                </label>
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-700 font-medium">
-                    {discountType === 'amount' ? '₹' : ''}
-                  </span>
-                  <input
-                    type="number"
-                    value={discountValue || ''}
-                    onChange={(e) => {
-                      const value = parseFloat(e.target.value) || 0;
-                      // Validate percentage (0-100) or amount
-                      if (discountType === 'percentage') {
-                        if (value >= 0 && value <= 100) {
-                          setDiscountValue(value);
-                        }
-                      } else {
-                        if (value >= 0) {
-                          setDiscountValue(value);
-                        }
-                      }
-                    }}
-                    placeholder={discountType === 'percentage' ? 'Enter percentage (0-100)' : 'Enter amount'}
-                    min="0"
-                    max={discountType === 'percentage' ? 100 : undefined}
-                    step={discountType === 'percentage' ? '0.1' : '1'}
-                    className="w-48 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                  {discountType === 'percentage' && (
-                    <span className="text-gray-700 font-medium">%</span>
+          {/* Collapsible Additional Settings */}
+          <div className="mt-6 border border-gray-300 rounded-lg overflow-hidden">
+            <button
+              onClick={() => setShowAdditionalSettings(!showAdditionalSettings)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors"
+            >
+              <span className="text-sm font-semibold text-gray-800">⚙️ Additional Settings</span>
+              <svg className={`w-5 h-5 text-gray-500 transform transition-transform ${showAdditionalSettings ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showAdditionalSettings && (
+              <div className="p-4 space-y-4 border-t border-gray-300">
+                {!discountAllowed && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2">
+                    <p className="text-xs text-red-600 font-medium">🔒 Discount is disabled by admin. Contact admin to enable.</p>
+                  </div>
+                )}
+
+                {/* Overall Discount Section */}
+                <div className={`bg-yellow-50 border border-yellow-200 rounded-lg p-4 ${!discountAllowed ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    💰 Apply Discount to All Products (Optional)
+                  </label>
+                  <p className="text-xs text-gray-600 mb-2">
+                    Note: Discount applies only on product rent, not on transportation charges
+                  </p>
+                  <div className="flex gap-4 mb-3">
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        checked={!discountType}
+                        disabled={!discountAllowed}
+                        onChange={() => {
+                          setDiscountType(null);
+                          setDiscountValue(0);
+                        }}
+                        className="mr-2"
+                      />
+                      No Discount
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        checked={discountType === 'percentage'}
+                        disabled={!discountAllowed}
+                        onChange={() => {
+                          setDiscountType('percentage');
+                          setDiscountValue(0);
+                        }}
+                        className="mr-2"
+                      />
+                      Percentage (%)
+                    </label>
+                    <label className="flex items-center">
+                      <input
+                        type="radio"
+                        checked={discountType === 'amount'}
+                        disabled={!discountAllowed}
+                        onChange={() => {
+                          setDiscountType('amount');
+                          setDiscountValue(0);
+                        }}
+                        className="mr-2"
+                      />
+                      Fixed Amount (₹)
+                    </label>
+                  </div>
+
+                  {/* Discount Input - Shows when discount type is selected */}
+                  {discountType && (
+                    <div className="mt-3">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {discountType === 'percentage' ? 'Enter Discount Percentage*' : 'Enter Discount Amount*'}
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-700 font-medium">
+                          {discountType === 'amount' ? '₹' : ''}
+                        </span>
+                        <input
+                          type="number"
+                          value={discountValue || ''}
+                          disabled={!discountAllowed}
+                          onChange={(e) => {
+                            const value = parseFloat(e.target.value) || 0;
+                            // Validate percentage (0-100) or amount
+                            if (discountType === 'percentage') {
+                              if (value >= 0 && value <= 100) {
+                                setDiscountValue(value);
+                              }
+                            } else {
+                              if (value >= 0) {
+                                setDiscountValue(value);
+                              }
+                            }
+                          }}
+                          placeholder={discountType === 'percentage' ? 'Enter percentage (0-100)' : 'Enter amount'}
+                          min="0"
+                          max={discountType === 'percentage' ? 100 : undefined}
+                          step={discountType === 'percentage' ? '0.1' : '1'}
+                          className="w-48 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+                          required
+                        />
+                        {discountType === 'percentage' && (
+                          <span className="text-gray-700 font-medium">%</span>
+                        )}
+                      </div>
+                      {calculateDiscount() > 0 && (
+                        <p className="text-sm text-green-600 mt-2 font-medium">
+                          💵 Discount Amount: ₹{calculateDiscount()}
+                        </p>
+                      )}
+                    </div>
                   )}
                 </div>
-                {calculateDiscount() > 0 && (
-                  <p className="text-sm text-green-600 mt-2 font-medium">
-                    💵 Discount Amount: ₹{calculateDiscount()}
-                  </p>
-                )}
               </div>
             )}
           </div>
@@ -928,29 +982,29 @@ export default function CartPage() {
         <div>
           <div className="bg-white border border-gray-200 rounded-lg p-6 sticky top-24">
             <h2 className="text-xl font-bold text-gray-900 mb-6">Order Summary</h2>
-             <div className="space-y-3 mb-6">
-               <div className="flex justify-between">
-                 <span className="text-gray-600">Subtotal</span>
-                 <span className="font-medium">₹{isNaN(calculateSubtotal()) ? '0' : Math.floor(calculateSubtotal()).toLocaleString('en-IN')}</span>
-               </div>
-               <div className="flex justify-between">
-                 <span className="text-gray-600">Delivery Fee</span>
-                 <span className="font-medium">₹{isNaN(calculateDeliveryFee()) ? '0' : Math.floor(calculateDeliveryFee()).toLocaleString('en-IN')}</span>
-               </div>
-               {calculateDiscount() > 0 && (
-                 <div className="flex justify-between text-green-600">
-                   <span className="font-medium">Discount {discountType === 'percentage' ? `(${discountValue}%)` : ''}</span>
-                   <span className="font-medium">-₹{Math.floor(calculateDiscount()).toLocaleString('en-IN')}</span>
-                 </div>
-               )}
-               <div className="flex justify-between text-lg font-bold border-t pt-3">
-                 <span>Total Payable Now:</span>
-                 <span>₹{isNaN(calculateTotal()) ? '0' : Math.floor(calculateTotal()).toLocaleString('en-IN')}</span>
-               </div>
-               <div className="flex justify-between text-sm">
-                 <span className="text-gray-600">Security Deposit</span>
-                 <span className="font-medium">₹{isNaN(calculateSecurityDeposit()) ? '0' : Math.floor(calculateSecurityDeposit()).toLocaleString('en-IN')}</span>
-               </div>
+            <div className="space-y-3 mb-6">
+              <div className="flex justify-between">
+                <span className="text-gray-600">Subtotal</span>
+                <span className="font-medium">₹{isNaN(calculateSubtotal()) ? '0' : Math.floor(calculateSubtotal()).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-600">Delivery Fee</span>
+                <span className="font-medium">₹{isNaN(calculateDeliveryFee()) ? '0' : Math.floor(calculateDeliveryFee()).toLocaleString('en-IN')}</span>
+              </div>
+              {calculateDiscount() > 0 && (
+                <div className="flex justify-between text-green-600">
+                  <span className="font-medium">Discount {discountType === 'percentage' ? `(${discountValue}%)` : ''}</span>
+                  <span className="font-medium">-₹{Math.floor(calculateDiscount()).toLocaleString('en-IN')}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-lg font-bold border-t pt-3">
+                <span>Total Payable Now:</span>
+                <span>₹{isNaN(calculateTotal()) ? '0' : Math.floor(calculateTotal()).toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gray-600">Security Deposit</span>
+                <span className="font-medium">₹{isNaN(calculateSecurityDeposit()) ? '0' : Math.floor(calculateSecurityDeposit()).toLocaleString('en-IN')}</span>
+              </div>
               <p className="text-xs text-gray-500 italic">
                 Note: The Payment of Security will only be collected at the time of delivery
               </p>

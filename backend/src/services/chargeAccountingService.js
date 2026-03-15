@@ -18,13 +18,13 @@ class ChargeAccountingService {
         'SELECT * FROM bookings WHERE id = $1',
         [bookingId]
       );
-      
+
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
       }
-      
+
       const booking = bookingResult.rows[0];
-      
+
       // Get all products with their charges
       const productsResult = await client.query(
         `SELECT 
@@ -60,9 +60,9 @@ class ChargeAccountingService {
         ORDER BY bp.id`,
         [bookingId]
       );
-      
+
       const products = productsResult.rows;
-      
+
       // Calculate totals per category
       const summary = {
         booking_id: bookingId,
@@ -88,15 +88,14 @@ class ChargeAccountingService {
           total_paid: 0,
           balance: 0
         },
-        overpayment: booking.overpayment || 0,
         final_discount: booking.final_discount || 0
       };
-      
+
       // Aggregate charges by category
       products.forEach(product => {
         // Skip exchanged/cancelled products for due calculations, but include paid amounts
         const includeInDue = !['exchanged', 'cancelled'].includes(product.status);
-        
+
         product.charges.forEach(charge => {
           if (charge.charge_type === 'rent') {
             if (includeInDue) summary.charges.rent.due += charge.due_amount;
@@ -113,25 +112,27 @@ class ChargeAccountingService {
           }
         });
       });
-      
+
       // Calculate totals
-      summary.totals.total_due = 
+      summary.totals.total_due =
         summary.charges.rent.due +
         summary.charges.transport.due +
         summary.charges.penalties.due +
         summary.charges.fees.due +
         summary.charges.security.due -
         summary.final_discount; // Discount reduces what's due
-      
-      summary.totals.total_paid = 
+
+      summary.totals.total_paid =
         summary.charges.rent.paid +
         summary.charges.transport.paid +
         summary.charges.penalties.paid +
         summary.charges.fees.paid +
         summary.charges.security.paid;
-      
+
       summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
-      
+
+      summary.total_refunded = 0;
+
       return summary;
     } finally {
       client.release();
@@ -161,7 +162,7 @@ class ChargeAccountingService {
 
   /**
    * Internal helper: Apply payment to booking following priority order
-   * Priority: Rent → Transport → Penalties → Fees → Security → Overpayment
+   * Priority: Rent → Transport → Penalties → Fees → Security → Excess
    * @param {number} bookingId
    * @param {number} paymentAmount - Amount in integer (paise/cents)
    * @param {Object} client - Database client (transaction)
@@ -172,42 +173,29 @@ class ChargeAccountingService {
       total_applied: paymentAmount,
       applications: []
     };
-    
+
     let remaining = paymentAmount;
-    
+
     // Priority 1: Rent
     remaining = await this._applyToRent(bookingId, remaining, breakdown, client);
     if (remaining <= 0) return breakdown;
-    
+
     // Priority 2: Transport
     remaining = await this._applyToTransport(bookingId, remaining, breakdown, client);
     if (remaining <= 0) return breakdown;
-    
+
     // Priority 3: Penalties (exchange, downgrade, cancellation)
     remaining = await this._applyToPenalties(bookingId, remaining, breakdown, client);
     if (remaining <= 0) return breakdown;
-    
+
     // Priority 4: Fees (late, damage)
     remaining = await this._applyToFees(bookingId, remaining, breakdown, client);
     if (remaining <= 0) return breakdown;
-    
+
     // Priority 5: Security
     remaining = await this._applyToSecurity(bookingId, remaining, breakdown, client);
     if (remaining <= 0) return breakdown;
-    
-    // Remaining becomes overpayment
-    if (remaining > 0) {
-      await client.query(
-        'UPDATE bookings SET overpayment = overpayment + $1 WHERE id = $2',
-        [remaining, bookingId]
-      );
-      breakdown.applications.push({
-        category: 'overpayment',
-        amount: remaining,
-        notes: 'Excess payment'
-      });
-    }
-    
+
     return breakdown;
   }
 
@@ -226,7 +214,7 @@ class ChargeAccountingService {
        ORDER BY bp.id`,
       [bookingId]
     );
-    
+
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'rent');
   }
 
@@ -238,28 +226,28 @@ class ChargeAccountingService {
       'SELECT transport_charge, transport_paid FROM bookings WHERE id = $1',
       [bookingId]
     );
-    
+
     if (booking.rows.length === 0) return amount;
-    
+
     const { transport_charge, transport_paid } = booking.rows[0];
     const charge = transport_charge || 0;
     const paid = transport_paid || 0;
     const due = charge - paid;
-    
+
     if (due <= 0) return amount;
-    
+
     const toApply = Math.min(amount, due);
-    
+
     await client.query(
       'UPDATE bookings SET transport_paid = transport_paid + $1 WHERE id = $2',
       [toApply, bookingId]
     );
-    
+
     breakdown.applications.push({
       category: 'transport',
       amount: toApply
     });
-    
+
     return amount - toApply;
   }
 
@@ -278,7 +266,7 @@ class ChargeAccountingService {
        ORDER BY bp.id, pc.charge_type`,
       [bookingId]
     );
-    
+
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'penalties');
   }
 
@@ -297,7 +285,7 @@ class ChargeAccountingService {
        ORDER BY bp.id, pc.charge_type`,
       [bookingId]
     );
-    
+
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'fees');
   }
 
@@ -316,7 +304,7 @@ class ChargeAccountingService {
        ORDER BY bp.id`,
       [bookingId]
     );
-    
+
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'security');
   }
 
@@ -325,28 +313,28 @@ class ChargeAccountingService {
    */
   async _applyToCharges(charges, amount, breakdown, client, category) {
     let remaining = amount;
-    
+
     for (const charge of charges) {
       if (remaining <= 0) break;
-      
+
       const due = charge.due_amount - charge.paid_amount;
       const toApply = Math.min(remaining, due);
-      
+
       await client.query(
         'UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         [toApply, charge.id]
       );
-      
+
       breakdown.applications.push({
         category,
         charge_type: charge.charge_type,
         booking_product_id: charge.booking_product_id,
         amount: toApply
       });
-      
+
       remaining -= toApply;
     }
-    
+
     return remaining;
   }
 
@@ -389,7 +377,7 @@ class ChargeAccountingService {
        RETURNING *`,
       [bookingProductId, chargeType, amount, policyReference, notes]
     );
-    
+
     return result.rows[0];
   }
 
@@ -437,17 +425,45 @@ class ChargeAccountingService {
         throw new Error(`${transactionType === 'payment' ? 'Payment' : 'Adjustment'} amount must be greater than 0`);
       }
 
+      // For payments and adjustments, cap at the outstanding balance — excess must not be accepted
+      if (transactionType === 'payment' || transactionType === 'adjustment') {
+        // Get current balance to enforce hard cap
+        const summaryResult = await client.query(
+          `SELECT 
+            COALESCE(SUM(pc.due_amount), 0) as total_charge_due,
+            COALESCE(SUM(pc.paid_amount), 0) as total_charge_paid
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1 AND bp.status NOT IN ('exchanged', 'cancelled')`,
+          [bookingId]
+        );
+        const booking = await client.query(
+          'SELECT transport_charge, transport_paid, final_discount FROM bookings WHERE id = $1',
+          [bookingId]
+        );
+        const b = booking.rows[0];
+        const totalDue = parseFloat(summaryResult.rows[0].total_charge_due) +
+          (parseFloat(b.transport_charge) || 0) -
+          (parseFloat(b.final_discount) || 0);
+        const totalPaid = parseFloat(summaryResult.rows[0].total_charge_paid) +
+          (parseFloat(b.transport_paid) || 0);
+        const remainingBalance = totalDue - totalPaid;
+
+        if (remainingBalance <= 0) {
+          throw new Error('Payment rejected: all charges are already fully paid');
+        }
+        if (amount > remainingBalance) {
+          throw new Error(`Payment amount (${amount}) exceeds outstanding balance (${remainingBalance}). Maximum allowed: ${remainingBalance}`);
+        }
+      }
+
       // Apply payment using internal helper
       const breakdown = await this._applyPaymentInternal(bookingId, amount, client);
-
-      // Calculate residual (overpayment from breakdown if any)
-      const overpaymentApp = breakdown.applications.find(app => app.category === 'overpayment');
-      const residualAmount = overpaymentApp ? overpaymentApp.amount : 0;
-      const totalApplied = amount - residualAmount;
+      const totalApplied = amount;
 
       // Create payment transaction record
       const transactionNotes = transactionType === 'adjustment'
-        ? `${notes || 'Charge adjustment'} | Applied: ${totalApplied} | Residual: ${residualAmount}`
+        ? `${notes || 'Charge adjustment'} | Applied: ${totalApplied}`
         : (notes || '');
 
       await client.query(
@@ -460,18 +476,17 @@ class ChargeAccountingService {
       // Log in activity log
       const activityDetails = transactionType === 'adjustment'
         ? {
-            amount,
-            payment_method: paymentMethod,
-            total_applied: totalApplied,
-            residual_amount: residualAmount,
-            notes,
-            breakdown: breakdown.applications
-          }
+          amount,
+          payment_method: paymentMethod,
+          total_applied: totalApplied,
+          notes,
+          breakdown: breakdown.applications
+        }
         : {
-            amount,
-            payment_method: paymentMethod,
-            breakdown: breakdown.applications
-          };
+          amount,
+          payment_method: paymentMethod,
+          breakdown: breakdown.applications
+        };
 
       await client.query(
         `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
@@ -485,8 +500,65 @@ class ChargeAccountingService {
       return {
         booking_id: bookingId,
         total_applied: totalApplied,
-        residual_amount: residualAmount,
+        residual_amount: 0,
         breakdown: breakdown.applications,
+        recorded_by: recordedBy,
+        recorded_at: new Date()
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Record a refund transaction (money going OUT to customer)
+   * Does NOT apply to charges — simply records the transaction and logs activity.
+   * @param {number} bookingId
+   * @param {number} amount - Refund amount
+   * @param {string} method - Payment method (Cash, UPI, etc.)
+   * @param {string} recordedBy - User recording the refund
+   * @param {string} notes - Optional notes
+   * @returns {Promise<Object>} - Refund details
+   */
+  async recordRefund(bookingId, amount, method, recordedBy, notes) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Verify booking exists
+      const bookingResult = await client.query('SELECT id FROM bookings WHERE id = $1', [bookingId]);
+      if (bookingResult.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+
+      if (amount <= 0) {
+        throw new Error('Refund amount must be greater than 0');
+      }
+
+      // Record refund transaction (money going OUT to customer)
+      await client.query(
+        `INSERT INTO payment_transactions 
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+        [bookingId, amount, method, notes || '', recordedBy]
+      );
+
+      // Log activity
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, 'refund_issued', $2, $3)`,
+        [bookingId, JSON.stringify({ amount, method, notes }), recordedBy]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        booking_id: bookingId,
+        amount,
+        method,
         recorded_by: recordedBy,
         recorded_at: new Date()
       };

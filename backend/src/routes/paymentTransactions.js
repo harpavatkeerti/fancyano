@@ -18,9 +18,9 @@ router.get('/', async (req, res) => {
 router.get('/summary/:bookingId', async (req, res) => {
   try {
     const { bookingId } = req.params;
-    
+
     const summary = await chargeAccountingService.getPaymentSummary(parseInt(bookingId));
-    
+
     res.json(summary);
   } catch (error) {
     if (error.message === 'Booking not found') {
@@ -43,27 +43,45 @@ router.get('/booking/:bookingId', async (req, res) => {
   }
 });
 
-// POST apply payment to a booking
+// POST apply payment or record refund for a booking
 router.post('/', async (req, res) => {
   try {
-    const { 
-      booking_id, 
-      amount, 
+    const {
+      booking_id,
+      amount,
       payment_method,
       method,
       recorded_by,
-      notes 
+      notes,
+      type
     } = req.body;
-    
+
     // Accept both 'payment_method' and 'method' for compatibility
     const resolvedMethod = payment_method || method;
-    
+
     if (!booking_id || !amount || amount <= 0 || !resolvedMethod || !recorded_by) {
-      return res.status(400).json({ 
-        error: 'Missing required fields: booking_id, amount (> 0), payment_method/method, recorded_by' 
+      return res.status(400).json({
+        error: 'Missing required fields: booking_id, amount (> 0), payment_method/method, recorded_by'
       });
     }
-    
+
+    // Route to appropriate service method based on type
+    if (type === 'refund') {
+      const result = await chargeAccountingService.recordRefund(
+        booking_id,
+        amount,
+        resolvedMethod,
+        recorded_by,
+        notes
+      );
+
+      return res.status(201).json({
+        message: 'Refund recorded successfully',
+        refund_details: result
+      });
+    }
+
+    // Default: apply payment to charges in priority order
     const result = await chargeAccountingService.applyPayment(
       booking_id,
       amount,
@@ -71,7 +89,7 @@ router.post('/', async (req, res) => {
       recorded_by,
       notes
     );
-    
+
     res.status(201).json({
       message: 'Payment applied successfully',
       payment_details: result
@@ -83,24 +101,24 @@ router.post('/', async (req, res) => {
     if (error.message === 'Payment amount must be greater than 0') {
       return res.status(400).json({ error: error.message });
     }
-    console.error('Error applying payment:', error);
-    res.status(500).json({ error: 'Failed to apply payment', details: error.message });
+    console.error('Error recording transaction:', error);
+    res.status(500).json({ error: 'Failed to record transaction', details: error.message });
   }
 });
 
 // POST apply adjustments to charges
 router.post('/adjustment', async (req, res) => {
   try {
-    const { 
-      booking_id, 
+    const {
+      booking_id,
       adjustment_amount,
       payment_method,
       reason,
       adjusted_by
     } = req.body;
-    
+
     if (!booking_id || !adjustment_amount || adjustment_amount <= 0 || !payment_method || !adjusted_by) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Missing required fields: booking_id, adjustment_amount (> 0), payment_method, adjusted_by',
         example: {
           booking_id: 1,
@@ -111,7 +129,7 @@ router.post('/adjustment', async (req, res) => {
         }
       });
     }
-    
+
     const result = await chargeAccountingService.applyAdjustment(
       booking_id,
       adjustment_amount,
@@ -119,7 +137,7 @@ router.post('/adjustment', async (req, res) => {
       adjusted_by,
       reason
     );
-    
+
     res.json({
       message: 'Adjustment applied successfully',
       adjustment_details: result

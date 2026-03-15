@@ -171,6 +171,22 @@ describe('Payment Transactions Routes', () => {
       expect(response.body.error).toContain('amount');
     });
 
+    it('should return 400 when payment amount exceeds outstanding balance', async () => {
+      // Total due: 50000 rent + 5000 transport + 20000 security = 75000
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 80000, // 5000 more than total due
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          notes: 'Excess payment attempt'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/exceeds outstanding balance/i);
+    });
+
     it('should return 404 for non-existent booking', async () => {
       const response = await request(app)
         .post('/payments')
@@ -228,7 +244,8 @@ describe('Payment Transactions Routes', () => {
       expect(response.body.adjustment_details).toHaveProperty('breakdown');
     });
 
-    it('should return residual amount when adjustment exceeds total due', async () => {
+    it('should return 400 when adjustment exceeds outstanding balance', async () => {
+      // Total due: 50000 rent + 5000 transport + 20000 security = 75000
       const response = await request(app)
         .post('/payments/adjustment')
         .send({
@@ -239,9 +256,8 @@ describe('Payment Transactions Routes', () => {
           adjusted_by: 'admin'
         });
 
-      expect(response.status).toBe(200);
-      expect(response.body.adjustment_details.total_applied).toBe(75000);
-      expect(response.body.adjustment_details.residual_amount).toBe(25000);
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/exceeds outstanding balance/i);
     });
 
     it('should apply adjustment following payment priority order', async () => {
@@ -256,7 +272,7 @@ describe('Payment Transactions Routes', () => {
         });
 
       expect(response.status).toBe(200);
-      
+
       // Verify breakdown shows rent first (priority 1)
       const breakdown = response.body.adjustment_details.breakdown;
       expect(breakdown).toBeDefined();
@@ -371,6 +387,108 @@ describe('Payment Transactions Routes', () => {
       const updatedBalance = updatedSummary.body.totals.balance;
 
       expect(updatedBalance).toBe(initialBalance - 10000);
+    });
+  });
+
+  describe('POST /payments (refund)', () => {
+    beforeEach(async () => {
+      const result = await bookingService.createBooking({
+        customerName: 'Test Customer',
+        customerPhone: 'TEST-PAY-ROUTE',
+        bookingDate: '2024-01-01',
+        products: [
+          {
+            productId: testProductId,
+            bookedFrom: '2024-02-01',
+            bookedTo: '2024-02-05',
+            rent: 50000,
+            securityDeposit: 20000
+          }
+        ],
+        transportCharge: 5000,
+        createdBy: 'test-user'
+      });
+      testBookingId = result.booking_id;
+
+      await bookingService.confirmBooking(testBookingId, 'test-user');
+
+      // Fully pay the booking first
+      await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 75000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          notes: 'Full payment'
+        });
+    });
+
+    it('should record refund with type refund (not payment)', async () => {
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 20000,
+          type: 'refund',
+          method: 'Cash',
+          recorded_by: 'admin',
+          notes: 'Security refund'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.message).toBe('Refund recorded successfully');
+      expect(response.body.refund_details).toHaveProperty('booking_id', testBookingId);
+      expect(response.body.refund_details).toHaveProperty('amount', 20000);
+
+      // Verify transaction type in DB is 'refund'
+      const transaction = await pool.query(
+        "SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+    });
+
+    it('should record refund transaction correctly on a fully paid booking', async () => {
+      // Record a refund
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 20000,
+          type: 'refund',
+          method: 'Cash',
+          recorded_by: 'admin',
+          notes: 'Security refund'
+        });
+
+      expect(response.status).toBe(201);
+    });
+
+    it('should return 404 for non-existent booking', async () => {
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: 999999,
+          amount: 5000,
+          type: 'refund',
+          method: 'Cash',
+          recorded_by: 'admin'
+        });
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 400 if required fields are missing', async () => {
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          type: 'refund'
+          // Missing amount, method, recorded_by
+        });
+
+      expect(response.status).toBe(400);
     });
   });
 });
