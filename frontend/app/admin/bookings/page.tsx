@@ -2698,7 +2698,7 @@ export default function BookingsPage() {
                       <div className="col-span-2">
                         <p className="text-sm text-gray-600">Rental Duration</p>
                         <p className="text-base font-semibold text-gray-900">
-                          {Math.ceil((new Date(viewingBooking.booked_to).getTime() - new Date(viewingBooking.booked_from).getTime()) / (1000 * 60 * 60 * 24))} days
+                          {Math.ceil((new Date(viewingBooking.booked_to).getTime() - new Date(viewingBooking.booked_from).getTime()) / (1000 * 60 * 60 * 24)) + 1} days
                         </p>
                       </div>
                     </div>
