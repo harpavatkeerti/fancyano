@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { bookingsApi, paymentTransactionsApi, PaymentSummary } from '@/lib/api';
+import { bookingsApi, paymentTransactionsApi, lifecycleApi, PaymentSummary } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, QRScanner } from '@/components/common';
@@ -342,25 +342,8 @@ export default function OrderDetailsPage() {
         console.log('⚠️ WARNING: No rent difference payment transactions found! If customer paid rent difference during exchange, the transaction may not have been created.');
       }
 
-      // Check for refunds
-      const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
-      const statusRefundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
-      const productsWithRefunds = new Set<number>();
-      statusRefundTransactions.forEach((transaction: any) => {
-        const notes = transaction.notes || '';
-        products.forEach((product: any) => {
-          if (notes.includes(`(${product.code})`)) {
-            productsWithRefunds.add(product.id);
-          }
-        });
-      });
-      const allProductsHaveRefunds = products.length > 0 && products.every((p: any) => productsWithRefunds.has(p.id));
-      const hasAnyRefund = productsWithRefunds.size > 0;
-
-      // Use backend-provided status - backend handles status updates based on product lifecycle and payments
-
-      // Note: updateBookingStatus() should only be called explicitly after payment/refund actions
-      // Not automatically here to avoid infinite loops
+      // Backend handles product and booking status through lifecycle APIs (pickup, return, etc.)
+      // No frontend status derivation needed
 
       // Load measurements from booking if they exist
       if (bookingResponse.data.measurements) {
@@ -948,7 +931,7 @@ export default function OrderDetailsPage() {
 
       // Auto-confirm booking after first payment if still pending
       if (booking?.status === 'pending') {
-        await bookingsApi.update(bookingId, { status: 'confirmed' } as any);
+        await bookingsApi.confirm(bookingId, { confirmed_by: 'Salesman' });
       }
 
       // Refresh booking data from backend
@@ -1059,19 +1042,57 @@ export default function OrderDetailsPage() {
     }
 
     try {
-      // Create refund transactions for each selected item
+      // Step 1: Transition product statuses through proper lifecycle before refunding
+      const confirmedProducts = selectedItems.filter((p: any) => p.status === 'confirmed');
+      const inProgressProducts = selectedItems.filter((p: any) => p.status === 'in_progress');
+
+      // Pickup confirmed products (confirmed → in_progress)
+      if (confirmedProducts.length > 0) {
+        console.log('🔄 Picking up confirmed products:', confirmedProducts.map((p: any) => ({ id: p.id, name: p.name, status: p.status })));
+        try {
+          await lifecycleApi.pickupProducts(booking.id, {
+            booking_product_ids: confirmedProducts.map((p: any) => p.id),
+            picked_up_by: 'Salesman',
+          });
+          console.log('✅ Pickup successful');
+        } catch (pickupError: any) {
+          console.error('❌ Pickup failed:', pickupError.response?.data || pickupError.message);
+          toast.error(`Pickup failed: ${pickupError.response?.data?.error || pickupError.message}`);
+          return;
+        }
+      }
+
+      // Return products (in_progress → completed)
+      // Include both originally in_progress AND just-picked-up (were confirmed) products
+      const productsToReturn = [...confirmedProducts, ...inProgressProducts];
+      if (productsToReturn.length > 0) {
+        console.log('🔄 Returning products:', productsToReturn.map((p: any) => ({ id: p.id, name: p.name })));
+        try {
+          await lifecycleApi.returnProducts(booking.id, {
+            returns: productsToReturn.map((p: any) => ({
+              booking_product_id: p.id,
+              damage_fee: 0,
+            })),
+            returned_by: 'Salesman',
+          });
+          console.log('✅ Return successful — booking status should now be updated');
+        } catch (returnError: any) {
+          console.error('❌ Return failed:', returnError.response?.data || returnError.message);
+          toast.error(`Return failed: ${returnError.response?.data?.error || returnError.message}`);
+          return;
+        }
+      }
+
+      // Step 2: Record refund transactions for each selected item
       const refundPromises = selectedItems.map(async (product: any) => {
         const refundData = itemRefunds[product.id];
         const amount = parseFloat(refundData.amount);
 
-        // IMPORTANT: Always include product name and code in notes for tracking
-        // Format: "Refund for Product Name (CODE): user notes" or "Refund for Product Name (CODE)"
         const baseNotes = `Refund for ${product.name} (${product.code})`;
         let fullNotes = refundData.notes.trim()
           ? `${baseNotes}: ${refundData.notes.trim()}`
           : `${baseNotes} - ₹${Math.floor(amount).toLocaleString('en-IN')}`;
 
-        // Append general narration if provided
         if (refundNarration.trim()) {
           fullNotes += ` | ${refundNarration.trim()}`;
         }
@@ -1125,99 +1146,15 @@ export default function OrderDetailsPage() {
 
   const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'exchanged' && p.status !== 'cancelled') : [];
 
-  // Helper function to determine which products have SECURITY refunds (NOT cancellation refunds)
-  function getProductsWithRefunds(): Set<number> {
-    const productsWithRefunds = new Set<number>();
-    // CRITICAL: Only check for security refunds, NOT cancellation refunds!
-    const refundTransactions = transactions.filter((t: any) => {
-      const transactionType = String(t.transaction_type || '').toLowerCase().trim();
-      return t.type === 'refund' && transactionType !== 'cancellation_refund';
-    });
-
-    console.log('=== getProductsWithRefunds called ===');
-    console.log('Total transactions:', transactions.length);
-    console.log('Security refund transactions (excluding cancellation):', refundTransactions.length);
-    console.log('Products to check:', products.length);
-
-    // Debug: log refund transactions
-    if (refundTransactions.length > 0) {
-      console.log('Refund transaction details:', refundTransactions.map((t: any) => ({
-        id: t.id,
-        notes: t.notes,
-        amount: t.amount
-      })));
-    }
-
-    refundTransactions.forEach((transaction: any) => {
-      // Parse notes to extract product code
-      // Format: "Refund of ₹X for Product Name (CODE)" or similar
-      const notes = transaction.notes || '';
-      console.log('Checking transaction notes:', notes);
-
-      // Try to match product code in notes - use precise matching
-      products.forEach((product: any) => {
-        console.log(`  Testing product: ${product.id} (${product.name}, code: ${product.code})`);
-
-        // First try exact pattern match: (CODE) - this is the most reliable
-        if (notes.includes(`(${product.code})`)) {
-          productsWithRefunds.add(product.id);
-          console.log(`  ✓ Matched product ${product.id} (${product.name}) via exact code pattern (${product.code})`);
-          return;
-        }
-
-        // If that doesn't match, try matching product name followed by code pattern
-        // This handles cases where format might be slightly different
-        const namePattern = new RegExp(`\\b${product.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`, 'i');
-        if (namePattern.test(notes)) {
-          productsWithRefunds.add(product.id);
-          console.log(`  ✓ Matched product ${product.id} (${product.name}) via name+code pattern`);
-          return;
-        }
-
-        // Last resort: check if product code appears as a whole word (not substring) AND product name is present
-        const codePattern = new RegExp(`\\b${product.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
-        if (codePattern.test(notes) && notes.includes(product.name)) {
-          productsWithRefunds.add(product.id);
-          console.log(`  ✓ Matched product ${product.id} (${product.name}) via code word boundary + name`);
-        }
-      });
-    });
-
-    console.log('Products with refunds (IDs):', Array.from(productsWithRefunds));
-    console.log('=== End getProductsWithRefunds ===');
-    return productsWithRefunds;
-  }
-
-  // Get set of product IDs that have refunds
-  const productsWithRefunds = getProductsWithRefunds();
-
-  // Filter only active (non-cancelled) products for refund status check
+  // Use backend-provided status — no frontend status derivation
   const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
+  const isOrderCompleted = booking.status === 'completed';
+  const isPartiallyCompleted = booking.status === 'partially_completed';
 
-  // Check if all ACTIVE products have refunds (order is completed)
-  const isOrderCompleted = activeProducts.length > 0 && activeProducts.every((p: any) => productsWithRefunds.has(p.id));
-  const hasAnyRefund = productsWithRefunds.size > 0;
-
-  // Partially completed = some ACTIVE products have SECURITY refunds but not all
-  // NOTE: This is for security deposit refunds, NOT cancellation refunds!
-  const isPartiallyCompleted = hasAnyRefund && !isOrderCompleted && activeProducts.length > 0;
-
-  console.log('=== Order Completion Check ===');
-  console.log('Total products:', products.length);
-  console.log('Active products (non-cancelled):', activeProducts.length);
-  console.log('Cancelled products:', products.length - activeProducts.length);
-  console.log('Products with security refunds:', productsWithRefunds.size);
-  console.log('Product IDs:', products.map((p: any) => p.id));
-  console.log('Active Product IDs:', activeProducts.map((p: any) => p.id));
-  console.log('Products with refund IDs:', Array.from(productsWithRefunds));
-  console.log('Is order completed? (all active products refunded):', isOrderCompleted);
-  console.log('Is partially completed? (some active products refunded):', isPartiallyCompleted);
-  console.log('Is partially completed?', isPartiallyCompleted);
-  console.log('=== End Order Completion Check ===');
-
-  // Helper to check if a specific product has refund
+  // A product is "refunded" if its backend status is 'completed'
   function hasProductRefund(productId: number): boolean {
-    return productsWithRefunds.has(productId);
+    const product = products.find((p: any) => p.id === productId);
+    return product?.status === 'completed';
   }
 
   // Helper to check if a product is cancelled
@@ -1288,7 +1225,7 @@ export default function OrderDetailsPage() {
                 } else if (status === 'partially_completed') {
                   bgColor = 'bg-blue-100';
                   textColor = 'text-blue-800';
-                  label = 'Partially Cancelled';
+                  label = 'Partially Completed';
                 } else if (status === 'completed') {
                   bgColor = 'bg-blue-100';
                   textColor = 'text-blue-800';
@@ -1954,7 +1891,7 @@ export default function OrderDetailsPage() {
             })()}
 
             {/* Detailed Payment Breakdown - uses backend payment summary */}
-            {!hasAnyRefund && booking?.status !== 'cancelled' && paymentSummary && (
+            {!isOrderCompleted && !isPartiallyCompleted && booking?.status !== 'cancelled' && paymentSummary && (
               <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
                 <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -2064,8 +2001,7 @@ export default function OrderDetailsPage() {
 
             const rentalDue = paymentSummary.charges.rent.due || 0;
             const totalDue = paymentSummary.totals.balance;
-            // Once refunds exist, payment phase is complete - we're now in refund/return phase
-            const isFullyPaid = hasAnyRefund ? true : (totalDue <= 0);
+            const isFullyPaid = totalDue <= 0;
 
             // Show status based on refund completion
             if (isOrderCompleted) {
@@ -2394,7 +2330,7 @@ export default function OrderDetailsPage() {
                         ₹{(() => {
                           // Calculate remaining security for products without refunds
                           const remainingSecurity = products
-                            .filter((p: any) => !productsWithRefunds.has(p.id))
+                            .filter((p: any) => !hasProductRefund(p.id))
                             .reduce((sum: number, p: any) => {
                               const productSecurity = typeof p.security_deposit === 'number'
                                 ? p.security_deposit
@@ -2408,7 +2344,7 @@ export default function OrderDetailsPage() {
                     <div className="flex justify-between items-center pt-2">
                       <span className="text-xs text-gray-500">Items pending refund:</span>
                       <span className="text-xs text-gray-600">
-                        {products.length - productsWithRefunds.size} of {products.length}
+                        {products.filter((p: any) => !hasProductRefund(p.id)).length} of {products.length}
                       </span>
                     </div>
                   </div>
