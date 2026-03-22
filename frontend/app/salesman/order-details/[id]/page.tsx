@@ -1727,16 +1727,25 @@ export default function OrderDetailsPage() {
                 }
                 return null;
               })()}
-              <div className="flex justify-between">
-                <span className="text-gray-600">Security Deposit</span>
-                <span className="font-medium">
-                  ₹{Math.floor(
-                    typeof booking.security_deposit === 'number'
-                      ? booking.security_deposit
-                      : parseFloat(booking.security_deposit) || 0
-                  ).toLocaleString('en-IN')}
-                </span>
-              </div>
+              {(() => {
+                // Calculate security deposit from active (non-cancelled) products
+                const products = Array.isArray(booking.products) ? booking.products : [];
+                const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
+                const securityFromProducts = activeProducts.reduce((sum: number, product: any) => {
+                  const security = typeof product.security_deposit === 'number'
+                    ? product.security_deposit
+                    : parseFloat(String(product.security_deposit || '0')) || 0;
+                  return sum + security;
+                }, 0);
+                return (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Security Deposit</span>
+                    <span className="font-medium">
+                      ₹{Math.floor(securityFromProducts).toLocaleString('en-IN')}
+                    </span>
+                  </div>
+                );
+              })()}
               <div className="flex justify-between font-bold text-lg border-t pt-3">
                 <span>Total</span>
                 <span>
@@ -1891,101 +1900,144 @@ export default function OrderDetailsPage() {
             })()}
 
             {/* Detailed Payment Breakdown - uses backend payment summary */}
-            {!isOrderCompleted && !isPartiallyCompleted && booking?.status !== 'cancelled' && paymentSummary && (
-              <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {/* Rent Section */}
-                  <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🏠 Rental Amount</p>
-                    <div className="space-y-2">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due).toLocaleString('en-IN')}</span>
+            {booking?.status !== 'cancelled' && paymentSummary && (
+              (isOrderCompleted || isPartiallyCompleted) ? (
+                /* For completed/partially completed orders, show a concise financial summary */
+                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Financial Summary</h4>
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center py-1.5">
+                      <span className="text-sm text-gray-600">Total Charged:</span>
+                      <span className="font-bold text-gray-900">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
+                    </div>
+                    <div className="flex justify-between items-center py-1.5">
+                      <span className="text-sm text-gray-600">Total Paid by Customer:</span>
+                      <span className="font-bold text-green-600">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
+                    </div>
+                    {(() => {
+                      const totalRefunded = transactions
+                        .filter((t: any) => t.type === 'refund')
+                        .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
+                      if (totalRefunded > 0) {
+                        return (
+                          <div className="flex justify-between items-center py-1.5">
+                            <span className="text-sm text-gray-600">Total Refunded:</span>
+                            <span className="font-bold text-orange-600">-₹{Math.floor(totalRefunded).toLocaleString('en-IN')}</span>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {(paymentSummary.charges.penalties.due > 0) && (
+                      <div className="flex justify-between items-center py-1.5">
+                        <span className="text-sm text-gray-600">Penalties Applied:</span>
+                        <span className="font-bold text-red-600">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
                       </div>
-                      <div className="flex flex-col pt-1 border-t border-gray-200">
-                        <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
-                      </div>
+                    )}
+                    <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-1 border border-gray-300">
+                      <span className="text-sm font-bold text-gray-800">Balance:</span>
+                      <span className={`font-bold text-base ${paymentSummary.totals.balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        {paymentSummary.totals.balance <= 0 ? 'Fully Settled' : `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}`}
+                      </span>
                     </div>
                   </div>
-
-                  {/* Security Section */}
-                  <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🔒 Security Deposit</p>
-                    <div className="space-y-2">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due).toLocaleString('en-IN')}</span>
-                      </div>
-                      <div className="flex flex-col pt-1 border-t border-gray-200">
-                        <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Penalties Section - Show if penalties exist */}
-                  {(paymentSummary.charges.penalties.due > 0 || paymentSummary.charges.fees.due > 0) && (
-                    <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties & Fees</p>
-                      <div className="space-y-2">
-                        {paymentSummary.charges.penalties.due > 0 && (
-                          <div className="flex flex-col">
-                            <span className="text-xs text-gray-500 mb-0.5">Penalties</span>
-                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
-                          </div>
-                        )}
-                        {paymentSummary.charges.fees.due > 0 && (
-                          <div className="flex flex-col pt-1 border-t border-gray-200">
-                            <span className="text-xs text-gray-500 mb-0.5">Fees</span>
-                            <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.fees.due).toLocaleString('en-IN')}</span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Transport Section - Show if transport exists */}
-                  {paymentSummary.charges.transport.due > 0 && (
+                </div>
+              ) : (
+                /* For active orders, show the detailed per-category breakdown */
+                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
+                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    {/* Rent Section */}
                     <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🚚 Transport</p>
+                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🏠 Rental Amount</p>
                       <div className="space-y-2">
                         <div className="flex flex-col">
                           <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.due).toLocaleString('en-IN')}</span>
+                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex flex-col pt-1 border-t border-gray-200">
                           <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.paid).toLocaleString('en-IN')}</span>
+                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
                         </div>
                       </div>
                     </div>
-                  )}
 
-                  {/* Total Summary */}
-                  <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
-                    <p className="text-xs text-gray-600 mb-2 leading-tight break-words">📊 Total Summary</p>
-                    <div className="space-y-2">
-                      <div className="flex flex-col">
-                        <span className="text-xs text-gray-500 mb-0.5">Grand Total</span>
-                        <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
+                    {/* Security Section */}
+                    <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
+                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🔒 Security Deposit</p>
+                      <div className="space-y-2">
+                        <div className="flex flex-col">
+                          <span className="text-xs text-gray-500 mb-0.5">Due</span>
+                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex flex-col pt-1 border-t border-gray-200">
+                          <span className="text-xs text-gray-500 mb-0.5">Paid</span>
+                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
+                        </div>
                       </div>
-                      <div className="flex flex-col pt-1 border-t border-purple-200">
-                        <span className="text-xs text-gray-500 mb-0.5">Amount Paid</span>
-                        <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
+                    </div>
+
+                    {/* Penalties Section - Show if penalties exist */}
+                    {(paymentSummary.charges.penalties.due > 0 || paymentSummary.charges.fees.due > 0) && (
+                      <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
+                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties & Fees</p>
+                        <div className="space-y-2">
+                          {paymentSummary.charges.penalties.due > 0 && (
+                            <div className="flex flex-col">
+                              <span className="text-xs text-gray-500 mb-0.5">Penalties</span>
+                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                          {paymentSummary.charges.fees.due > 0 && (
+                            <div className="flex flex-col pt-1 border-t border-gray-200">
+                              <span className="text-xs text-gray-500 mb-0.5">Fees</span>
+                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.fees.due).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      <div className="flex flex-col pt-1 border-t border-purple-200">
-                        <span className="text-xs text-gray-500 mb-0.5 font-semibold">Balance Due</span>
-                        <span className={`font-bold text-sm break-words ${paymentSummary.totals.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          {paymentSummary.totals.balance > 0 ? `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}` : 'Fully Paid'}
-                        </span>
+                    )}
+
+                    {/* Transport Section - Show if transport exists */}
+                    {paymentSummary.charges.transport.due > 0 && (
+                      <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
+                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🚚 Transport</p>
+                        <div className="space-y-2">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-gray-500 mb-0.5">Due</span>
+                            <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.due).toLocaleString('en-IN')}</span>
+                          </div>
+                          <div className="flex flex-col pt-1 border-t border-gray-200">
+                            <span className="text-xs text-gray-500 mb-0.5">Paid</span>
+                            <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.paid).toLocaleString('en-IN')}</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Total Summary */}
+                    <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
+                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">📊 Total Summary</p>
+                      <div className="space-y-2">
+                        <div className="flex flex-col">
+                          <span className="text-xs text-gray-500 mb-0.5">Grand Total</span>
+                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex flex-col pt-1 border-t border-purple-200">
+                          <span className="text-xs text-gray-500 mb-0.5">Amount Paid</span>
+                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
+                        </div>
+                        <div className="flex flex-col pt-1 border-t border-purple-200">
+                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">Balance Due</span>
+                          <span className={`font-bold text-sm break-words ${paymentSummary.totals.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                            {paymentSummary.totals.balance > 0 ? `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}` : 'Fully Paid'}
+                          </span>
+                        </div>
                       </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            )}
+              ))}
 
 
           </div>

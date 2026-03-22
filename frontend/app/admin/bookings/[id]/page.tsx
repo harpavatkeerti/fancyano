@@ -21,9 +21,9 @@ export default function OrderDetailsPage() {
   const [booking, setBooking] = useState<Booking | null>(null);
   const [transactions, setTransactions] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [measurements, setMeasurements] = useState<{[key: string]: any}>({});
-  const [specialRequirements, setSpecialRequirements] = useState<{[key: string]: string}>({});
-  const [showMeasurements, setShowMeasurements] = useState<{[key: string]: boolean}>({});
+  const [measurements, setMeasurements] = useState<{ [key: string]: any }>({});
+  const [specialRequirements, setSpecialRequirements] = useState<{ [key: string]: string }>({});
+  const [showMeasurements, setShowMeasurements] = useState<{ [key: string]: boolean }>({});
   const [showEstimate, setShowEstimate] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [showTaxInvoice, setShowTaxInvoice] = useState(false);
@@ -43,7 +43,7 @@ export default function OrderDetailsPage() {
 
   async function fetchPaymentSummary() {
     if (!params.id) return;
-    
+
     try {
       const response = await bookingsApi.getPaymentSummary(Number(params.id));
       console.log('📊 Payment Summary:', response.data);
@@ -58,18 +58,18 @@ export default function OrderDetailsPage() {
     try {
       const response = await bookingsApi.getById(Number(params.id));
       setBooking(response.data);
-      
+
       // Load measurements from booking if they exist
       if (response.data.measurements) {
         try {
-          const measurementsData = typeof response.data.measurements === 'string' 
+          const measurementsData = typeof response.data.measurements === 'string'
             ? JSON.parse(response.data.measurements)
             : response.data.measurements;
-          
+
           // Convert old format (keyed by product.id) to new format (keyed by product.id + dates)
-          const convertedMeasurements: {[key: string]: any} = {};
+          const convertedMeasurements: { [key: string]: any } = {};
           const products = Array.isArray(response.data.products) ? response.data.products : [];
-          
+
           if (typeof measurementsData === 'object' && measurementsData !== null) {
             // If it's keyed by product ID (old format), convert it
             products.forEach((product: any) => {
@@ -77,7 +77,7 @@ export default function OrderDetailsPage() {
               const bookedFrom = product.booked_from || response.data.booked_from;
               const bookedTo = product.booked_to || response.data.booked_to;
               const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-              
+
               // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
               // This ensures each product instance with different dates gets independent measurements
               const productMeas = measurementsData[uniqueKey] || measurementsData[productId] || {};
@@ -88,7 +88,7 @@ export default function OrderDetailsPage() {
               }
             });
           }
-          
+
           setMeasurements(convertedMeasurements);
         } catch (error) {
           console.error('Error parsing measurements:', error);
@@ -103,15 +103,15 @@ export default function OrderDetailsPage() {
             : response.data.special_requirements;
           if (typeof specialReqsData === 'object' && specialReqsData !== null) {
             // Convert old format to new format (keyed by product.id + dates)
-            const convertedSpecialReqs: {[key: string]: string} = {};
+            const convertedSpecialReqs: { [key: string]: string } = {};
             const products = Array.isArray(response.data.products) ? response.data.products : [];
-            
+
             products.forEach((product: any) => {
               const productId = product.id;
               const bookedFrom = product.booked_from || response.data.booked_from;
               const bookedTo = product.booked_to || response.data.booked_to;
               const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-              
+
               // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
               // This ensures each product instance with different dates gets independent special requirements
               const productReq = specialReqsData[uniqueKey] || specialReqsData[productId] || '';
@@ -121,14 +121,14 @@ export default function OrderDetailsPage() {
                 convertedSpecialReqs[uniqueKey] = productReq;
               }
             });
-            
+
             setSpecialRequirements(convertedSpecialReqs);
           }
         } catch (error) {
           console.error('Error parsing special requirements:', error);
         }
       }
-      
+
       // Fetch transactions for status calculation
       try {
         const transactionsResponse = await paymentTransactionsApi.getByBookingId(Number(params.id));
@@ -137,7 +137,7 @@ export default function OrderDetailsPage() {
         console.error('Error fetching transactions:', transError);
         setTransactions([]);
       }
-      
+
       // Fetch payment summary
       await fetchPaymentSummary();
     } catch (error) {
@@ -151,7 +151,7 @@ export default function OrderDetailsPage() {
   function getStatusDisplay(status: string): { text: string; color: string } {
     // Use backend-provided status directly - backend calculates based on payments/refunds/cancellations
     const displayStatus = booking?.status || status;
-    
+
     switch (displayStatus) {
       case 'completed':
         return { text: 'Completed', color: 'text-blue-600' };
@@ -172,13 +172,13 @@ export default function OrderDetailsPage() {
 
   async function handleStatusUpdate(newStatus: string) {
     if (!booking) return;
-    
+
     // Check if trying to confirm a booking that has a credit note
     if (booking.status !== 'confirmed' && newStatus === 'confirmed') {
       try {
         const creditNotesResponse = await creditNotesApi.getByBookingId(booking.id);
         const creditNotes = creditNotesResponse.data || [];
-        
+
         if (creditNotes.length > 0) {
           const activeCreditNote = creditNotes.find((note: any) => {
             const validUntil = new Date(note.valid_until);
@@ -186,7 +186,7 @@ export default function OrderDetailsPage() {
             const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
             return validUntil >= now && availableAmount > 0;
           });
-          
+
           if (activeCreditNote) {
             toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
             return;
@@ -197,7 +197,7 @@ export default function OrderDetailsPage() {
         // Continue with update if check fails
       }
     }
-    
+
     if (booking) {
       setBooking({ ...booking, status: newStatus as any });
     }
@@ -222,11 +222,11 @@ export default function OrderDetailsPage() {
         {},
         { responseType: 'blob' }
       );
-      
+
       // Store PDF blob and show preview instead of auto-downloading
       const blob = new Blob([response.data], { type: 'application/pdf' });
       const url = window.URL.createObjectURL(blob);
-      
+
       setPdfBlob(blob);
       setPdfType(type);
       setPdfUrl(url);
@@ -239,7 +239,7 @@ export default function OrderDetailsPage() {
         );
         const publicUrl = generateResponse.data.url;
         const fullUrl = generateResponse.data.fullUrl || `${API_URL.replace('/api', '')}${publicUrl}`;
-        
+
         // Replace localhost with actual server IP if needed
         let shareableUrl = fullUrl;
         if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
@@ -281,40 +281,40 @@ export default function OrderDetailsPage() {
 
   function handleDownloadPdf() {
     if (!pdfBlob || !pdfType || !booking) return;
-    
+
     const url = window.URL.createObjectURL(pdfBlob);
-      const link = document.createElement('a');
-      link.href = url;
+    const link = document.createElement('a');
+    link.href = url;
     link.setAttribute('download', `${pdfType}_${booking.id}.pdf`);
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
     toast.success('PDF downloaded successfully');
   }
 
   function formatPhoneNumber(phone: string): string | null {
     if (!phone) return null;
-    
+
     // Remove all non-digits
     let phoneNumber = phone.replace(/\D/g, '');
-    
+
     // Remove leading zeros
     phoneNumber = phoneNumber.replace(/^0+/, '');
-    
+
     if (phoneNumber.length === 0) {
       return null;
     }
-    
+
     // If it's exactly 10 digits and doesn't start with a country code, assume it's Indian
     if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
       phoneNumber = '91' + phoneNumber;
     }
-    
+
     // Validate: WhatsApp requires phone numbers in E.164 format (7-15 digits, no leading zeros)
     if (phoneNumber.length < 7 || phoneNumber.length > 15 || phoneNumber[0] === '0') {
       return null;
     }
-    
+
     return phoneNumber;
   }
 
@@ -331,7 +331,7 @@ export default function OrderDetailsPage() {
 
     // Use the public URL that was generated when creating the PDF
     let pdfDownloadLink = '';
-    
+
     if (pdfPublicUrl) {
       pdfDownloadLink = pdfPublicUrl;
     } else {
@@ -387,10 +387,10 @@ export default function OrderDetailsPage() {
 
     // Open WhatsApp for each phone number
     phoneNumbers.forEach((phoneNumber, index) => {
-    const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
+      const whatsappUrl = `https://wa.me/${phoneNumber}?text=${encodeURIComponent(message)}`;
       // Add small delay between opening multiple tabs
       setTimeout(() => {
-    window.open(whatsappUrl, '_blank');
+        window.open(whatsappUrl, '_blank');
       }, index * 500);
     });
 
@@ -406,14 +406,14 @@ export default function OrderDetailsPage() {
 
     if (!pdfPublicUrl) {
       toast.warning('PDF not generated yet. Please generate the document first.');
-        return;
-      }
+      return;
+    }
 
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
-    
+
     // Prompt for customer email if not available
     let customerEmail = booking.customer_email || null;
-    
+
     if (!customerEmail) {
       const emailInput = prompt(`Enter customer email address for ${booking.customer_name}:`);
       if (!emailInput || !emailInput.trim()) {
@@ -442,18 +442,18 @@ export default function OrderDetailsPage() {
     } catch (error: any) {
       // Fallback to mailto if backend email fails or not configured
       const useMailto = error.response?.data?.useMailto || !error.response;
-      
+
       if (useMailto) {
         // Construct email body with PDF download link
         const emailBody = `Hi ${booking.customer_name},\n\nPlease find your ${documentName} for booking #${booking.id} below.\n\nDownload PDF: ${pdfPublicUrl}\n\nNote: The PDF is available for download at the link above. Please download and attach it to this email if needed.\n\nThank you!`;
-        
+
         const subject = encodeURIComponent(`${documentName} for Booking #${booking.id}`);
         const body = encodeURIComponent(emailBody);
-        
+
         // Note: mailto protocol doesn't support file attachments
         // We include the download link in the body and pre-fill the recipient email
         const mailtoLink = `mailto:${customerEmail}?subject=${subject}&body=${body}`;
-        
+
         window.location.href = mailtoLink;
         toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
       } else {
@@ -568,7 +568,7 @@ export default function OrderDetailsPage() {
               {(() => {
                 const isTransportationOpted = (booking.transport_charge || 0) > 0;
                 const transportationCharge = booking.transport_charge || 0;
-                
+
                 if (isTransportationOpted) {
                   return (
                     <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
@@ -577,7 +577,7 @@ export default function OrderDetailsPage() {
                         <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
                       </div>
                       <span className="text-sm text-teal-700 font-semibold">₹{Math.floor(transportationCharge).toLocaleString('en-IN')}</span>
-              </div>
+                    </div>
                   );
                 }
                 return null;
@@ -609,7 +609,7 @@ export default function OrderDetailsPage() {
             const bookedFrom = product.booked_from || booking.booked_from;
             const bookedTo = product.booked_to || booking.booked_to;
             const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-            
+
             const productMeasurements = measurements[uniqueKey] || {};
             const hasMeasurements = Object.keys(productMeasurements).length > 0;
             const isFemale = isFemaleClothing(product.name);
@@ -620,11 +620,10 @@ export default function OrderDetailsPage() {
             const isInactive = isCancelled || isExchanged;
 
             return (
-            <div key={index} className={`border rounded-lg p-4 mb-4 ${
-              isCancelled ? 'opacity-60 border-red-300 bg-red-50' : 
-              isExchanged ? 'opacity-60 border-orange-300 bg-orange-50' : ''
-            }`}>
-              <div className="flex justify-between items-start mb-2">
+              <div key={index} className={`border rounded-lg p-4 mb-4 ${isCancelled ? 'opacity-60 border-red-300 bg-red-50' :
+                  isExchanged ? 'opacity-60 border-orange-300 bg-orange-50' : ''
+                }`}>
+                <div className="flex justify-between items-start mb-2">
                   <div className="flex items-start gap-3">
                     {/* Product Image */}
                     {(() => {
@@ -642,20 +641,20 @@ export default function OrderDetailsPage() {
                         />
                       ) : null;
                     })()}
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="font-semibold text-lg">{product.name}</p>
-                    {isCancelled && (
-                      <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
-                        ❌ Cancelled
-                      </span>
-                    )}
-                    {isExchanged && (
-                      <span className="px-2 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
-                        🔄 Exchanged
-                      </span>
-                    )}
-                  </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-lg">{product.name}</p>
+                        {isCancelled && (
+                          <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
+                            ❌ Cancelled
+                          </span>
+                        )}
+                        {isExchanged && (
+                          <span className="px-2 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
+                            🔄 Exchanged
+                          </span>
+                        )}
+                      </div>
                       {product.code && (
                         <div className="flex items-center gap-2 mt-1">
                           {(() => {
@@ -678,11 +677,11 @@ export default function OrderDetailsPage() {
                       )}
                       <p className="text-sm text-gray-600 mt-1">₹{product.rent?.toLocaleString()}/Day</p>
                     </div>
+                  </div>
                 </div>
-              </div>
-              <div className="text-sm text-gray-700">
-                <p><strong>Dates:</strong> {new Date(product.booked_from || booking.booked_from).toLocaleDateString('en-GB')} To {new Date(product.booked_to || booking.booked_to).toLocaleDateString('en-GB')}</p>
-              </div>
+                <div className="text-sm text-gray-700">
+                  <p><strong>Dates:</strong> {new Date(product.booked_from || booking.booked_from).toLocaleDateString('en-GB')} To {new Date(product.booked_to || booking.booked_to).toLocaleDateString('en-GB')}</p>
+                </div>
 
                 {/* Customer Measurements - Collapsible */}
                 {hasMeasurements && (
@@ -872,7 +871,7 @@ export default function OrderDetailsPage() {
                     )}
                   </div>
                 )}
-            </div>
+              </div>
             );
           })}
         </div>
@@ -918,16 +917,16 @@ export default function OrderDetailsPage() {
           <div className="mt-6">
             {/* Check if any product has late fees */}
             {(() => {
-              const productsWithLateFees = paymentSummary.products.filter((p: any) => 
+              const productsWithLateFees = paymentSummary.products.filter((p: any) =>
                 p.charges?.late_fee && p.charges.late_fee.due > 0
               );
-              
+
               if (productsWithLateFees.length === 0) return null;
-              
-              const totalLateFees = productsWithLateFees.reduce((sum: number, p: any) => 
+
+              const totalLateFees = productsWithLateFees.reduce((sum: number, p: any) =>
                 sum + (p.charges.late_fee.due || 0), 0
               );
-              
+
               return (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6">
                   <div className="flex items-center gap-3 mb-4">
@@ -936,7 +935,7 @@ export default function OrderDetailsPage() {
                     </svg>
                     <h3 className="text-lg font-semibold text-yellow-900">Late Fees</h3>
                   </div>
-                  
+
                   <div className="space-y-3">
                     {productsWithLateFees.map((product: any, index: number) => (
                       <div key={index} className="bg-white rounded-lg p-4 border border-yellow-200">
@@ -959,7 +958,7 @@ export default function OrderDetailsPage() {
                         </div>
                       </div>
                     ))}
-                    
+
                     <div className="bg-yellow-100 rounded-lg p-4 border border-yellow-300">
                       <div className="flex justify-between items-center">
                         <span className="text-lg font-semibold text-yellow-900">Total Late Fees Due:</span>
@@ -968,7 +967,7 @@ export default function OrderDetailsPage() {
                         </span>
                       </div>
                     </div>
-                    
+
                     <div className="bg-blue-50 border-l-4 border-blue-400 p-3">
                       <p className="text-xs text-blue-800">
                         <strong>Note:</strong> Late fees are automatically calculated by the system when products are returned after their scheduled date. Use the Payment Management section below to record payments for these fees.
@@ -996,18 +995,18 @@ export default function OrderDetailsPage() {
               />
             </div>
           )}
-          
+
           {/* Payment Management - Show read-only for fully cancelled bookings */}
           {(() => {
             const isFullyCancelled = booking?.status === 'cancelled';
-            
+
             if (isFullyCancelled) {
               // Use backend payment summary for cancelled booking financial data
               const totalDue = paymentSummary?.totals.total_due || 0;
               const totalPaid = paymentSummary?.totals.total_paid || 0;
               const balance = paymentSummary?.totals.balance || 0;
               const penalties = paymentSummary?.charges.penalties.due || 0;
-              
+
               return (
                 <div className="space-y-4">
                   {/* Cancellation Summary */}
@@ -1018,7 +1017,7 @@ export default function OrderDetailsPage() {
                       </svg>
                       <h3 className="text-lg font-semibold text-red-900">Booking Fully Cancelled</h3>
                     </div>
-                    
+
                     {/* Financial Summary */}
                     <div className="bg-white rounded-lg p-4 mb-4">
                       <h4 className="text-sm font-semibold text-gray-700 mb-3">📊 Financial Summary</h4>
@@ -1045,13 +1044,13 @@ export default function OrderDetailsPage() {
                         </div>
                       </div>
                     </div>
-                    
+
                     <p className="text-sm text-red-700">
                       All products in this booking have been cancelled. No further payments can be recorded.
                       Transaction history is available below for reference.
                     </p>
                   </div>
-                  
+
                   {/* Payment History - Read Only */}
                   <PaymentManagement
                     bookingId={booking.id}
@@ -1067,21 +1066,21 @@ export default function OrderDetailsPage() {
                 </div>
               );
             }
-            
+
             return (
               <PaymentManagement
                 bookingId={booking.id}
                 totalAmount={(() => {
                   if (!paymentSummary) return 0;
                   return paymentSummary.charges.rent.due || 0;
-            })()}
-            securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) : 0}
-            userRole="admin"
-            onPaymentUpdate={() => {
-              fetchBooking(); // Refresh booking and transactions
-            }}
-            onStatusUpdate={handleStatusUpdate}
-          />
+                })()}
+                securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) : 0}
+                userRole="admin"
+                onPaymentUpdate={() => {
+                  fetchBooking(); // Refresh booking and transactions
+                }}
+                onStatusUpdate={handleStatusUpdate}
+              />
             );
           })()}
         </div>
@@ -1119,7 +1118,7 @@ export default function OrderDetailsPage() {
                     </svg>
                     Download
                   </button>
-                  
+
                   {/* WhatsApp Share Button */}
                   <button
                     onClick={() => setShowWhatsAppShareModal(true)}
@@ -1131,13 +1130,13 @@ export default function OrderDetailsPage() {
                       fill="currentColor"
                       viewBox="0 0 24 24"
                     >
-                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                      <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                     </svg>
                     WhatsApp
                   </button>
-                  
+
                   {/* Email Share Button */}
-        <button
+                  <button
                     onClick={handleShareEmail}
                     className="flex items-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
                     title="Share via Email"
@@ -1156,7 +1155,7 @@ export default function OrderDetailsPage() {
                       />
                     </svg>
                     Email
-        </button>
+                  </button>
 
                   {/* Close Button */}
                   <button
@@ -1178,9 +1177,9 @@ export default function OrderDetailsPage() {
                       />
                     </svg>
                   </button>
-          </div>
-        </div>
-      </div>
+                </div>
+              </div>
+            </div>
 
             {/* PDF Preview */}
             <div className="flex-1 overflow-hidden p-6">
@@ -1192,8 +1191,8 @@ export default function OrderDetailsPage() {
                 />
               </div>
             </div>
-                </div>
-              </div>
+          </div>
+        </div>
       )}
 
       {/* WhatsApp Share Options Modal */}
@@ -1242,7 +1241,7 @@ export default function OrderDetailsPage() {
                     fill="currentColor"
                     viewBox="0 0 24 24"
                   >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -1261,8 +1260,8 @@ export default function OrderDetailsPage() {
                     className="w-5 h-5"
                     fill="currentColor"
                     viewBox="0 0 24 24"
-                >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -1281,8 +1280,8 @@ export default function OrderDetailsPage() {
                     className="w-5 h-5"
                     fill="currentColor"
                     viewBox="0 0 24 24"
-                >
-                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z"/>
+                  >
+                    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413Z" />
                   </svg>
                 </button>
               )}
@@ -1290,7 +1289,7 @@ export default function OrderDetailsPage() {
               {!booking.customer_phone && !booking.alternate_phone && (
                 <div className="text-center py-4 text-gray-500">
                   No phone numbers available for this booking
-              </div>
+                </div>
               )}
             </div>
           </div>

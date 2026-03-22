@@ -2788,67 +2788,19 @@ export default function BookingsPage() {
                     )}
                   </div>
 
-                  {/* Payment Information */}
-                  <div className="bg-gradient-to-r from-yellow-50 to-orange-50 rounded-lg p-5 border-l-4 border-yellow-500">
-                    <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center">
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-yellow-600">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z" />
-                      </svg>
-                      Payment Information
-                    </h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-yellow-200">
-                        <p className="text-sm text-gray-600 mb-1">Total Rent</p>
-                        <p className="text-2xl font-bold text-gray-900">₹{Math.floor(
-                          parseInt((viewingBooking as any).total_rent || 0)
-                        ).toLocaleString('en-IN')}</p>
+                  {/* Transportation indicator */}
+                  {((viewingBooking as any).transport_charge || 0) > 0 && (
+                    <div className="bg-teal-50 rounded-lg p-3 border-l-4 border-teal-500 flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-teal-600">🚚</span>
+                        <p className="text-sm font-medium text-teal-800">Local Transportation Opted</p>
                       </div>
-                      <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-green-200">
-                        <p className="text-sm text-gray-600 mb-1">Total Paid</p>
-                        <p className="text-2xl font-bold text-green-600">₹{Math.floor(
-                          parseInt((viewingBooking as any).total_paid || 0) + parseInt((viewingBooking as any).transport_paid || 0)
-                        ).toLocaleString('en-IN')}</p>
-                      </div>
-                      <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-red-200">
-                        <p className="text-sm text-gray-600 mb-1">Security Deposit</p>
-                        <p className="text-2xl font-bold text-red-600">₹{Math.floor((viewingBooking as any).total_security || 0).toLocaleString('en-IN')}</p>
-                      </div>
-                      <div className="bg-white rounded-lg p-4 shadow-sm border-2 border-blue-200">
-                        <p className="text-sm text-gray-600 mb-1">Payment Status</p>
-                        <span className={`inline-flex px-3 py-1 text-sm font-semibold rounded-full ${(viewingBooking as any).payment_status === 'paid'
-                          ? 'bg-green-100 text-green-800'
-                          : (viewingBooking as any).payment_status === 'partial'
-                            ? 'bg-yellow-100 text-yellow-800'
-                            : 'bg-red-100 text-red-800'
-                          }`}>
-                          {(viewingBooking as any).payment_status === 'paid' ? '✓ Paid' : (viewingBooking as any).payment_status === 'partial' ? '⚠ Partial' : '✗ Unpaid'}
-                        </span>
-                      </div>
-                      {/* Transportation - integrated into payment card */}
-                      {((viewingBooking as any).transport_charge || 0) > 0 && (
-                        <div className="col-span-2 bg-teal-50 rounded-lg p-4 shadow-sm border-2 border-teal-200">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="text-teal-600">🚚</span>
-                              <div>
-                                <p className="text-sm font-medium text-teal-800">Local Transportation</p>
-                                <p className="text-xs text-teal-600">✓ Opted</p>
-                              </div>
-                            </div>
-                            <p className="text-lg font-bold text-teal-700">
-                              ₹{Math.floor((viewingBooking as any).transport_charge || 0).toLocaleString('en-IN')}
-                            </p>
-                          </div>
-                        </div>
-                      )}
-                      {viewingBooking.payment_method && (
-                        <div className="col-span-2 bg-white rounded-lg p-4 shadow-sm border-2 border-purple-200">
-                          <p className="text-sm text-gray-600 mb-1">Payment Method</p>
-                          <p className="text-base font-semibold text-gray-900">{viewingBooking.payment_method}</p>
-                        </div>
-                      )}
+                      <p className="text-lg font-bold text-teal-700">
+                        ₹{Math.floor((viewingBooking as any).transport_charge || 0).toLocaleString('en-IN')}
+                      </p>
                     </div>
-                  </div>
+                  )}
+
 
                   {/* Products with Measurements */}
                   {(() => {
