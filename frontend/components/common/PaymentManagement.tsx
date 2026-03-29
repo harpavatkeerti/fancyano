@@ -14,6 +14,7 @@ interface PaymentManagementProps {
   onStatusUpdate?: (status: string) => void; // Optional callback to update booking status
   userRole?: 'admin' | 'salesman'; // Role-based button visibility
   isFullyCancelled?: boolean; // Show only transaction history for fully cancelled bookings
+  refreshTrigger?: number; // Increment to trigger re-fetch from parent
 }
 
 interface Product {
@@ -31,11 +32,13 @@ export function PaymentManagement({
   onPaymentUpdate,
   onStatusUpdate,
   userRole = 'admin', // Default to admin if not specified
-  isFullyCancelled = false
+  isFullyCancelled = false,
+  refreshTrigger = 0
 }: PaymentManagementProps) {
   const [transactions, setTransactions] = useState<PaymentTransaction[]>([]);
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
+  const [bookingStatus, setBookingStatus] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [showRecordModal, setShowRecordModal] = useState(false);
   const [transactionType, setTransactionType] = useState<'payment' | 'refund' | 'adjustment'>('payment');
@@ -55,7 +58,7 @@ export function PaymentManagement({
     fetchSummary();
     // Auto-check and update status on page load (for orders with completed refunds)
     calculateAndUpdateBookingStatus();
-  }, [bookingId]);
+  }, [bookingId, refreshTrigger]);
 
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
@@ -85,6 +88,7 @@ export function PaymentManagement({
     try {
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
+      setBookingStatus(booking.status || '');
       // Filter out cancelled products
       const productsList = Array.isArray(booking.products)
         ? booking.products.filter((p: any) => p.status !== 'cancelled')
@@ -303,6 +307,12 @@ export function PaymentManagement({
           method: formData.method,
           recorded_by: 'Admin',
           notes: notes,
+          // When there's a deduction, track it as a damage fee charge
+          ...(deduction > 0 ? {
+            booking_product_id: productId,
+            deduction_amount: deduction,
+            deduction_type: 'damage_fee',
+          } : {}),
         });
       }
 
@@ -346,16 +356,18 @@ export function PaymentManagement({
             // All values come from backend payment-summary API
             const totalRequired = summary.totals?.total_due || 0;
             const totalPaid = summary.totals?.total_paid || 0;
-            const balanceDue = summary.totals?.balance || 0;
+            const totalRefunded = summary.totals?.total_refunded || 0;
+            // Display balance accounts for refunds: what's owed - (paid - refunded)
+            const balanceDue = totalRequired - totalPaid + totalRefunded;
             const isFullyPaid = balanceDue <= 0;
             // Check for refunds in transactions
-            const hasAnyRefund = transactions.some((t: any) => t.type === 'refund');
+            const hasAnyRefund = totalRefunded > 0;
 
             return (
               <>
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="text-lg font-semibold text-gray-900">Payment Summary</h3>
-                  {userRole === 'admin' ? (
+                  {userRole === 'admin' && (
                     // Admin: Always show both buttons
                     <div className="flex gap-3">
                       <Button
@@ -380,125 +392,73 @@ export function PaymentManagement({
                         💸 Refund Payment
                       </Button>
                     </div>
-                  ) : (
-                    // Salesman: Show single button based on payment status (old logic)
-                    isFullyPaid ? (
-                      <Button
-                        onClick={() => {
-                          setTransactionType('refund');
-                          setFormData({ amount: '', method: '', notes: '' });
-                          setItemRefunds({}); // Reset product selections
-                          setShowRecordModal(true);
-                        }}
-                        className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
-                      >
-                        💸 Refund Payment
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={() => {
-                          setTransactionType('payment');
-                          setFormData({ amount: '', method: '', notes: '' });
-                          setShowRecordModal(true);
-                        }}
-                        className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
-                      >
-                        💰 Collect Payment
-                      </Button>
-                    )
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-xs text-gray-600 mb-1">Total Required</p>
-                    <p className="text-xl font-bold text-gray-900">
-                      {formatCurrency(totalRequired)}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-xs text-gray-600 mb-1">Total Paid</p>
-                    <p className="text-xl font-bold text-green-600">
-                      {formatCurrency(totalPaid)}
-                    </p>
-                  </div>
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <p className="text-xs text-gray-600 mb-1">Balance Due</p>
-                    <p className={`text-xl font-bold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {formatCurrency(balanceDue)}
+                {/* Balance Due - prominent display */}
+                <div className={`p-4 rounded-lg mb-4 ${balanceDue > 0 ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
+                  <div className="flex items-center justify-between">
+                    <p className={`text-sm font-medium ${balanceDue > 0 ? 'text-red-800' : 'text-green-800'}`}>Balance Due</p>
+                    <p className={`text-2xl font-bold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {balanceDue <= 0 ? '✅ ' : ''}{formatCurrency(balanceDue)}
                     </p>
                   </div>
                 </div>
 
-                {/* Payment Breakdown from backend summary */}
-                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {/* Rent Section */}
-                    <div className="bg-white rounded-lg p-3 border border-blue-200">
-                      <p className="text-xs text-gray-600 mb-2">🏠 Rental Amount</p>
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-700">Due:</span>
-                          <span className="font-bold text-gray-900">{formatCurrency(summary.charges.rent.due)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-700">Paid:</span>
-                          <span className="font-bold text-green-600">{formatCurrency(summary.charges.rent.paid)}</span>
-                        </div>
-                      </div>
+                {/* Financial Summary - itemized breakdown */}
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
+                  <h4 className="text-sm font-bold text-gray-900 mb-3">💰 Financial Summary</h4>
+
+                  {/* Charge Breakdown */}
+                  <div className="mb-3">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-sm font-semibold text-gray-700">Total Charges</span>
+                      <span className="text-sm font-bold text-gray-900">{formatCurrency(totalRequired)}</span>
                     </div>
-
-                    {/* Security Section */}
-                    <div className="bg-white rounded-lg p-3 border border-blue-200">
-                      <p className="text-xs text-gray-600 mb-2">🔒 Security Deposit</p>
-                      <div className="space-y-1">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-700">Due:</span>
-                          <span className="font-bold text-gray-900">{formatCurrency(summary.charges.security.due)}</span>
+                    {/* Itemized charges - ordered by priority, only show non-zero */}
+                    <div className="ml-4 space-y-1">
+                      {(() => {
+                        const breakdown = (summary as any).charge_breakdown || {};
+                        const orderedItems: [string, string][] = [
+                          ['rent', 'Rent'],
+                          ['security', 'Security Deposit'],
+                          ['transport', 'Transportation Charge'],
+                          ['damage_fee', 'Damage Fee'],
+                          ['late_fee', 'Late Fee'],
+                          ['exchange_penalty', 'Exchange Penalty'],
+                          ['downgrade_penalty', 'Downgrade Penalty'],
+                          ['cancellation_penalty', 'Cancellation Penalty'],
+                        ];
+                        return orderedItems
+                          .filter(([key]) => breakdown[key] > 0)
+                          .map(([key, label]) => (
+                            <div key={key} className="flex justify-between text-xs text-gray-600">
+                              <span>{label}</span>
+                              <span>{formatCurrency(breakdown[key])}</span>
+                            </div>
+                          ));
+                      })()}
+                      {summary.final_discount > 0 && (
+                        <div className="flex justify-between text-xs text-green-600">
+                          <span>Discount</span>
+                          <span>-{formatCurrency(summary.final_discount)}</span>
                         </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-700">Paid:</span>
-                          <span className="font-bold text-green-600">{formatCurrency(summary.charges.security.paid)}</span>
-                        </div>
-                      </div>
+                      )}
                     </div>
+                  </div>
 
-                    {/* Penalties Section - Show if penalties exist */}
-                    {(summary.charges.penalties.due > 0 || summary.charges.fees.due > 0) && (
-                      <div className="bg-white rounded-lg p-3 border border-red-200">
-                        <p className="text-xs text-gray-600 mb-2">⚠️ Penalties & Fees</p>
-                        <div className="space-y-1">
-                          {summary.charges.penalties.due > 0 && (
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-700">Penalties:</span>
-                              <span className="font-bold text-red-600">{formatCurrency(summary.charges.penalties.due)}</span>
-                            </div>
-                          )}
-                          {summary.charges.fees.due > 0 && (
-                            <div className="flex justify-between text-sm">
-                              <span className="text-gray-700">Fees:</span>
-                              <span className="font-bold text-red-600">{formatCurrency(summary.charges.fees.due)}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
+                  <hr className="border-gray-300 my-2" />
 
-                    {/* Transport Section - Show if transport exists */}
-                    {summary.charges.transport.due > 0 && (
-                      <div className="bg-white rounded-lg p-3 border border-blue-200">
-                        <p className="text-xs text-gray-600 mb-2">🚚 Transport</p>
-                        <div className="space-y-1">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-700">Due:</span>
-                            <span className="font-bold text-gray-900">{formatCurrency(summary.charges.transport.due)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm">
-                            <span className="text-gray-700">Paid:</span>
-                            <span className="font-bold text-green-600">{formatCurrency(summary.charges.transport.paid)}</span>
-                          </div>
-                        </div>
+                  {/* Total Paid & Refunded */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-semibold text-gray-700">Total Paid by Customer</span>
+                      <span className="text-sm font-bold text-green-600">{formatCurrency(totalPaid)}</span>
+                    </div>
+                    {totalRefunded > 0 && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-semibold text-gray-700">Total Refunded to Customer</span>
+                        <span className="text-sm font-bold text-orange-600">{formatCurrency(totalRefunded)}</span>
                       </div>
                     )}
                   </div>

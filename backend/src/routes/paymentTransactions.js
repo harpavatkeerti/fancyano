@@ -53,7 +53,10 @@ router.post('/', async (req, res) => {
       method,
       recorded_by,
       notes,
-      type
+      type,
+      booking_product_id,
+      deduction_amount,
+      deduction_type
     } = req.body;
 
     // Accept both 'payment_method' and 'method' for compatibility
@@ -67,12 +70,18 @@ router.post('/', async (req, res) => {
 
     // Route to appropriate service method based on type
     if (type === 'refund') {
+      // Build optional deduction object if provided
+      const deduction = (deduction_amount && deduction_amount > 0 && booking_product_id && deduction_type)
+        ? { bookingProductId: booking_product_id, amount: deduction_amount, type: deduction_type }
+        : undefined;
+
       const result = await chargeAccountingService.recordRefund(
         booking_id,
         amount,
         resolvedMethod,
         recorded_by,
-        notes
+        notes,
+        deduction
       );
 
       return res.status(201).json({

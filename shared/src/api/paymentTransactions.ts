@@ -24,6 +24,10 @@ export function createPaymentTransactionsApi(api: ApiClient) {
       recorded_by: string;
       notes?: string;
       transaction_type?: string;
+      // Deduction fields for refunds with security deposit deductions
+      booking_product_id?: number;
+      deduction_amount?: number;
+      deduction_type?: string;
     }) => api.post<any>('/payment-transactions', data),
     
     // Apply payment (auto-distributes according to priority)

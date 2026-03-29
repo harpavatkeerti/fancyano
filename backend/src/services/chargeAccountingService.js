@@ -91,27 +91,48 @@ class ChargeAccountingService {
         final_discount: booking.final_discount || 0
       };
 
+      // Per-charge-type breakdown for detailed display
+      const chargeBreakdown = {};
+
       // Aggregate charges by category
       products.forEach(product => {
-        // Skip exchanged/cancelled products for due calculations, but include paid amounts
-        const includeInDue = !['exchanged', 'cancelled'].includes(product.status);
+        const isActive = !['exchanged', 'cancelled'].includes(product.status);
+        const includeSecurityDue = !['exchanged', 'cancelled', 'completed'].includes(product.status);
 
         product.charges.forEach(charge => {
-          if (charge.charge_type === 'rent') {
-            if (includeInDue) summary.charges.rent.due += charge.due_amount;
+          // Track individual charge type dues for breakdown display
+          const chargeType = charge.charge_type;
+          let dueToAdd = 0;
+
+          if (chargeType === 'rent') {
+            if (isActive) { summary.charges.rent.due += charge.due_amount; dueToAdd = charge.due_amount; }
             summary.charges.rent.paid += charge.paid_amount;
-          } else if (['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(charge.charge_type)) {
-            if (includeInDue) summary.charges.penalties.due += charge.due_amount;
+          } else if (['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(chargeType)) {
+            summary.charges.penalties.due += charge.due_amount;
             summary.charges.penalties.paid += charge.paid_amount;
-          } else if (['late_fee', 'damage_fee'].includes(charge.charge_type)) {
-            if (includeInDue) summary.charges.fees.due += charge.due_amount;
+            dueToAdd = charge.due_amount;
+          } else if (['late_fee', 'damage_fee'].includes(chargeType)) {
+            summary.charges.fees.due += charge.due_amount;
             summary.charges.fees.paid += charge.paid_amount;
-          } else if (charge.charge_type === 'security') {
-            if (includeInDue) summary.charges.security.due += charge.due_amount;
+            dueToAdd = charge.due_amount;
+          } else if (chargeType === 'security') {
+            if (includeSecurityDue) { summary.charges.security.due += charge.due_amount; dueToAdd = charge.due_amount; }
             summary.charges.security.paid += charge.paid_amount;
+          }
+
+          // Add to per-type breakdown
+          if (dueToAdd > 0) {
+            chargeBreakdown[chargeType] = (chargeBreakdown[chargeType] || 0) + dueToAdd;
           }
         });
       });
+
+      // Add transport to breakdown if non-zero
+      if (summary.charges.transport.due > 0) {
+        chargeBreakdown['transport'] = summary.charges.transport.due;
+      }
+
+      summary.charge_breakdown = chargeBreakdown;
 
       // Calculate totals
       summary.totals.total_due =
@@ -129,9 +150,20 @@ class ChargeAccountingService {
         summary.charges.fees.paid +
         summary.charges.security.paid;
 
-      summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
+      // Get actual total refunded from payment_transactions
+      // This is the only source of truth for money returned to customer
+      // (includes security refunds for completed products, cancellation refunds,
+      // and correctly reflects any penalty/damage deductions)
+      const refundResult = await client.query(
+        `SELECT COALESCE(SUM(amount), 0) as total_refunded
+         FROM payment_transactions
+         WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      summary.totals.total_refunded = parseFloat(refundResult.rows[0].total_refunded) || 0;
 
-      summary.total_refunded = 0;
+      // Balance based on charges only (what's owed minus what's been applied to charges)
+      summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
 
       return summary;
     } finally {
@@ -515,15 +547,19 @@ class ChargeAccountingService {
 
   /**
    * Record a refund transaction (money going OUT to customer)
-   * Does NOT apply to charges — simply records the transaction and logs activity.
+   * Optionally records a deduction charge (e.g. damage_fee, late_fee) on the booking product.
    * @param {number} bookingId
    * @param {number} amount - Refund amount
    * @param {string} method - Payment method (Cash, UPI, etc.)
    * @param {string} recordedBy - User recording the refund
    * @param {string} notes - Optional notes
+   * @param {Object} [deduction] - Optional deduction details
+   * @param {number} deduction.bookingProductId - Booking product ID
+   * @param {number} deduction.amount - Deduction amount
+   * @param {string} deduction.type - Charge type (e.g. 'damage_fee', 'late_fee')
    * @returns {Promise<Object>} - Refund details
    */
-  async recordRefund(bookingId, amount, method, recordedBy, notes) {
+  async recordRefund(bookingId, amount, method, recordedBy, notes, deduction) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -538,6 +574,20 @@ class ChargeAccountingService {
         throw new Error('Refund amount must be greater than 0');
       }
 
+      // If there's a deduction, create a charge for it
+      // (tracks the deduction amount as a fee — not an extra payment,
+      // it's funded by retaining part of the security deposit)
+      if (deduction && deduction.amount > 0 && deduction.bookingProductId && deduction.type) {
+        await this.addCharge(
+          deduction.bookingProductId,
+          deduction.type,
+          deduction.amount,
+          null,
+          `Deduction: ${deduction.type}`,
+          client
+        );
+      }
+
       // Record refund transaction (money going OUT to customer)
       await client.query(
         `INSERT INTO payment_transactions 
@@ -550,7 +600,7 @@ class ChargeAccountingService {
       await client.query(
         `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
          VALUES ($1, 'refund_issued', $2, $3)`,
-        [bookingId, JSON.stringify({ amount, method, notes }), recordedBy]
+        [bookingId, JSON.stringify({ amount, method, notes, deduction: deduction || null }), recordedBy]
       );
 
       await client.query('COMMIT');
@@ -560,6 +610,7 @@ class ChargeAccountingService {
         amount,
         method,
         recorded_by: recordedBy,
+        deduction: deduction || null,
         recorded_at: new Date()
       };
     } catch (error) {

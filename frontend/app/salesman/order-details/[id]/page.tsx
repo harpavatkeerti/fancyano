@@ -6,7 +6,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi, lifecycleApi, PaymentSummary } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, QRScanner } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, QRScanner, PaymentManagement } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
@@ -34,6 +34,7 @@ export default function OrderDetailsPage() {
   const [showRecordPayment, setShowRecordPayment] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
   const [userName, setUserName] = useState('Salesman'); // Default fallback
+  const [paymentRefreshKey, setPaymentRefreshKey] = useState(0);
 
   // Change date form
   const [changeDateFrom, setChangeDateFrom] = useState('');
@@ -238,6 +239,7 @@ export default function OrderDetailsPage() {
 
   async function fetchBooking() {
     try {
+      setPaymentRefreshKey(prev => prev + 1);
       window.console.log('🚀🚀🚀 FETCHBOOKING CALLED 🚀🚀🚀');
       const [bookingResponse, transactionsResponse, summaryResponse] = await Promise.all([
         bookingsApi.getById(Number(params.id)),
@@ -1088,6 +1090,12 @@ export default function OrderDetailsPage() {
         const refundData = itemRefunds[product.id];
         const amount = parseFloat(refundData.amount);
 
+        // Calculate deduction from security deposit
+        const productSecurity = typeof product.security_deposit === 'number'
+          ? product.security_deposit
+          : parseFloat(String(product.security_deposit || '0')) || 0;
+        const deduction = productSecurity - amount;
+
         const baseNotes = `Refund for ${product.name} (${product.code})`;
         let fullNotes = refundData.notes.trim()
           ? `${baseNotes}: ${refundData.notes.trim()}`
@@ -1104,6 +1112,12 @@ export default function OrderDetailsPage() {
           method: refundMethod,
           recorded_by: 'Salesman',
           notes: fullNotes,
+          // When there's a deduction, track it as a damage fee charge
+          ...(deduction > 0 ? {
+            booking_product_id: product.id,
+            deduction_amount: deduction,
+            deduction_type: 'damage_fee',
+          } : {}),
         });
       });
 
@@ -1614,433 +1628,18 @@ export default function OrderDetailsPage() {
             </div>
           </div>
 
-          {/* Order Summary */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <div className="mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">
-                Order Summary
-              </h3>
-            </div>
-            <div className="space-y-3">
-              {(() => {
-                // Calculate Subtotal (Rent) from active products
-                const products = Array.isArray(booking.products) ? booking.products : [];
-                const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
-                const rentalSubtotalFromProducts = activeProducts.reduce((sum: number, product: any) => {
-                  const rent = typeof product.rent === 'number'
-                    ? product.rent
-                    : parseFloat(String(product.rent || '0')) || 0;
-                  return sum + rent;
-                }, 0);
-
-                return (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Subtotal</span>
-                    <span className="font-medium">
-                      ₹{Math.floor(rentalSubtotalFromProducts).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                );
-              })()}
-              {(() => {
-                const isTransportationOpted = (booking.transport_charge || 0) > 0;
-
-                // Parse transport_charge properly
-                let transportationCharge = 0;
-                if (booking.transport_charge !== null && booking.transport_charge !== undefined) {
-                  if (typeof booking.transport_charge === 'number') {
-                    transportationCharge = booking.transport_charge;
-                  } else if (typeof booking.transport_charge === 'string') {
-                    transportationCharge = parseFloat(booking.transport_charge) || 0;
-                  }
-                }
-
-                console.log('🚚 Transportation Display:', {
-                  isTransportationOpted,
-                  transport_charge_raw: booking.transport_charge,
-                  transport_charge_type: typeof booking.transport_charge,
-                  transportationCharge
-                });
-
-                if (isTransportationOpted) {
-                  if (transportationCharge === 0) {
-                    // Show input to add charges
-                    return (
-                      <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-yellow-800">Local Transportation</span>
-                            <span className="text-xs bg-yellow-200 text-yellow-800 px-2 py-0.5 rounded font-semibold">Opted</span>
-                          </div>
-                          <span className="text-sm text-yellow-700 font-semibold">₹0</span>
-                        </div>
-                        {!showTransportationInput ? (
-                          <button
-                            onClick={() => setShowTransportationInput(true)}
-                            className="w-full mt-2 text-xs px-3 py-1.5 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
-                          >
-                            Add Transportation Charges
-                          </button>
-                        ) : (
-                          <div className="mt-2 space-y-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-gray-700 font-medium text-sm">₹</span>
-                              <input
-                                type="number"
-                                value={transportationCharges}
-                                onChange={(e) => {
-                                  const value = e.target.value;
-                                  if (value === '' || parseFloat(value) >= 0) {
-                                    setTransportationCharges(value);
-                                  }
-                                }}
-                                placeholder="Enter amount"
-                                min="0"
-                                step="1"
-                                className="flex-1 px-2 py-1.5 text-sm border border-yellow-300 rounded focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
-                              />
-                            </div>
-                            <button
-                              onClick={saveTransportationCharges}
-                              className="w-full px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded hover:bg-green-700 transition-colors"
-                            >
-                              Save Charges
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  } else {
-                    // Show the charges
-                    return (
-                      <div className="flex justify-between items-center bg-teal-50 px-2 py-1 rounded">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm text-teal-700">Local Transportation</span>
-                          <span className="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded font-semibold">Opted</span>
-                        </div>
-                        <span className="text-sm text-teal-700 font-semibold">
-                          ₹{Math.floor(transportationCharge).toLocaleString('en-IN')}
-                        </span>
-                      </div>
-                    );
-                  }
-                }
-                return null;
-              })()}
-              {(() => {
-                // Calculate security deposit from active (non-cancelled) products
-                const products = Array.isArray(booking.products) ? booking.products : [];
-                const activeProducts = products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
-                const securityFromProducts = activeProducts.reduce((sum: number, product: any) => {
-                  const security = typeof product.security_deposit === 'number'
-                    ? product.security_deposit
-                    : parseFloat(String(product.security_deposit || '0')) || 0;
-                  return sum + security;
-                }, 0);
-                return (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Security Deposit</span>
-                    <span className="font-medium">
-                      ₹{Math.floor(securityFromProducts).toLocaleString('en-IN')}
-                    </span>
-                  </div>
-                );
-              })()}
-              <div className="flex justify-between font-bold text-lg border-t pt-3">
-                <span>Total</span>
-                <span>
-                  ₹
-                  {(() => {
-                    if (!paymentSummary) return '0';
-                    const totalRent = paymentSummary.charges.rent.due || 0;
-                    const totalSecurity = paymentSummary.charges.security.due || 0;
-                    const transportCharge = paymentSummary.charges.transport?.due || 0;
-                    const total = totalRent + totalSecurity + transportCharge;
-                    return isNaN(total) ? '0' : Math.floor(total).toLocaleString('en-IN');
-                  })()}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Payment Status */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Payment Status
-            </h3>
-
-            {/* Show Financial Summary for Fully Cancelled Bookings */}
-            {(() => {
-              const isFullyCancelled = booking?.status === 'cancelled';
-
-              if (isFullyCancelled) {
-                // Use backend payment summary for financial data
-                const totalDue = paymentSummary?.totals.total_due || 0;
-                const totalPaid = paymentSummary?.totals.total_paid || 0;
-                const balance = paymentSummary?.totals.balance || 0;
-                const penalties = paymentSummary?.charges.penalties.due || 0;
-
-                // Get individual cancellation details from cancellation_refund transactions
-                const cancellationTransactions = transactions.filter((t: any) =>
-                  t.transaction_type === 'cancellation_penalty' || t.transaction_type === 'cancellation_refund'
-                );
-
-                // Group by cancellation (each cancellation has both penalty and refund)
-                const cancellationsByProduct: { [key: string]: { penalty: number; refund: number; rentPaid: number; notes: string } } = {};
-
-                cancellationTransactions.forEach((t: any) => {
-                  // Extract product code from notes if available
-                  const notes = t.notes || '';
-                  const productMatch = notes.match(/\(([^)]+)\)/); // Extract product code in parentheses
-                  const productKey = productMatch ? productMatch[1] : 'Unknown';
-
-                  if (!cancellationsByProduct[productKey]) {
-                    cancellationsByProduct[productKey] = { penalty: 0, refund: 0, rentPaid: 0, notes: '' };
-                  }
-
-                  if (t.transaction_type === 'cancellation_penalty') {
-                    cancellationsByProduct[productKey].penalty = parseFloat(t.amount) || 0;
-                  } else if (t.transaction_type === 'cancellation_refund') {
-                    cancellationsByProduct[productKey].refund = parseFloat(t.amount) || 0;
-                    cancellationsByProduct[productKey].notes = notes;
-                    // Extract rent paid from notes (e.g., "Rent ₹9200.00")
-                    const rentMatch = notes.match(/Rent\s*₹?(\d+\.?\d*)/i);
-                    if (rentMatch) {
-                      cancellationsByProduct[productKey].rentPaid = parseFloat(rentMatch[1]) || 0;
-                    }
-                  }
-                });
-
-                return (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <div className="flex items-center gap-2 mb-3">
-                      <svg className="w-5 h-5 text-red-600" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                      </svg>
-                      <h4 className="text-sm font-semibold text-red-900">Booking Fully Cancelled</h4>
-                    </div>
-
-                    {/* Financial Summary */}
-                    <div className="bg-white rounded-lg p-3 space-y-3">
-                      <h5 className="text-xs font-semibold text-gray-700 mb-2">📊 Financial Summary</h5>
-
-                      {/* Total Due */}
-                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                        <span className="text-xs text-gray-600">Total Due:</span>
-                        <span className="text-sm font-bold text-gray-900">₹{Math.floor(totalDue).toLocaleString('en-IN')}</span>
-                      </div>
-
-                      {/* Total Paid */}
-                      <div className="flex justify-between items-center py-1.5 border-b border-gray-200">
-                        <span className="text-xs text-gray-600">Total Paid by Customer:</span>
-                        <span className="text-sm font-bold text-green-600">₹{Math.floor(totalPaid).toLocaleString('en-IN')}</span>
-                      </div>
-
-                      {/* Individual Cancellation Breakdown */}
-                      {Object.keys(cancellationsByProduct).length > 0 && (
-                        <div className="space-y-2 py-2">
-                          <p className="text-xs font-semibold text-gray-700">Cancellation Breakdown:</p>
-                          {Object.entries(cancellationsByProduct).map(([productCode, details], index) => (
-                            <div key={index} className="bg-gray-50 rounded-lg p-2 space-y-1 text-xs">
-                              <p className="font-semibold text-gray-800">Product {productCode}:</p>
-                              <div className="grid grid-cols-2 gap-2 pl-2">
-                                {details.rentPaid > 0 && (
-                                  <div className="flex justify-between">
-                                    <span className="text-gray-600">• Rent:</span>
-                                    <span className="font-semibold text-green-600">+₹{Math.floor(details.rentPaid).toLocaleString('en-IN')}</span>
-                                  </div>
-                                )}
-                                {details.penalty > 0 && (
-                                  <div className="flex justify-between">
-                                    <span className="text-gray-600">• Penalty:</span>
-                                    <span className="font-semibold text-red-600">-₹{Math.floor(details.penalty).toLocaleString('en-IN')}</span>
-                                  </div>
-                                )}
-                                {details.refund > 0 && (
-                                  <div className="flex justify-between">
-                                    <span className="text-gray-600">• Refunded:</span>
-                                    <span className="font-semibold text-blue-600">-₹{Math.floor(details.refund).toLocaleString('en-IN')}</span>
-                                  </div>
-                                )}
-                                <div className="flex justify-between col-span-2 pt-1 border-t border-gray-300">
-                                  <span className="text-gray-700 font-medium">• Net for {productCode}:</span>
-                                  <span className="font-bold text-gray-900">₹{Math.floor(details.rentPaid - details.penalty - details.refund).toLocaleString('en-IN')}</span>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {/* Totals */}
-                      {penalties > 0 && (
-                        <div className="flex justify-between items-center py-1.5 border-t border-gray-200">
-                          <span className="text-xs text-gray-600">Penalties Applied:</span>
-                          <span className="text-sm font-bold text-red-600">₹{Math.floor(penalties).toLocaleString('en-IN')}</span>
-                        </div>
-                      )}
-
-                      {/* Balance */}
-                      <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-2 border border-gray-300">
-                        <span className="text-xs font-bold text-gray-800">Balance:</span>
-                        <span className={`text-base font-bold ${balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                          {balance <= 0 ? 'Fully Settled' : `₹${Math.floor(balance).toLocaleString('en-IN')}`}
-                        </span>
-                      </div>
-                    </div>
-
-                    <p className="text-xs text-red-700 mt-3">
-                      All products cancelled. Transaction history available in Payment History sections below.
-                    </p>
-                  </div>
-                );
-              }
-
-              return null;
-            })()}
-
-            {/* Detailed Payment Breakdown - uses backend payment summary */}
-            {booking?.status !== 'cancelled' && paymentSummary && (
-              (isOrderCompleted || isPartiallyCompleted) ? (
-                /* For completed/partially completed orders, show a concise financial summary */
-                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Financial Summary</h4>
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center py-1.5">
-                      <span className="text-sm text-gray-600">Total Charged:</span>
-                      <span className="font-bold text-gray-900">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
-                    </div>
-                    <div className="flex justify-between items-center py-1.5">
-                      <span className="text-sm text-gray-600">Total Paid by Customer:</span>
-                      <span className="font-bold text-green-600">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
-                    </div>
-                    {(() => {
-                      const totalRefunded = transactions
-                        .filter((t: any) => t.type === 'refund')
-                        .reduce((sum: number, t: any) => sum + (parseFloat(t.amount) || 0), 0);
-                      if (totalRefunded > 0) {
-                        return (
-                          <div className="flex justify-between items-center py-1.5">
-                            <span className="text-sm text-gray-600">Total Refunded:</span>
-                            <span className="font-bold text-orange-600">-₹{Math.floor(totalRefunded).toLocaleString('en-IN')}</span>
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                    {(paymentSummary.charges.penalties.due > 0) && (
-                      <div className="flex justify-between items-center py-1.5">
-                        <span className="text-sm text-gray-600">Penalties Applied:</span>
-                        <span className="font-bold text-red-600">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
-                      </div>
-                    )}
-                    <div className="flex justify-between items-center py-2 bg-gradient-to-r from-gray-100 to-gray-50 rounded px-3 mt-1 border border-gray-300">
-                      <span className="text-sm font-bold text-gray-800">Balance:</span>
-                      <span className={`font-bold text-base ${paymentSummary.totals.balance <= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                        {paymentSummary.totals.balance <= 0 ? 'Fully Settled' : `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}`}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                /* For active orders, show the detailed per-category breakdown */
-                <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-blue-900 mb-3">💰 Payment Breakdown</h4>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {/* Rent Section */}
-                    <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🏠 Rental Amount</p>
-                      <div className="space-y-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.due).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.rent.paid).toLocaleString('en-IN')}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Security Section */}
-                    <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🔒 Security Deposit</p>
-                      <div className="space-y-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.due).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-gray-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.security.paid).toLocaleString('en-IN')}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Penalties Section - Show if penalties exist */}
-                    {(paymentSummary.charges.penalties.due > 0 || paymentSummary.charges.fees.due > 0) && (
-                      <div className="bg-white rounded-lg p-3 border border-red-200 overflow-hidden">
-                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">⚠️ Penalties & Fees</p>
-                        <div className="space-y-2">
-                          {paymentSummary.charges.penalties.due > 0 && (
-                            <div className="flex flex-col">
-                              <span className="text-xs text-gray-500 mb-0.5">Penalties</span>
-                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.penalties.due).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
-                          {paymentSummary.charges.fees.due > 0 && (
-                            <div className="flex flex-col pt-1 border-t border-gray-200">
-                              <span className="text-xs text-gray-500 mb-0.5">Fees</span>
-                              <span className="font-bold text-red-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.fees.due).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Transport Section - Show if transport exists */}
-                    {paymentSummary.charges.transport.due > 0 && (
-                      <div className="bg-white rounded-lg p-3 border border-blue-200 overflow-hidden">
-                        <p className="text-xs text-gray-600 mb-2 leading-tight break-words">🚚 Transport</p>
-                        <div className="space-y-2">
-                          <div className="flex flex-col">
-                            <span className="text-xs text-gray-500 mb-0.5">Due</span>
-                            <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.due).toLocaleString('en-IN')}</span>
-                          </div>
-                          <div className="flex flex-col pt-1 border-t border-gray-200">
-                            <span className="text-xs text-gray-500 mb-0.5">Paid</span>
-                            <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.charges.transport.paid).toLocaleString('en-IN')}</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Total Summary */}
-                    <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-3 border border-purple-200 overflow-hidden">
-                      <p className="text-xs text-gray-600 mb-2 leading-tight break-words">📊 Total Summary</p>
-                      <div className="space-y-2">
-                        <div className="flex flex-col">
-                          <span className="text-xs text-gray-500 mb-0.5">Grand Total</span>
-                          <span className="font-bold text-gray-900 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_due).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-purple-200">
-                          <span className="text-xs text-gray-500 mb-0.5">Amount Paid</span>
-                          <span className="font-bold text-green-600 text-sm break-words">₹{Math.floor(paymentSummary.totals.total_paid).toLocaleString('en-IN')}</span>
-                        </div>
-                        <div className="flex flex-col pt-1 border-t border-purple-200">
-                          <span className="text-xs text-gray-500 mb-0.5 font-semibold">Balance Due</span>
-                          <span className={`font-bold text-sm break-words ${paymentSummary.totals.balance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                            {paymentSummary.totals.balance > 0 ? `₹${Math.floor(paymentSummary.totals.balance).toLocaleString('en-IN')}` : 'Fully Paid'}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-
-
-          </div>
+          {/* Payment Summary - reuse shared component */}
+          <PaymentManagement
+            bookingId={booking.id}
+            totalAmount={paymentSummary ? (paymentSummary.charges.rent.due || 0) : 0}
+            securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) : 0}
+            userRole="salesman"
+            isFullyCancelled={booking?.status === 'cancelled'}
+            refreshTrigger={paymentRefreshKey}
+            onPaymentUpdate={() => {
+              fetchBooking();
+            }}
+          />
 
           {/* Check if refund exists */}
           {(() => {
