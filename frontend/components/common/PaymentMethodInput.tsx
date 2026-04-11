@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { settingsApi } from '@/lib/api';
+import { settingsApi } from '@/lib/settingsApi';
 import { QRScanner } from '@/components/common';
 import { toast } from '@/lib/toast';
 
