@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { paymentTransactionsApi, bookingsApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Button } from '@/components/common';
+import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
 
 interface PaymentManagementProps {
@@ -44,7 +45,7 @@ export function PaymentManagement({
   const [transactionType, setTransactionType] = useState<'payment' | 'refund' | 'adjustment'>('payment');
   const [formData, setFormData] = useState({
     amount: '',
-    method: '',
+    method: 'Cash',
     notes: '',
   });
   // Product-wise refund state (for enhanced refund modal)
@@ -169,7 +170,7 @@ export function PaymentManagement({
 
       toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
       setShowRecordModal(false);
-      setFormData({ amount: '', method: '', notes: '' });
+      setFormData({ amount: '', method: 'Cash', notes: '' });
 
       // Refresh transactions and summary
       await fetchTransactions();
@@ -318,7 +319,7 @@ export function PaymentManagement({
 
       toast.success(`Refund recorded successfully for ${selectedItems.length} item(s)!`);
       setShowRecordModal(false);
-      setFormData({ amount: '', method: '', notes: '' });
+      setFormData({ amount: '', method: 'Cash', notes: '' });
       setItemRefunds({});
       setRefundNarration('');
 
@@ -373,7 +374,7 @@ export function PaymentManagement({
                       <Button
                         onClick={() => {
                           setTransactionType('payment');
-                          setFormData({ amount: '', method: '', notes: '' });
+                          setFormData({ amount: '', method: 'Cash', notes: '' });
                           setShowRecordModal(true);
                         }}
                         className="bg-green-600 hover:bg-green-700 text-white font-semibold px-6"
@@ -383,7 +384,7 @@ export function PaymentManagement({
                       <Button
                         onClick={() => {
                           setTransactionType('refund');
-                          setFormData({ amount: '', method: '', notes: '' });
+                          setFormData({ amount: '', method: 'Cash', notes: '' });
                           setItemRefunds({}); // Reset product selections
                           setShowRecordModal(true);
                         }}
@@ -660,7 +661,7 @@ export function PaymentManagement({
                   onClick={() => {
                     setShowRecordModal(false);
                     setItemRefunds({});
-                    setFormData({ amount: '', method: '', notes: '' });
+                    setFormData({ amount: '', method: 'Cash', notes: '' });
                     setRefundNarration('');
                   }}
                   className="mr-4 text-gray-600 hover:text-gray-900"
@@ -673,40 +674,16 @@ export function PaymentManagement({
               </div>
             </div>
 
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Payment Method *
-              </label>
-              <select
-                value={formData.method}
-                onChange={(e) => setFormData({ ...formData, method: e.target.value })}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-              >
-                <option value="">Select method</option>
-                <option value="Cash">Cash</option>
-                <option value="UPI">UPI</option>
-                <option value="Bank Transfer">Bank Transfer</option>
-                <option value="Card">Card</option>
-                <option value="Other">Other</option>
-              </select>
-            </div>
-
-            {/* General Narration Field */}
-            <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Narration / Notes (Optional)
-              </label>
-              <textarea
-                value={refundNarration}
-                onChange={(e) => setRefundNarration(e.target.value)}
-                placeholder="Enter transaction details, UPI ID, reference number, etc."
-                rows={3}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
-              />
-              <p className="text-xs text-gray-500 mt-1">
-                💡 Add any additional details about this refund (e.g., UPI ID, reference number, bank details)
-              </p>
-            </div>
+            <PaymentMethodInput
+              method={formData.method}
+              onMethodChange={(m) => setFormData({ ...formData, method: m })}
+              notes={refundNarration}
+              onNotesChange={setRefundNarration}
+              notesLabel="Narration / Notes (Optional)"
+              notesPlaceholder="Enter transaction details, UPI ID, reference number, etc."
+              colorScheme="red"
+              showQR={false}
+            />
 
             <div className="mb-6">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Items for Refund</h3>
@@ -952,7 +929,7 @@ export function PaymentManagement({
                 onClick={() => {
                   setShowRecordModal(false);
                   setItemRefunds({});
-                  setFormData({ amount: '', method: '', notes: '' });
+                  setFormData({ amount: '', method: 'Cash', notes: '' });
                   setRefundNarration('');
                 }}
                 className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800"
@@ -990,43 +967,24 @@ export function PaymentManagement({
                 />
               </div>
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Payment Method *
-                </label>
-                <select
-                  value={formData.method}
-                  onChange={(e) => setFormData({ ...formData, method: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Select method</option>
-                  <option value="Cash">Cash</option>
-                  <option value="UPI">UPI</option>
-                  <option value="Card">Card</option>
-                  <option value="Bank Transfer">Bank Transfer</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Notes
-                </label>
-                <textarea
-                  value={formData.notes}
-                  onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  rows={3}
-                  placeholder={`Enter reason for ${transactionType}...`}
-                />
-              </div>
+              <PaymentMethodInput
+                method={formData.method}
+                onMethodChange={(m) => setFormData({ ...formData, method: m })}
+                notes={formData.notes}
+                onNotesChange={(n) => setFormData({ ...formData, notes: n })}
+                amount={parseFloat(formData.amount) || undefined}
+                notesLabel="Notes"
+                notesPlaceholder={`Enter reason for ${transactionType}...`}
+                colorScheme={transactionType === 'payment' ? 'green' : transactionType === 'refund' ? 'red' : 'blue'}
+                showQR={transactionType === 'payment'}
+              />
             </div>
 
             <div className="flex gap-3 mt-6">
               <Button
                 onClick={() => {
                   setShowRecordModal(false);
-                  setFormData({ amount: '', method: '', notes: '' });
+                  setFormData({ amount: '', method: 'Cash', notes: '' });
                 }}
                 className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800"
               >

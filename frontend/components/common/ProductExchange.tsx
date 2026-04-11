@@ -5,7 +5,7 @@ import { productExchangesApi, productsApi, bookingsApi, paymentTransactionsApi }
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
-import QRScanner from '@/components/common/QRScanner';
+import { PaymentMethodInput } from './PaymentMethodInput';
 import axios from 'axios';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
@@ -62,11 +62,7 @@ export function ProductExchange({
   const [pendingExchangeData, setPendingExchangeData] = useState<any>(null); // Store exchange data before creating it
   const [paymentType, setPaymentType] = useState<'penalty' | 'rent' | 'both'>('penalty');
 
-  // UPI QR Code state
-  const [showUPIModal, setShowUPIModal] = useState(false);
-  const [showQRScanner, setShowQRScanner] = useState(false);
-  const [paymentScanned, setPaymentScanned] = useState(false);
-  const [paymentQrCode, setPaymentQrCode] = useState<string>('');
+
 
   // Exchange preview from backend API
   const [exchangePreview, setExchangePreview] = useState<any>(null);
@@ -550,7 +546,6 @@ export function ProductExchange({
       setRentDifferenceAmount(0);
       setPaymentMethod('Cash');
       setPaymentNarration('');
-      setPaymentScanned(false);
       setSelectedOriginalProduct(null);
       setSelectedExchangedProduct(null);
       setAdditionalProducts([]);
@@ -1333,60 +1328,16 @@ export function ProductExchange({
                     </div>
                   </div>
 
-                  {/* Payment Method Dropdown */}
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Payment Method <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={paymentMethod}
-                      onChange={(e) => setPaymentMethod(e.target.value)}
-                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white"
-                    >
-                      <option value="Cash">Cash</option>
-                      <option value="UPI">UPI</option>
-                      <option value="Card">Card</option>
-                      <option value="Bank Transfer">Bank Transfer</option>
-                      <option value="Cheque">Cheque</option>
-                      <option value="Other">Other</option>
-                    </select>
-                  </div>
-
-                  {/* Show UPI QR Button if UPI is selected */}
-                  {paymentMethod === 'UPI' && (
-                    <div className="mb-4">
-                      <button
-                        onClick={() => setShowUPIModal(true)}
-                        className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2"
-                      >
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-                        </svg>
-                        Show UPI QR Code
-                      </button>
-                      {paymentScanned && (
-                        <div className="mt-3 bg-green-50 border border-green-200 rounded-lg p-3">
-                          <p className="text-sm text-green-800 text-center">
-                            ✅ Payment QR scanned successfully!
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Narration */}
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Narration / Notes (Optional)
-                    </label>
-                    <textarea
-                      value={paymentNarration}
-                      onChange={(e) => setPaymentNarration(e.target.value)}
-                      placeholder="Enter transaction details, reference number, etc."
-                      rows={3}
-                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-white resize-none"
-                    />
-                  </div>
+                  <PaymentMethodInput
+                    method={paymentMethod}
+                    onMethodChange={setPaymentMethod}
+                    notes={paymentNarration}
+                    onNotesChange={setPaymentNarration}
+                    amount={totalPaymentDue}
+                    notesLabel="Narration / Notes (Optional)"
+                    notesPlaceholder="Enter transaction details, reference number, etc."
+                    colorScheme="green"
+                  />
                 </div>
               )}
             </div>
@@ -1399,7 +1350,6 @@ export function ProductExchange({
                   setPendingExchangeData(null);
                   setPaymentMethod('Cash');
                   setPaymentNarration('');
-                  setPaymentScanned(false);
                 }}
                 className="px-6 py-2.5 bg-white border-2 border-red-600 text-red-600 font-semibold rounded-lg hover:bg-red-50 transition-colors"
               >
@@ -1498,39 +1448,16 @@ export function ProductExchange({
                 </details>
               )}
 
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Payment Method <span className="text-red-500">*</span>
-                </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"
-                >
-                  <option value="Cash">Cash</option>
-                  <option value="Card">Card</option>
-                  <option value="UPI">UPI</option>
-                  <option value="Bank Transfer">Bank Transfer</option>
-                  <option value="Cheque">Cheque</option>
-                  <option value="Other">Other</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Narration / Notes (Optional)
-                </label>
-                <textarea
-                  value={paymentNarration}
-                  onChange={(e) => setPaymentNarration(e.target.value)}
-                  placeholder="Enter transaction details, reference number, customer name, etc."
-                  rows={3}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white resize-none"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Add any additional details about this transaction
-                </p>
-              </div>
+              <PaymentMethodInput
+                method={paymentMethod}
+                onMethodChange={setPaymentMethod}
+                notes={paymentNarration}
+                onNotesChange={setPaymentNarration}
+                amount={totalPaymentDue}
+                notesLabel="Narration / Notes (Optional)"
+                notesPlaceholder="Enter transaction details, reference number, customer name, etc."
+                colorScheme="red"
+              />
 
               {pendingExchangeData && (
                 <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
@@ -1580,93 +1507,7 @@ export function ProductExchange({
         </div>
       )}
 
-      {/* UPI Payment QR Modal */}
-      {showUPIModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-md p-6 relative">
-            <button
-              onClick={() => {
-                setShowUPIModal(false);
-                setPaymentScanned(false);
-              }}
-              className="absolute top-4 right-4 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
-            >
-              ×
-            </button>
 
-            <h3 className="text-xl font-bold text-gray-900 mb-4 text-center">Pay using UPI</h3>
-            <p className="text-center text-gray-700 mb-4">
-              Amount to collect: ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
-            </p>
-
-            {/* Show QR from admin settings */}
-            {paymentQrCode ? (
-              <div>
-                <div className="flex justify-center mb-4">
-                  <div className="bg-white rounded-lg flex items-center justify-center border-2 border-gray-200 p-4 min-h-[300px]">
-                    <img
-                      src={paymentQrCode}
-                      alt="UPI QR Code"
-                      className="rounded-lg"
-                      style={{
-                        maxWidth: '280px',
-                        maxHeight: '310px',
-                        width: 'auto',
-                        height: 'auto'
-                      }}
-                    />
-                  </div>
-                </div>
-                <p className="text-center text-sm text-gray-500 mb-4">
-                  Scan the QR code above to make payment
-                </p>
-              </div>
-            ) : (
-              <div className="flex justify-center mb-4">
-                <div className="bg-gray-50 rounded-lg border-2 border-dashed border-gray-300 p-8 text-center min-h-[200px] flex flex-col items-center justify-center">
-                  <svg className="w-12 h-12 text-gray-400 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-                  </svg>
-                  <p className="text-sm font-medium text-gray-600">No QR code configured</p>
-                  <p className="text-xs text-gray-500 mt-1">Ask admin to upload a QR in Settings</p>
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              <button
-                onClick={() => setShowQRScanner(true)}
-                className="w-full px-6 py-3 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 flex items-center justify-center gap-2"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-                </svg>
-                Scan Payment QR
-              </button>
-              <button
-                onClick={() => setShowUPIModal(false)}
-                className="w-full px-6 py-3 bg-green-600 text-white rounded-lg font-bold hover:bg-green-700 transition-colors"
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* QR Scanner Modal */}
-      {showQRScanner && (
-        <QRScanner
-          title="📷 Scan Payment QR Code"
-          onScan={(code: string) => {
-            console.log('Payment QR scanned:', code);
-            setPaymentScanned(true);
-            setShowQRScanner(false);
-            toast.success('Payment QR scanned successfully!');
-          }}
-          onClose={() => setShowQRScanner(false)}
-        />
-      )}
 
       {/* Refund Modal for Lapsed Amount */}
       {showRefundModal && (
