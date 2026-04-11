@@ -186,7 +186,7 @@ class ProductLifecycleService {
    * @param {number} userId - User performing the cancellation
    * @returns {Promise<Object>} - Cancellation details
    */
-  async cancelProduct(bookingProductId, cancellationPenalty, reason, userId) {
+  async cancelProduct(bookingProductId, cancellationPenalty, reason, userId, settlement = {}) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -222,13 +222,7 @@ class ProductLifecycleService {
         if (charge.charge_type === 'security') securityPaid = parseInt(charge.paid_amount) || 0;
       }
 
-      // Mark product as cancelled (keep due_amount INTACT per blueprint for audit trail)
-      await client.query(
-        'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['cancelled', bookingProductId]
-      );
-
-      // Add cancellation penalty charge
+      // Add cancellation penalty charge FIRST (product still 'confirmed' — payment routing works)
       if (cancellationPenalty > 0) {
         await chargeAccountingService.addCharge(
           bookingProductId,
@@ -240,8 +234,35 @@ class ProductLifecycleService {
         );
       }
 
-      // Calculate refund: what was paid towards this product minus penalty
-      const refundAmount = Math.max(0, rentPaid + securityPaid - cancellationPenalty);
+      // diffAmount: positive = refund to customer, negative = collect from customer
+      const totalPaidForProduct = rentPaid + securityPaid;
+      const diffAmount = totalPaidForProduct - cancellationPenalty;
+
+      // MONEY FIRST — process settlement before status change, in same transaction
+      const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes } = settlement;
+      let settlementResult = null;
+      const settlementAmount = Math.abs(diffAmount);
+      if (settlementAction !== 'none' && settlementAmount > 0) {
+        settlementResult = await this.processCancellationSettlement(
+          bookingProduct.booking_id, settlementAmount, settlementAction,
+          settlementMethod, userId, settlementNotes, client
+        );
+      }
+
+      // Mark penalty as paid if covered (by existing per-product payments or by settlement)
+      if (cancellationPenalty > 0 && (diffAmount >= 0 || settlementResult)) {
+        await client.query(
+          `UPDATE product_charges SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
+           WHERE booking_product_id = $1 AND charge_type = 'cancellation_penalty'`,
+          [bookingProductId]
+        );
+      }
+
+      // STATUS CHANGE LAST — mark product as cancelled
+      await client.query(
+        'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['cancelled', bookingProductId]
+      );
 
       // Record cancellation history
       const cancelResult = await client.query(
@@ -267,7 +288,7 @@ class ProductLifecycleService {
           bookingProduct.booking_id,
           'product_cancelled',
           cancelResult.rows[0].id,
-          { product_id: bookingProduct.product_id, penalty: cancellationPenalty, refund_amount: refundAmount },
+          { product_id: bookingProduct.product_id, penalty: cancellationPenalty, diff_amount: diffAmount },
           userId
         ]
       );
@@ -287,8 +308,8 @@ class ProductLifecycleService {
         cancellation_penalty: cancellationPenalty,
         rent_paid: rentPaid,
         security_paid: securityPaid,
-        refund_amount: refundAmount,
-        requires_settlement: refundAmount > 0,
+        diff_amount: diffAmount,
+        settlement: settlementResult,
         has_active_products: !statusResult.all_terminal,
         status: 'cancelled'
       };
@@ -303,19 +324,20 @@ class ProductLifecycleService {
   /**
    * Process settlement after cancellation — refund or adjust the computed refund amount
    * @param {number} bookingId - The booking ID
-   * @param {number} refundAmount - Amount to settle (from cancelProduct result)
-   * @param {'refund' | 'adjust' | 'none'} action - Settlement action
-   * @param {string} refundMethod - Payment method for refund (e.g. 'Cash', 'UPI')
+   * @param {number} amount - Amount to settle (from cancelProduct result)
+   * @param {'refund' | 'adjust' | 'collect' | 'none'} action - Settlement action
+   * @param {string} paymentMethod - Payment method for refund/collect (e.g. 'Cash', 'UPI')
    * @param {string} recordedBy - User performing the settlement
    * @param {string} notes - Optional notes
+   * @param {Object} [existingClient] - Optional DB client to share transaction
    * @returns {Promise<Object>} - Settlement details
    */
-  async processCancellationSettlement(bookingId, refundAmount, action, refundMethod, recordedBy, notes) {
-    if (!['refund', 'adjust', 'none'].includes(action)) {
-      throw new Error('settlement_action must be "refund", "adjust", or "none"');
+  async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient) {
+    if (!['refund', 'adjust', 'collect', 'none'].includes(action)) {
+      throw new Error('settlement_action must be "refund", "adjust", "collect", or "none"');
     }
 
-    if (action === 'none' || refundAmount <= 0) {
+    if (action === 'none' || amount <= 0) {
       return {
         booking_id: bookingId,
         settlement_action: 'none',
@@ -324,9 +346,10 @@ class ProductLifecycleService {
       };
     }
 
-    const client = await pool.connect();
+    const ownClient = !existingClient;
+    const client = existingClient || await pool.connect();
     try {
-      await client.query('BEGIN');
+      if (ownClient) await client.query('BEGIN');
 
       if (action === 'refund') {
         // Record a refund transaction — money goes back to customer
@@ -334,7 +357,7 @@ class ProductLifecycleService {
           `INSERT INTO payment_transactions 
            (booking_id, amount, type, method, notes, recorded_by, transaction_date)
            VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
-          [bookingId, refundAmount, refundMethod || 'Cash',
+          [bookingId, amount, paymentMethod || 'Cash',
             notes || 'Cancellation refund', recordedBy]
         );
 
@@ -342,8 +365,8 @@ class ProductLifecycleService {
           `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
            VALUES ($1, 'refund_issued', $2, $3)`,
           [bookingId, JSON.stringify({
-            amount: refundAmount,
-            method: refundMethod || 'Cash',
+            amount: amount,
+            method: paymentMethod || 'Cash',
             reason: 'Cancellation refund',
             notes
           }), recordedBy]
@@ -361,8 +384,8 @@ class ProductLifecycleService {
         const remainingDues = Math.max(0, parseFloat(balanceResult.rows[0].remaining_balance));
 
         // Cap adjustment at outstanding dues — remainder becomes an immediate refund
-        const adjustAmount = Math.min(refundAmount, remainingDues);
-        const refundRemainder = refundAmount - adjustAmount;
+        const adjustAmount = Math.min(amount, remainingDues);
+        const refundRemainder = amount - adjustAmount;
 
         // Apply adjustment against dues
         if (adjustAmount > 0) {
@@ -394,7 +417,7 @@ class ProductLifecycleService {
             `INSERT INTO payment_transactions 
              (booking_id, amount, type, method, notes, recorded_by, transaction_date)
              VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
-            [bookingId, refundRemainder, refundMethod || 'Cash',
+            [bookingId, refundRemainder, paymentMethod || 'Cash',
               `Cancellation refund remainder after adjusting ₹${adjustAmount} against dues`,
               recordedBy]
           );
@@ -404,29 +427,49 @@ class ProductLifecycleService {
              VALUES ($1, 'refund_issued', $2, $3)`,
             [bookingId, JSON.stringify({
               amount: refundRemainder,
-              method: refundMethod || 'Cash',
+              method: paymentMethod || 'Cash',
               reason: 'Cancellation refund remainder after dues adjustment',
               notes
             }), recordedBy]
           );
         }
+      } else if (action === 'collect') {
+        // Collect penalty from customer — record incoming payment
+        await client.query(
+          `INSERT INTO payment_transactions 
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP)`,
+          [bookingId, amount, paymentMethod || 'Cash',
+            notes || 'Cancellation penalty collection', recordedBy]
+        );
+
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, 'payment_applied', $2, $3)`,
+          [bookingId, JSON.stringify({
+            amount: amount,
+            method: paymentMethod || 'Cash',
+            reason: 'Cancellation penalty collection',
+            notes
+          }), recordedBy]
+        );
       }
 
-      await client.query('COMMIT');
+      if (ownClient) await client.query('COMMIT');
 
       return {
         booking_id: bookingId,
         settlement_action: action,
-        amount: refundAmount,
-        method: action === 'refund' ? (refundMethod || 'Cash') : 'Adjustment',
+        amount: amount,
+        method: (action === 'refund' || action === 'collect') ? (paymentMethod || 'Cash') : 'Adjustment',
         transaction_recorded: true
       };
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (ownClient) await client.query('ROLLBACK');
       console.error('Error processing cancellation settlement:', error);
       throw error;
     } finally {
-      client.release();
+      if (ownClient) client.release();
     }
   }
 

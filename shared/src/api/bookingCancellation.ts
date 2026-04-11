@@ -31,8 +31,8 @@ export function createBookingCancellationApi(api: ApiClient) {
       }>;
       cancellation_reason?: string;
       cancelled_by: string;
-      settlement_action?: 'refund' | 'adjust' | 'none';
-      refund_method?: string;
+      settlement_action?: 'refund' | 'adjust' | 'collect' | 'none';
+      payment_method?: string;
       settlement_notes?: string;
     }) => api.post<any>('/booking-cancellation', data),
   };

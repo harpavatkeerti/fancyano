@@ -219,7 +219,7 @@ describe('Booking Cancellation Routes', () => {
           cancellation_reason: 'Customer changed mind',
           cancelled_by: 'test-user',
           settlement_action: 'refund',
-          refund_method: 'UPI',
+          payment_method: 'UPI',
           settlement_notes: 'Refund via UPI'
         });
 

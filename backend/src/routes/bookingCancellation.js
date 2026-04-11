@@ -8,11 +8,11 @@ const bookingService = require('../services/bookingService');
 router.get('/preview/:bookingId', async (req, res) => {
   try {
     const { bookingId } = req.params;
-    
+
     const preview = await productLifecycleService.calculateCancellationPreview(
       parseInt(bookingId)
     );
-    
+
     res.json(preview);
   } catch (error) {
     if (error.message === 'Booking not found') {
@@ -61,11 +61,11 @@ router.post('/calculate-summary', async (req, res) => {
 router.get('/info/:booking_product_id', async (req, res) => {
   try {
     const { booking_product_id } = req.params;
-    
+
     const info = await productLifecycleService.validateCancellationEligibility(
       parseInt(booking_product_id)
     );
-    
+
     res.json(info);
   } catch (error) {
     console.error('Error getting cancellation info:', error);
@@ -82,24 +82,24 @@ router.post('/', async (req, res) => {
       cancellation_reason,
       cancelled_by,
       settlement_action, // 'refund' | 'adjust' | 'none' (optional, default 'none')
-      refund_method,     // Payment method for refund (e.g. 'Cash', 'UPI')
+      payment_method,    // Payment method (e.g. 'Cash', 'UPI')
       settlement_notes   // Optional notes for settlement
     } = req.body;
-    
+
     if (!booking_product_ids || !Array.isArray(booking_product_ids) || booking_product_ids.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'booking_product_ids array is required',
         example: {
           booking_product_ids: [1, 2],
           cancellation_penalties: [{ booking_product_id: 1, penalty_amount: 300 }],
           settlement_action: 'refund',
-          refund_method: 'Cash'
+          payment_method: 'Cash'
         }
       });
     }
-    
+
     const results = [];
-    
+
     // Get the preview to know the policy-based default penalties per product
     // This ensures that when no manual override is provided, the correct penalty is applied
     const firstBp = await require('../database/connection').query(
@@ -119,39 +119,30 @@ router.post('/', async (req, res) => {
       const penaltyInfo = cancellation_penalties?.find(p => p.booking_product_id === bpId);
       // Use manual override if provided, otherwise use policy-based default
       const penaltyAmount = penaltyInfo ? penaltyInfo.penalty_amount : (defaultPenalties[bpId] || 0);
-      
+
       const result = await productLifecycleService.cancelProduct(
         bpId,
         penaltyAmount,
         cancellation_reason || 'Cancelled by user',
-        cancelled_by || 'system'
+        cancelled_by || 'system',
+        {
+          action: settlement_action || 'none',
+          method: payment_method || 'Cash',
+          notes: settlement_notes
+        }
       );
       
       results.push(result);
     }
 
-    // Calculate total refund across all cancelled products
-    const totalRefund = results.reduce((sum, r) => sum + (r.refund_amount || 0), 0);
-    const bookingId = results[0]?.booking_id;
-    let settlementResult = null;
-
-    // Process settlement if there's a refund and an action was specified
-    if (totalRefund > 0 && settlement_action && settlement_action !== 'none' && bookingId) {
-      settlementResult = await productLifecycleService.processCancellationSettlement(
-        bookingId,
-        totalRefund,
-        settlement_action,
-        refund_method,
-        cancelled_by || 'system',
-        settlement_notes
-      );
-    }
+    // Aggregate results
+    const totalDiffAmount = results.reduce((sum, r) => sum + (r.diff_amount || 0), 0);
     
     res.json({
       message: `${booking_product_ids.length} product(s) cancelled successfully`,
       cancelled_products: results,
-      total_refund: totalRefund,
-      settlement: settlementResult
+      total_diff_amount: totalDiffAmount,
+      settlement: results[0]?.settlement || null
     });
   } catch (error) {
     if (error.message.includes('Cannot cancel')) {
@@ -166,11 +157,11 @@ router.post('/', async (req, res) => {
 router.get('/penalty-suggestion/:booking_product_id', async (req, res) => {
   try {
     const { booking_product_id } = req.params;
-    
+
     const suggestion = await productLifecycleService.getCancellationPenaltySuggestion(
       parseInt(booking_product_id)
     );
-    
+
     res.json(suggestion);
   } catch (error) {
     if (error.message === 'Booking product not found') {

@@ -89,7 +89,7 @@ export function BookingCancellation({
   const [extraRefundNote, setExtraRefundNote] = useState('');
 
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust'>('refund');
+  const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust' | 'collect'>('refund');
   const [refundMethod, setRefundMethod] = useState('Cash');
   const [remainingDues, setRemainingDues] = useState(0);
 
@@ -240,6 +240,13 @@ export function BookingCancellation({
       return;
     }
 
+    // Set default settlement action based on payment scenario
+    if (summary?.payment_action === 'collect') {
+      setSettlementAction('collect');
+    } else if (summary?.refund_amount && summary.refund_amount > 0) {
+      setSettlementAction('refund');
+    }
+
     setShowConfirmation(true);
   }
 
@@ -260,13 +267,15 @@ export function BookingCancellation({
         cancellation_reason: cancellationReason,
         cancelled_by: userName || 'system',
         settlement_action: settlementAction,
-        refund_method: settlementAction === 'refund' ? refundMethod : undefined,
+        payment_method: (settlementAction === 'refund' || settlementAction === 'collect') ? refundMethod : undefined,
         settlement_notes: extraRefundNote || undefined,
       });
 
       const isPartial = preview && selectedProducts.length < preview.all_products.length;
+      const actionLabel = settlementAction === 'refund' ? 'Refund' : settlementAction === 'collect' ? 'Payment' : 'Adjustment';
+      const diffAmount = result.data?.total_diff_amount || 0;
       const settlementMsg = result.data?.settlement?.transaction_recorded
-        ? ` (${settlementAction === 'refund' ? 'Refund' : 'Adjustment'} of ₹${Math.floor(result.data.total_refund).toLocaleString('en-IN')} recorded)`
+        ? ` (${actionLabel} of ₹${Math.floor(Math.abs(diffAmount)).toLocaleString('en-IN')} recorded)`
         : '';
       toast.success(
         (isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully') + settlementMsg
@@ -483,10 +492,21 @@ export function BookingCancellation({
 
                         <div className="border-t border-yellow-300 pt-2 mt-1">
                           <div className="flex justify-between items-center">
-                            <span className="font-semibold text-yellow-900">Refund Amount:</span>
-                            <span className="font-bold text-green-600 text-lg">
-                              ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
-                            </span>
+                            {summary.payment_action === 'collect' ? (
+                              <>
+                                <span className="font-semibold text-yellow-900">Amount to Collect:</span>
+                                <span className="font-bold text-orange-600 text-lg">
+                                  ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-semibold text-yellow-900">Refund Amount:</span>
+                                <span className="font-bold text-green-600 text-lg">
+                                  ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -631,10 +651,21 @@ export function BookingCancellation({
                       </div>
                     )}
                     <div className="flex justify-between pt-2 border-t border-gray-200">
-                      <span className="font-semibold">Refund Amount:</span>
-                      <span className="font-bold text-green-600">
-                        ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
-                      </span>
+                      {summary.payment_action === 'collect' ? (
+                        <>
+                          <span className="font-semibold">Amount to Collect:</span>
+                          <span className="font-bold text-orange-600">
+                            ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="font-semibold">Refund Amount:</span>
+                          <span className="font-bold text-green-600">
+                            ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -728,6 +759,26 @@ export function BookingCancellation({
                       )}
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* Collection — when penalty exceeds per-product paid */}
+              {summary && summary.payment_action === 'collect' && summary.payment_difference > 0 && (
+                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6">
+                  <h4 className="font-semibold text-orange-900 mb-3">
+                    Collect ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')} cancellation penalty from customer
+                  </h4>
+                  <div>
+                    <label className="block text-sm font-medium text-orange-800 mb-1">Payment Method</label>
+                    <select value={refundMethod} onChange={(e) => setRefundMethod(e.target.value)}
+                      className="w-full px-3 py-2 border border-orange-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+                      <option value="Cash">Cash</option>
+                      <option value="UPI">UPI</option>
+                      <option value="Bank Transfer">Bank Transfer</option>
+                      <option value="Card">Card</option>
+                      <option value="Cheque">Cheque</option>
+                    </select>
+                  </div>
                 </div>
               )}
 
