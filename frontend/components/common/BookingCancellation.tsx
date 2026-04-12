@@ -598,8 +598,8 @@ export function BookingCancellation({
 
       {/* Confirmation Modal */}
       {showConfirmation && preview && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-[60]">
-          <div className="bg-white rounded-lg max-w-md w-full">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center p-4 z-[60] overflow-y-auto">
+          <div className="bg-white rounded-lg max-w-lg w-full my-8">
             <div className="p-6">
               <div className="text-center mb-6">
                 <div className="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-red-100 mb-4">
@@ -689,6 +689,8 @@ export function BookingCancellation({
                       <PaymentMethodInput
                         method={refundMethod}
                         onMethodChange={setRefundMethod}
+                        notes={extraRefundNote}
+                        onNotesChange={setExtraRefundNote}
                         amount={summary.refund_amount}
                         colorScheme="green"
                         showQR={false}
@@ -742,6 +744,8 @@ export function BookingCancellation({
                           <PaymentMethodInput
                             method={refundMethod}
                             onMethodChange={setRefundMethod}
+                            notes={extraRefundNote}
+                            onNotesChange={setExtraRefundNote}
                             amount={summary.refund_amount > remainingDues ? summary.refund_amount - remainingDues : summary.refund_amount}
                             colorScheme="green"
                             showQR={false}
@@ -762,6 +766,8 @@ export function BookingCancellation({
                   <PaymentMethodInput
                     method={refundMethod}
                     onMethodChange={setRefundMethod}
+                    notes={extraRefundNote}
+                    onNotesChange={setExtraRefundNote}
                     amount={summary.payment_difference}
                     colorScheme="orange"
                   />

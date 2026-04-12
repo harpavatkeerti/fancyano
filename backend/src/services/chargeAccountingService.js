@@ -180,7 +180,7 @@ class ChargeAccountingService {
    * @param {string} notes - Optional notes
    * @returns {Promise<Object>} - Payment details with breakdown
    */
-  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes) {
+  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient) {
     return await this._applyPaymentOrAdjustment(
       bookingId,
       paymentAmount,
@@ -188,7 +188,8 @@ class ChargeAccountingService {
       recordedBy,
       notes,
       'payment',
-      'payment_applied'
+      'payment_applied',
+      existingClient
     );
   }
 
@@ -438,10 +439,11 @@ class ChargeAccountingService {
    * Internal method to apply payment or adjustment (shared logic)
    * @private
    */
-  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType) {
-    const client = await pool.connect();
+  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient) {
+    const ownClient = !existingClient;
+    const client = existingClient || await pool.connect();
     try {
-      await client.query('BEGIN');
+      if (ownClient) await client.query('BEGIN');
 
       // Verify booking exists
       const bookingResult = await client.query(
@@ -526,7 +528,7 @@ class ChargeAccountingService {
         [bookingId, eventType, JSON.stringify(activityDetails), recordedBy]
       );
 
-      await client.query('COMMIT');
+      if (ownClient) await client.query('COMMIT');
 
       // Return unified response structure
       return {
@@ -538,10 +540,10 @@ class ChargeAccountingService {
         recorded_at: new Date()
       };
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (ownClient) await client.query('ROLLBACK');
       throw error;
     } finally {
-      client.release();
+      if (ownClient) client.release();
     }
   }
 

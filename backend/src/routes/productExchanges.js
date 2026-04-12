@@ -56,7 +56,12 @@ router.post('/', async (req, res) => {
       exchange_penalty,
       downgrade_penalty,
       exchange_reason,
-      exchanged_by
+      exchanged_by,
+      // Optional payment params — recorded atomically with the exchange
+      payment_amount,
+      payment_method,
+      payment_notes,
+      payment_recorded_by
     } = req.body;
     
     if (!old_booking_product_id || !new_product_ids || !Array.isArray(new_product_ids) || new_product_ids.length === 0) {
@@ -80,12 +85,18 @@ router.post('/', async (req, res) => {
       securityDeposit: p.security_deposit,
     }));
 
-    // Perform exchange
+    // Perform exchange (with optional atomic payment)
     const result = await productLifecycleService.exchangeProduct(
       old_booking_product_id,
       mappedProducts,
       exchange_reason || 'Product exchanged',
-      exchanged_by || 'system'
+      exchanged_by || 'system',
+      {
+        amount: payment_amount,
+        method: payment_method,
+        recorded_by: payment_recorded_by || exchanged_by || 'system',
+        notes: payment_notes
+      }
     );
     
     res.json({

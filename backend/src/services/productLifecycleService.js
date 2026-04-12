@@ -24,9 +24,10 @@ class ProductLifecycleService {
    * @param {Array<Object>} newProducts - Array of {productId, rent, securityDeposit}
    * @param {string} reason - Reason for exchange
    * @param {number} userId - User performing the exchange
+   * @param {Object} payment - Optional payment to record atomically {amount, method, recorded_by, notes}
    * @returns {Promise<Object>} - Exchange details
    */
-  async exchangeProduct(bookingProductId, newProducts, reason, userId) {
+  async exchangeProduct(bookingProductId, newProducts, reason, userId, payment = {}) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -53,13 +54,7 @@ class ProductLifecycleService {
         oldBookingProduct.created_at
       );
 
-      // Mark old product as exchanged
-      await client.query(
-        'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['exchanged', bookingProductId]
-      );
-
-      // Add exchange penalty charge to old product
+      // Add exchange penalty charge to old product (product still 'confirmed' — charge routing works)
       if (penaltyResult.amount > 0) {
         await chargeAccountingService.addCharge(
           bookingProductId,
@@ -126,6 +121,34 @@ class ProductLifecycleService {
         );
       }
 
+      // MONEY FIRST — record payment before status change, in same transaction
+      let paymentResult = null;
+      const paymentAmount = parseFloat(payment.amount) || 0;
+      if (paymentAmount > 0) {
+        // Use the public applyPayment method (with balance validation, charge distribution,
+        // transaction record, activity log) — passing existing client for atomicity
+        await chargeAccountingService.applyPayment(
+          oldBookingProduct.booking_id,
+          paymentAmount,
+          payment.method || 'Cash',
+          payment.recorded_by || userId,
+          payment.notes || 'Exchange payment',
+          client  // existing transaction client — no separate BEGIN/COMMIT
+        );
+
+        paymentResult = {
+          amount: paymentAmount,
+          method: payment.method || 'Cash',
+          transaction_recorded: true
+        };
+      }
+
+      // STATUS CHANGE LAST — mark old product as exchanged
+      await client.query(
+        'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        ['exchanged', bookingProductId]
+      );
+
       // Record exchange history
       const exchangeResult = await client.query(
         `INSERT INTO booking_exchange_history 
@@ -168,7 +191,8 @@ class ProductLifecycleService {
         new_booking_product_ids: newBookingProductIds,
         exchange_penalty: penaltyResult.amount,
         downgrade_penalty: downgradePenalty,
-        total_penalty: penaltyResult.amount + downgradePenalty
+        total_penalty: penaltyResult.amount + downgradePenalty,
+        payment: paymentResult
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -638,13 +662,7 @@ class ProductLifecycleService {
         const expectedReturnDate = new Date(booked_to);
         const lateDays = Math.max(0, Math.floor((currentDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
 
-        // Update product status to completed
-        await client.query(
-          'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-          ['completed', bookingProductId]
-        );
-
-        // Apply late fee if applicable
+        // Apply late fee if applicable (product still 'in_progress' — charge routing works)
         if (lateDays > 0) {
           const lateFeeAmount = lateFeePolicy.amount * lateDays;
           totalLateFees += lateFeeAmount;
@@ -672,6 +690,12 @@ class ProductLifecycleService {
             client
           );
         }
+
+        // STATUS CHANGE LAST — mark product as completed after fees are created
+        await client.query(
+          'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          ['completed', bookingProductId]
+        );
       }
 
       // Log in booking activity

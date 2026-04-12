@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { productExchangesApi, productsApi, bookingsApi, paymentTransactionsApi } from '@/lib/api';
+import { productExchangesApi, productsApi, bookingsApi } from '@/lib/api';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
@@ -52,7 +52,7 @@ export function ProductExchange({
   const [availabilityErrors, setAvailabilityErrors] = useState<Record<number, string>>({});
 
   // Payment collection state
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
+
   const [totalPaymentDue, setTotalPaymentDue] = useState<number>(0);
   const [exchangePenaltyAmount, setExchangePenaltyAmount] = useState<number>(0);
   const [rentDifferenceAmount, setRentDifferenceAmount] = useState<number>(0);
@@ -490,30 +490,6 @@ export function ProductExchange({
         })),
       ];
 
-      const exchangeResult = await productExchangesApi.exchange({
-        old_booking_product_id: pendingExchangeData.original_product_id,
-        new_product_ids: newProductIds,
-        exchange_penalty: exchangePreview?.calculations?.exchange_penalty || 0,
-        downgrade_penalty: exchangePreview?.calculations?.downgrade_penalty || 0,
-        exchange_reason: combinedReason,
-        exchanged_by: exchangeBy,
-      });
-
-      const createdExchange = exchangeResult.data;
-      console.log('✅ Exchange created:', createdExchange.id);
-
-      // STEP 2: Record ONE payment for the TOTAL PAYMENT DUE amount
-      console.log('💰 Recording TOTAL payment due:', {
-        exchange_id: createdExchange.id,
-        total_payment_due: totalPaymentDue,
-        breakdown: {
-          exchangePenalty: exchangePenaltyAmount,
-          rentDifference: rentDifferenceAmount
-        },
-        payment_method: paymentMethod,
-        narration: paymentNarration
-      });
-
       // Build detailed narration showing the breakdown
       const breakdownParts = [];
       if (exchangePenaltyAmount > 0) {
@@ -524,21 +500,28 @@ export function ProductExchange({
       }
       const detailedNarration = `Total Payment: ₹${totalPaymentDue.toLocaleString('en-IN')} (${breakdownParts.join(' + ')})${paymentNarration ? ` | ${paymentNarration.trim()}` : ''}`;
 
-      // Record the TOTAL payment amount via the standard payment API
-      await paymentTransactionsApi.applyPayment({
-        booking_id: bookingId,
-        amount: Math.max(0, parseFloat(totalPaymentDue.toString()) || 0),
+      // ATOMIC: Exchange + Payment in one API call (backend handles both in same transaction)
+      console.log('📝 Creating exchange with atomic payment...');
+      const exchangeResult = await productExchangesApi.exchange({
+        old_booking_product_id: pendingExchangeData.original_product_id,
+        new_product_ids: newProductIds,
+        exchange_penalty: exchangePreview?.calculations?.exchange_penalty || 0,
+        downgrade_penalty: exchangePreview?.calculations?.downgrade_penalty || 0,
+        exchange_reason: combinedReason,
+        exchanged_by: exchangeBy,
+        // Payment params — processed atomically with the exchange
+        payment_amount: Math.max(0, parseFloat(totalPaymentDue.toString()) || 0),
         payment_method: paymentMethod.trim(),
-        recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
-        notes: detailedNarration
+        payment_recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
+        payment_notes: detailedNarration,
       });
 
-      console.log('✅ Total payment recorded successfully');
+      const createdExchange = exchangeResult.data;
+      console.log('✅ Exchange + payment completed atomically:', createdExchange.id || createdExchange);
 
       toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
 
       setShowExchangeModal(false);
-      setShowPaymentModal(false);
       setPendingExchange(null);
       setPendingExchangeData(null); // Clear pending exchange data
       setTotalPaymentDue(0);
@@ -1241,7 +1224,7 @@ export function ProductExchange({
                           <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-3">
                             <p className="text-xs font-semibold text-yellow-800 mb-1">Payment Calculation:</p>
                             <p className="text-xs text-yellow-700">
-                              Total = New Rent + Exchange Penalty + Rent Difference - Original Rent
+                              Total = New Rent + Exchange Penalty + Downgrade Penalty - Original Rent
                             </p>
                           </div>
 
@@ -1361,146 +1344,6 @@ export function ProductExchange({
                 className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {loading ? 'Processing...' : (totalPaymentDue > 0 ? 'COLLECT PAYMENT & EXCHANGE' : 'EXCHANGE')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Payment Collection Modal */}
-      {showPaymentModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
-            <div className="flex justify-between items-center p-6 border-b border-gray-200 flex-shrink-0">
-              <h2 className="text-xl font-semibold text-gray-800">
-                Confirm Exchange - Collect Payment
-              </h2>
-              <button
-                onClick={() => {
-                  setShowPaymentModal(false);
-                  setPendingExchange(null);
-                  setPendingExchangeData(null);
-                  setExchangePenaltyAmount(0);
-                  setRentDifferenceAmount(0);
-                }}
-                className="text-red-600 hover:text-red-700 text-2xl font-bold transition-colors"
-              >
-                ×
-              </button>
-            </div>
-
-            <div className="p-6 space-y-6 overflow-y-auto flex-1">
-              <div className="bg-blue-50 border border-blue-300 rounded-lg p-4">
-                <p className="text-sm font-bold text-blue-900">
-                  ⚠️ Payment Required to Confirm Exchange
-                </p>
-              </div>
-
-              {/* Total Payment Due - Main Display */}
-              <div className="bg-gradient-to-r from-indigo-50 to-blue-50 border-2 border-indigo-400 rounded-lg p-6">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-lg font-bold text-gray-900">Total Payment Due:</span>
-                  <span className="text-4xl font-bold text-indigo-600">
-                    ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
-                  </span>
-                </div>
-                <p className="text-sm text-gray-600 mt-2">
-                  This is the total amount to be collected from the customer for this exchange.
-                </p>
-              </div>
-
-              {/* Payment Breakdown */}
-              {(exchangePenaltyAmount > 0 || rentDifferenceAmount > 0) && (
-                <details className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <summary className="cursor-pointer font-semibold text-gray-700 text-sm">
-                    View Payment Breakdown
-                  </summary>
-                  <div className="mt-4 space-y-3">
-                    {exchangePenaltyAmount > 0 && (
-                      <div className="flex justify-between items-center pb-2 border-b border-gray-200">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">Exchange Penalty</p>
-                          <p className="text-xs text-gray-500">(Policy-based exchange penalty)</p>
-                        </div>
-                        <span className="text-lg font-bold text-orange-600">
-                          ₹{Math.floor(exchangePenaltyAmount).toLocaleString('en-IN')}
-                        </span>
-                      </div>
-                    )}
-                    {rentDifferenceAmount > 0 && (
-                      <div className="flex justify-between items-center pb-2 border-b border-gray-200">
-                        <div>
-                          <p className="text-sm font-medium text-gray-700">Rent Difference</p>
-                          <p className="text-xs text-gray-500">(Balancing amount)</p>
-                        </div>
-                        <span className="text-lg font-bold text-purple-600">
-                          ₹{Math.floor(rentDifferenceAmount).toLocaleString('en-IN')}
-                        </span>
-                      </div>
-                    )}
-                    <div className="flex justify-between items-center pt-2">
-                      <span className="text-sm font-bold text-gray-900">Total:</span>
-                      <span className="text-lg font-bold text-indigo-600">
-                        ₹{Math.floor(totalPaymentDue).toLocaleString('en-IN')}
-                      </span>
-                    </div>
-                  </div>
-                </details>
-              )}
-
-              <PaymentMethodInput
-                method={paymentMethod}
-                onMethodChange={setPaymentMethod}
-                notes={paymentNarration}
-                onNotesChange={setPaymentNarration}
-                amount={totalPaymentDue}
-                notesLabel="Narration / Notes (Optional)"
-                notesPlaceholder="Enter transaction details, reference number, customer name, etc."
-                colorScheme="red"
-              />
-
-              {pendingExchangeData && (
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                  <p className="text-xs text-gray-600 mb-1">Exchange Details:</p>
-                  <p className="text-sm font-medium text-gray-800">
-                    {currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.name} ({currentProducts.find(p => p.id === pendingExchangeData.original_product_id)?.code})
-                    → {availableProducts.find(p => p.id === pendingExchangeData.exchanged_product_id)?.name} ({availableProducts.find(p => p.id === pendingExchangeData.exchanged_product_id)?.code})
-                  </p>
-                  {pendingExchangeData.additionalProducts && pendingExchangeData.additionalProducts.length > 0 && (
-                    <div className="mt-2 pt-2 border-t border-gray-200">
-                      <p className="text-xs font-semibold text-blue-600 mb-1">Additional Products Added:</p>
-                      <ul className="text-xs text-gray-700 space-y-1 list-disc list-inside">
-                        {pendingExchangeData.additionalProducts.map((addProd: any, idx: number) => {
-                          const prod = availableProducts.find(p => p.id === addProd.product_id);
-                          return <li key={idx}>{prod ? `${prod.name} (${prod.code})` : `Product ${addProd.product_id}`}</li>;
-                        })}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-4 p-6 border-t border-gray-200 flex-shrink-0 bg-white">
-              <button
-                onClick={() => {
-                  setShowPaymentModal(false);
-                  setPendingExchange(null);
-                  setPendingExchangeData(null);
-                  setExchangePenaltyAmount(0);
-                  setRentDifferenceAmount(0);
-                  setPaymentNarration('');
-                }}
-                className="px-6 py-2.5 bg-white border-2 border-gray-300 text-gray-700 font-semibold rounded-lg hover:bg-gray-50 transition-colors"
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={handlePaymentCollection}
-                disabled={loading || !paymentMethod}
-                className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? 'Recording...' : 'COLLECT PAYMENT'}
               </button>
             </div>
           </div>
