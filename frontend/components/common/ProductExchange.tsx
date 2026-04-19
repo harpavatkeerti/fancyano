@@ -1224,7 +1224,7 @@ export function ProductExchange({
                           <div className="bg-yellow-50 border border-yellow-300 rounded-lg p-3 mb-3">
                             <p className="text-xs font-semibold text-yellow-800 mb-1">Payment Calculation:</p>
                             <p className="text-xs text-yellow-700">
-                              Total = New Rent + Exchange Penalty + Downgrade Penalty - Original Rent
+                              Total = New Rent + Exchange Penalty + Downgrade Penalty - Original Rent Paid
                             </p>
                           </div>
 
@@ -1233,7 +1233,11 @@ export function ProductExchange({
                               {/* Original Rent */}
                               <div className="flex justify-between">
                                 <span>Original Product Rent:</span>
-                                <span className="font-semibold">₹{exchangePreview.calculations.original_rent.toLocaleString('en-IN')}</span>
+                                <span className="font-semibold">₹{exchangePreview.calculations.effective_rent.toLocaleString('en-IN')}</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span>Original Rent Paid:</span>
+                                <span className="font-semibold text-blue-700">₹{(exchangePreview.calculations.old_rent_paid ?? exchangePreview.calculations.effective_rent).toLocaleString('en-IN')}</span>
                               </div>
 
                               {/* New Rent */}
@@ -1255,7 +1259,7 @@ export function ProductExchange({
                               </div>
                               {exchangePreview.calculations.downgrade_penalty > 0 && (
                                 <p className="text-xs text-purple-600 mt-1 ml-4">
-                                  (Balancing amount when downgrading: ₹{exchangePreview.calculations.original_rent.toLocaleString('en-IN')} - ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} - ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')})
+                                  (Balancing amount when downgrading: ₹{exchangePreview.calculations.effective_rent.toLocaleString('en-IN')} - ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} - ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')})
                                 </p>
                               )}
                             </>
@@ -1271,7 +1275,7 @@ export function ProductExchange({
                             </div>
                             <div className="text-xs text-gray-600 bg-white rounded p-2">
                               <p className="font-mono">
-                                New Rent ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} + Penalty ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} + Downgrade ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')} - Original ₹{exchangePreview.calculations.effective_rent.toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}
+                                New Rent ₹{exchangePreview.calculations.total_new_rent.toLocaleString('en-IN')} + Penalty ₹{Math.floor(exchangePreview.calculations.exchange_penalty).toLocaleString('en-IN')} + Downgrade ₹{Math.floor(exchangePreview.calculations.downgrade_penalty).toLocaleString('en-IN')} - Rent Paid ₹{(exchangePreview.calculations.old_rent_paid ?? exchangePreview.calculations.effective_rent).toLocaleString('en-IN')} = ₹{Math.floor(exchangePreview.calculations.total_payment_due).toLocaleString('en-IN')}
                               </p>
                             </div>
                             {exchangePreview.calculations.total_payment_due > 0 && (
