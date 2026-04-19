@@ -610,7 +610,12 @@ class BookingService {
         COALESCE((
           SELECT SUM(pc.paid_amount) 
           FROM product_charges pc 
-          WHERE pc.booking_product_id IN (SELECT bp2.id FROM booking_products bp2 WHERE bp2.booking_id = b.id)
+          JOIN booking_products bp2 ON pc.booking_product_id = bp2.id
+          WHERE bp2.booking_id = b.id
+          AND (
+            bp2.status NOT IN ('exchanged', 'cancelled')
+            OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
+          )
         ), 0) as total_paid,
         json_agg(
           DISTINCT jsonb_build_object(

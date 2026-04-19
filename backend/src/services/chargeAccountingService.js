@@ -105,8 +105,11 @@ class ChargeAccountingService {
           let dueToAdd = 0;
 
           if (chargeType === 'rent') {
-            if (isActive) { summary.charges.rent.due += charge.due_amount; dueToAdd = charge.due_amount; }
-            summary.charges.rent.paid += charge.paid_amount;
+            if (isActive) {
+              summary.charges.rent.due += charge.due_amount;
+              summary.charges.rent.paid += charge.paid_amount;
+              dueToAdd = charge.due_amount;
+            }
           } else if (['exchange_penalty', 'downgrade_penalty', 'cancellation_penalty'].includes(chargeType)) {
             summary.charges.penalties.due += charge.due_amount;
             summary.charges.penalties.paid += charge.paid_amount;
@@ -116,8 +119,11 @@ class ChargeAccountingService {
             summary.charges.fees.paid += charge.paid_amount;
             dueToAdd = charge.due_amount;
           } else if (chargeType === 'security') {
-            if (includeSecurityDue) { summary.charges.security.due += charge.due_amount; dueToAdd = charge.due_amount; }
-            summary.charges.security.paid += charge.paid_amount;
+            if (includeSecurityDue) {
+              summary.charges.security.due += charge.due_amount;
+              summary.charges.security.paid += charge.paid_amount;
+              dueToAdd = charge.due_amount;
+            }
           }
 
           // Add to per-type breakdown
@@ -293,10 +299,13 @@ class ChargeAccountingService {
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1 
-       AND bp.status NOT IN ('exchanged', 'cancelled')
        AND pc.charge_type IN ('exchange_penalty', 'downgrade_penalty', 'cancellation_penalty')
        AND pc.paid_amount < pc.due_amount
-       ORDER BY bp.id, pc.charge_type`,
+       ORDER BY bp.id, CASE pc.charge_type
+         WHEN 'exchange_penalty' THEN 1
+         WHEN 'downgrade_penalty' THEN 2
+         WHEN 'cancellation_penalty' THEN 3
+       END`,
       [bookingId]
     );
 
@@ -312,7 +321,6 @@ class ChargeAccountingService {
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1 
-       AND bp.status NOT IN ('exchanged', 'cancelled')
        AND pc.charge_type IN ('late_fee', 'damage_fee')
        AND pc.paid_amount < pc.due_amount
        ORDER BY bp.id, pc.charge_type`,
@@ -421,9 +429,10 @@ class ChargeAccountingService {
    * @param {string} paymentMethod - Payment method for the adjustment
    * @param {string} adjustedBy - Who applied the adjustment
    * @param {string} notes - Reason/notes for adjustment
+   * @param {Object} [existingClient] - Optional DB client for running within an existing transaction
    * @returns {Promise<Object>}
    */
-  async applyAdjustment(bookingId, adjustmentAmount, paymentMethod, adjustedBy, notes) {
+  async applyAdjustment(bookingId, adjustmentAmount, paymentMethod, adjustedBy, notes, existingClient) {
     return await this._applyPaymentOrAdjustment(
       bookingId,
       adjustmentAmount,
@@ -431,7 +440,8 @@ class ChargeAccountingService {
       adjustedBy,
       notes,
       'adjustment',
-      'adjustment_applied'
+      'adjustment_applied',
+      existingClient
     );
   }
 
@@ -463,12 +473,15 @@ class ChargeAccountingService {
       if (transactionType === 'payment' || transactionType === 'adjustment') {
         // Get current balance to enforce hard cap
         const summaryResult = await client.query(
-          `SELECT 
-            COALESCE(SUM(pc.due_amount), 0) as total_charge_due,
-            COALESCE(SUM(pc.paid_amount), 0) as total_charge_paid
-           FROM product_charges pc
-           JOIN booking_products bp ON pc.booking_product_id = bp.id
-           WHERE bp.booking_id = $1 AND bp.status NOT IN ('exchanged', 'cancelled')`,
+           `SELECT 
+             COALESCE(SUM(pc.due_amount), 0) as total_charge_due,
+             COALESCE(SUM(pc.paid_amount), 0) as total_charge_paid
+            FROM product_charges pc
+            JOIN booking_products bp ON pc.booking_product_id = bp.id
+            WHERE bp.booking_id = $1 AND (
+              bp.status NOT IN ('exchanged', 'cancelled')
+              OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
+            )`,
           [bookingId]
         );
         const booking = await client.query(

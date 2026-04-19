@@ -121,19 +121,39 @@ class ProductLifecycleService {
         );
       }
 
-      // MONEY FIRST — record payment before status change, in same transaction
+      // STEP 3: Redistribute old product's rent credit via adjustment
+      // The old rent paid is credited toward new charges (rent first, then penalties)
+      // Must happen BEFORE exchange payment so B's rent is partially filled,
+      // and the exchange payment's remaining flows to penalties
+      const oldRentPaidResult = await client.query(
+        `SELECT COALESCE(paid_amount, 0) as paid FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [bookingProductId]
+      );
+      const rentCredit = parseInt(oldRentPaidResult.rows[0]?.paid) || 0;
+
+      if (rentCredit > 0) {
+        await chargeAccountingService.applyAdjustment(
+          oldBookingProduct.booking_id,
+          rentCredit,
+          'Adjustment',
+          userId,
+          `Exchange credit: ₹${rentCredit} rent from exchanged product #${bookingProductId}`,
+          client  // same transaction
+        );
+      }
+
+      // STEP 4: Record exchange payment from customer (rent difference + penalties)
       let paymentResult = null;
       const paymentAmount = parseFloat(payment.amount) || 0;
       if (paymentAmount > 0) {
-        // Use the public applyPayment method (with balance validation, charge distribution,
-        // transaction record, activity log) — passing existing client for atomicity
         await chargeAccountingService.applyPayment(
           oldBookingProduct.booking_id,
           paymentAmount,
           payment.method || 'Cash',
           payment.recorded_by || userId,
           payment.notes || 'Exchange payment',
-          client  // existing transaction client — no separate BEGIN/COMMIT
+          client  // same transaction
         );
 
         paymentResult = {
@@ -143,11 +163,14 @@ class ProductLifecycleService {
         };
       }
 
-      // STATUS CHANGE LAST — mark old product as exchanged
+      // STEP 5: Status change LAST — mark old product as exchanged
       await client.query(
         'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['exchanged', bookingProductId]
       );
+
+      // STEP 6: Derive booking-level status from product statuses
+      await bookingService.updateBookingStatus(oldBookingProduct.booking_id);
 
       // Record exchange history
       const exchangeResult = await client.query(
@@ -178,7 +201,8 @@ class ProductLifecycleService {
           {
             old_product_id: oldBookingProduct.product_id,
             new_product_ids: newProducts.map(p => p.productId),
-            new_booking_product_ids: newBookingProductIds
+            new_booking_product_ids: newBookingProductIds,
+            rent_credit: rentCredit
           },
           userId
         ]
@@ -1304,6 +1328,14 @@ class ProductLifecycleService {
       const effectiveRent = parseFloat(oldProduct.effective_rent) || 0;  // Use effective rent for calculations
       const originalSecurity = parseFloat(oldProduct.security_deposit) || 0;
 
+      // Get old product's actual rent paid (credit is based on what was PAID, not what was due)
+      const oldRentPaidResult = await pool.query(
+        `SELECT COALESCE(paid_amount, 0) as paid FROM product_charges 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [oldBookingProductId]
+      );
+      const oldRentPaid = parseInt(oldRentPaidResult.rows[0]?.paid) || 0;
+
       // Get new product details
       const newProductResult = await pool.query(
         'SELECT id, name, rent, security_deposit FROM products WHERE id = $1',
@@ -1352,8 +1384,9 @@ class ProductLifecycleService {
       // Use shared calculation logic - NO DUPLICATION!
       const { downgradePenalty } = this._calculateExchangePenalties(effectiveRent, exchangePenalty, totalNewRent);
 
-      // Total payment due = exchange_penalty + downgrade_penalty + new_total_rent - effective_rent
-      const totalPaymentDue = exchangePenalty + downgradePenalty + totalNewRent - effectiveRent;
+      // Total payment due: customer gets credit only for rent actually PAID (not rent due)
+      // Downgrade penalty uses rent DUE (product cost), but credit uses rent PAID
+      const totalPaymentDue = Math.max(0, exchangePenalty + downgradePenalty + totalNewRent - oldRentPaid);
 
       // Calculate security difference
       const securityDifference = totalNewSecurity - originalSecurity;
@@ -1409,6 +1442,8 @@ class ProductLifecycleService {
           exchange_penalty: exchangePenalty,
           penalty_percentage: penaltyData.policy?.value || 0,
           downgrade_penalty: downgradePenalty, // Rent difference when downgrading
+          old_rent_paid: oldRentPaid,
+          rent_credit: oldRentPaid,
           total_payment_due: totalPaymentDue,
           security_difference: securityDifference,
           current_total_rent: currentTotalRent,
