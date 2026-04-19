@@ -518,7 +518,7 @@ export default function MyBookingsPage() {
                       </p>
                       <p className="text-sm text-gray-600">
                         Total: ₹{Math.floor(
-                          ((booking as any).total_rent || 0) + ((booking as any).transport_charge || 0)
+                          ((booking as any).total_effective_rent || 0) + ((booking as any).transport_charge || 0)
                         )}
                       </p>
                     </div>

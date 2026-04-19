@@ -604,9 +604,9 @@ class BookingService {
         b.created_by,
         b.created_at,
         COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
-        COALESCE(SUM(DISTINCT bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
-        COALESCE(SUM(DISTINCT bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
-        COALESCE(SUM(DISTINCT bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
+        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
+        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
+        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
         COALESCE((
           SELECT SUM(pc.paid_amount) 
           FROM product_charges pc 
@@ -667,25 +667,7 @@ class BookingService {
 
     const result = await pool.query(query, params);
 
-    // Calculate payment_status for each booking (backend business logic)
-    const bookingsWithStatus = result.rows.map(booking => {
-      const totalRent = parseFloat(booking.total_rent || 0) + parseFloat(booking.transport_charge || 0);
-      const totalPaid = parseFloat(booking.total_paid || 0);
-
-      let payment_status = 'unpaid';
-      if (totalPaid >= totalRent) {
-        payment_status = 'paid';
-      } else if (totalPaid > 0) {
-        payment_status = 'partial';
-      }
-
-      return {
-        ...booking,
-        payment_status
-      };
-    });
-
-    return bookingsWithStatus;
+    return result.rows;
   }
 
   /**

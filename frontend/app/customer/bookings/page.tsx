@@ -394,7 +394,7 @@ export default function CustomerBookings() {
                       <p className="text-sm text-gray-500">Total Rent</p>
                       <p className="font-bold text-red-600 text-lg">
                         ₹{Math.floor(
-                          ((booking as any).total_rent || 0) + ((booking as any).transport_charge || 0)
+                          ((booking as any).total_effective_rent || 0) + ((booking as any).transport_charge || 0)
                         ).toLocaleString('en-IN')}
                       </p>
                     </div>
