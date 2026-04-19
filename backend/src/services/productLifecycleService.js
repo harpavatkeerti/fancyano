@@ -1121,6 +1121,7 @@ class ProductLifecycleService {
           code: bp.code,
           name: bp.name,
           rent: rent,
+          effective_rent: effectiveRent,
           security_deposit: securityDeposit,
           rent_paid: rentPaid,
           security_paid: securityPaid
@@ -1137,7 +1138,7 @@ class ProductLifecycleService {
       }
 
       // 5. Calculate totals
-      const totalCancelledRent = allProducts.reduce((sum, p) => sum + p.rent, 0);
+      const totalCancelledRent = allProducts.reduce((sum, p) => sum + p.effective_rent, 0);
       const totalCancelledSecurity = allProducts.reduce((sum, p) => sum + p.security_deposit, 0);
       const totalRentPaid = allProducts.reduce((sum, p) => sum + p.rent_paid, 0);
       const totalSecurityPaid = allProducts.reduce((sum, p) => sum + p.security_paid, 0);
@@ -1220,7 +1221,7 @@ class ProductLifecycleService {
       let totalPenalty = 0;
 
       for (const product of selectedPenaltyProducts) {
-        totalSelectedRent += product.rent || 0;
+        totalSelectedRent += product.effective_rent || product.rent || 0;
         totalSelectedSecurity += product.security_deposit || 0;
         totalSelectedRentPaid += product.rent_paid || 0;
         totalSelectedSecurityPaid += product.security_paid || 0;
@@ -1403,12 +1404,12 @@ class ProductLifecycleService {
       let currentTotalRent = 0;
       let currentTotalSecurity = 0;
       for (const bp of allBpResult.rows) {
-        currentTotalRent += parseFloat(bp.rent) || 0;
+        currentTotalRent += parseFloat(bp.effective_rent) || parseFloat(bp.rent) || 0;
         currentTotalSecurity += parseFloat(bp.security_deposit) || 0;
       }
 
       // After exchange: remove exchanged product, add new product(s)
-      const afterExchangeRent = currentTotalRent - originalRent + totalNewRent;
+      const afterExchangeRent = currentTotalRent - effectiveRent + totalNewRent;
       const afterExchangeSecurity = currentTotalSecurity - originalSecurity + totalNewSecurity;
 
       return {

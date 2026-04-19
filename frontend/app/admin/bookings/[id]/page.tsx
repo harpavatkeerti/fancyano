@@ -675,7 +675,12 @@ export default function OrderDetailsPage() {
                           <p className="text-xs text-gray-500 font-mono">Code: {product.code}</p>
                         </div>
                       )}
-                      <p className="text-sm text-gray-600 mt-1">₹{product.rent?.toLocaleString()}/Day</p>
+                      <p className="text-sm text-gray-600 mt-1">
+                        ₹{Math.floor(product.effective_rent || product.rent)?.toLocaleString()}/Day
+                        {product.effective_rent && product.effective_rent < product.rent && (
+                          <span className="text-xs text-gray-400 line-through ml-1">₹{Math.floor(product.rent)?.toLocaleString()}</span>
+                        )}
+                      </p>
                     </div>
                   </div>
                 </div>

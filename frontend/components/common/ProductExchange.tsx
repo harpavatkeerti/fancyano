@@ -831,7 +831,7 @@ export function ProductExchange({
                   <option value="">Select product to exchange</option>
                   {currentProducts.map((product) => (
                     <option key={product.id} value={product.id}>
-                      {product.name} ({product.code}) - ₹{product.rent}/day
+                      {product.name} ({product.code}) - ₹{product.effective_rent || product.rent}/day
                     </option>
                   ))}
                 </select>
@@ -1202,7 +1202,7 @@ export function ProductExchange({
                       <div className="space-y-2 text-sm text-blue-800">
                         <div className="flex justify-between">
                           <span>Current Total Rent:</span>
-                          <span className="font-semibold">₹{(exchangePreview?.calculations?.current_total_rent ?? currentProducts.reduce((sum, p) => sum + (parseFloat(String(p.rent)) || 0), 0)).toLocaleString('en-IN')}</span>
+                          <span className="font-semibold">₹{(exchangePreview?.calculations?.current_total_rent ?? currentProducts.reduce((sum, p) => sum + (parseFloat(String(p.effective_rent || p.rent)) || 0), 0)).toLocaleString('en-IN')}</span>
                         </div>
                         <div className="flex justify-between">
                           <span>After Exchange:</span>

@@ -1414,7 +1414,10 @@ export default function OrderDetailsPage() {
                     </div>
                   )}
                   <p className="text-gray-600 mb-4">
-                    ₹{Math.floor(product.rent || 0)} / Day
+                    ₹{Math.floor(product.effective_rent || product.rent || 0)} / Day
+                    {product.effective_rent && product.effective_rent < product.rent && (
+                      <span className="text-xs text-gray-400 line-through ml-1">₹{Math.floor(product.rent)}</span>
+                    )}
                   </p>
                   <div className="flex items-center gap-2">
                     <div>
@@ -1693,9 +1696,11 @@ export default function OrderDetailsPage() {
 
                                     if (isCancellationRefund) {
                                       // For cancellation refunds, base amount is the product RENT (not security)
-                                      baseAmount = typeof product.rent === 'number'
-                                        ? product.rent
-                                        : parseFloat(String(product.rent || '0')) || 0;
+                                      baseAmount = typeof product.effective_rent === 'number'
+                                        ? product.effective_rent
+                                        : typeof product.rent === 'number'
+                                          ? product.rent
+                                          : parseFloat(String(product.rent || '0')) || 0;
                                     } else {
                                       // For normal security refunds, base amount is the security deposit
                                       baseAmount = typeof product.security_deposit === 'number'
@@ -1851,9 +1856,11 @@ export default function OrderDetailsPage() {
 
                               if (isCancellationRefund) {
                                 // For cancellation refunds, base amount is the product RENT (not security)
-                                baseAmount = typeof product.rent === 'number'
-                                  ? product.rent
-                                  : parseFloat(String(product.rent || '0')) || 0;
+                                baseAmount = typeof product.effective_rent === 'number'
+                                  ? product.effective_rent
+                                  : typeof product.rent === 'number'
+                                    ? product.rent
+                                    : parseFloat(String(product.rent || '0')) || 0;
                               } else {
                                 // For normal security refunds, base amount is the security deposit
                                 baseAmount = typeof product.security_deposit === 'number'
@@ -2249,7 +2256,7 @@ export default function OrderDetailsPage() {
                   <p className="text-xs text-gray-500 font-mono mb-1">Code: {selectedProduct.code}</p>
                 )}
                 <p className="text-gray-600 mb-4">
-                  ₹{Math.floor(selectedProduct.rent || 0)} / Day
+                  ₹{Math.floor(selectedProduct.effective_rent || selectedProduct.rent || 0)} / Day
                 </p>
                 <div>
                   <p className="text-sm text-gray-600 mb-1">Dates:</p>
@@ -2741,7 +2748,12 @@ export default function OrderDetailsPage() {
                           <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {product.code}</p>
                         )}
                       </div>
-                      <p className="text-sm text-gray-600 mt-1">₹{Math.floor(product.rent || 0)} / Day</p>
+                      <p className="text-sm text-gray-600 mt-1">
+                        ₹{Math.floor(product.effective_rent || product.rent || 0)} / Day
+                        {product.effective_rent && product.effective_rent < product.rent && (
+                          <span className="text-xs text-gray-400 line-through ml-1">₹{Math.floor(product.rent)}</span>
+                        )}
+                      </p>
                       <p className="text-sm text-red-600 mt-1">
                         Dates: {new Date(bookedFrom).toLocaleDateString('en-GB')} To {new Date(bookedTo).toLocaleDateString('en-GB')}
                       </p>

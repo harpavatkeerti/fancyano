@@ -407,7 +407,12 @@ export function BookingCancellation({
                                     <p className="text-sm text-gray-600">Code: {product.code}</p>
                                   </div>
                                   <div className="text-right">
-                                    <p className="text-sm text-gray-600">Rent: ₹{product.rent.toLocaleString('en-IN')}</p>
+                                    <p className="text-sm text-gray-600">
+                                      Rent: ₹{(product.effective_rent || product.rent).toLocaleString('en-IN')}
+                                      {product.effective_rent && product.effective_rent < product.rent && (
+                                        <span className="text-xs text-gray-400 line-through ml-1">₹{product.rent.toLocaleString('en-IN')}</span>
+                                      )}
+                                    </p>
                                     <p className="text-sm text-gray-600">Security: ₹{product.security_deposit.toLocaleString('en-IN')}</p>
                                   </div>
                                 </div>
