@@ -43,8 +43,8 @@ class BookingCalculationService {
         throw new Error(`Product with id ${productInput.id} not found`);
       }
 
-      const rent = parseFloat(product.rent) || 0;
-      const securityDeposit = parseFloat(product.security_deposit) || 0;
+      const rent = product.rent || 0;
+      const securityDeposit = product.security_deposit || 0;
 
       // Calculate effective rent with discount using centralized calculator
       const { effectiveRent, discountAmount } = discountCalculator.calculateEffectiveRent(
@@ -127,12 +127,12 @@ class BookingCalculationService {
     );
 
     // Calculate total
-    const total = subtotal + (parseFloat(transport_charge) || 0) - bookingDiscountAmount;
+     const total = subtotal + (transport_charge || 0) - bookingDiscountAmount;
 
     return {
       products: calculatedProducts,
       subtotal,
-      transport_charge: parseFloat(transport_charge) || 0,
+      transport_charge: transport_charge || 0,
       booking_discount_amount: bookingDiscountAmount,
       total: Math.max(0, total)
     };

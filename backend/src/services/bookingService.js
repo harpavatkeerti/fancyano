@@ -38,7 +38,8 @@ class BookingService {
         bookingDate,
         products,
         transportCharge = 0,
-        createdBy
+        createdBy,
+        discountAmount = 0
       } = bookingData;
 
       // Validate required fields
@@ -178,6 +179,20 @@ class BookingService {
           createdBy
         ]
       );
+
+      // Apply booking-level discount if provided
+      if (discountAmount > 0) {
+        await client.query(
+          'UPDATE bookings SET final_discount = $1 WHERE id = $2',
+          [discountAmount, bookingId]
+        );
+
+        await chargeAccountingService.applyBookingDiscount(
+          bookingId, discountAmount, createdBy || 'system',
+          `Booking discount of ₹${discountAmount} applied at creation`,
+          client
+        );
+      }
 
       await client.query('COMMIT');
 

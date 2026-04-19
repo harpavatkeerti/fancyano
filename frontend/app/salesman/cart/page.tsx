@@ -480,8 +480,7 @@ export default function CartPage() {
         })),
         // Backend calculates total_rent and total_security from products
         transport_charge: transportationRequired === 'yes' ? transportationCharge : 0,
-        discount_type: discountType,
-        discount_value: discountValue,
+        discount_amount: bookingPreview?.booking_discount_amount || 0,
         status: 'pending', // Will be updated to 'confirmed' when payment is recorded
         special_requirements: '',
         created_by: salesmanName, // Store salesman name who created the booking

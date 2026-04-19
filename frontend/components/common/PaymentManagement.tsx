@@ -440,9 +440,9 @@ export function PaymentManagement({
                           ));
                       })()}
                       {summary.final_discount > 0 && (
-                        <div className="flex justify-between text-xs text-green-600">
-                          <span>Discount</span>
-                          <span>-{formatCurrency(summary.final_discount)}</span>
+                        <div className="flex justify-between text-xs text-green-600 bg-green-50 px-1 py-0.5 rounded">
+                          <span>Booking Discount (applied)</span>
+                          <span>{formatCurrency(summary.final_discount)}</span>
                         </div>
                       )}
                     </div>

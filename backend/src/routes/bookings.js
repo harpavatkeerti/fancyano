@@ -72,7 +72,8 @@ router.post('/', async (req, res) => {
       booking_date,
       products,
       transport_charge = 0,
-      created_by
+      created_by,
+      discount_amount = 0
     } = req.body;
 
     // Validate required fields
@@ -100,8 +101,8 @@ router.post('/', async (req, res) => {
         productId,
         bookedFrom: p.booked_from,
         bookedTo: p.booked_to,
-        rent: parseFloat(productDetails.rent),
-        securityDeposit: parseFloat(productDetails.security_deposit),
+        rent: productDetails.rent,
+        securityDeposit: productDetails.security_deposit,
         quantity: p.quantity || 1,
         measurements: p.measurements,
         specialRequirements: p.special_requirements,
@@ -119,7 +120,8 @@ router.post('/', async (req, res) => {
       bookingDate: booking_date,
       products: transformedProducts,
       transportCharge: transport_charge,
-      createdBy: created_by
+      createdBy: created_by,
+      discountAmount: Math.floor(parseInt(discount_amount) || 0)
     });
 
     // Fetch complete booking details to return
@@ -268,38 +270,43 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// POST apply final settlement discount
-router.post('/:id/final-discount', async (req, res) => {
+// PUT update booking discount (create, update, or remove booking-level discount)
+router.put('/:id/discount', async (req, res) => {
   try {
     const { id } = req.params;
-    const { discount_amount, reason, applied_by } = req.body;
+    const { discount_amount, updated_by } = req.body;
 
-    if (!discount_amount || discount_amount <= 0 || !applied_by) {
+    if (discount_amount === undefined || !updated_by) {
       return res.status(400).json({
-        error: 'Missing required fields: discount_amount (> 0), applied_by'
+        error: 'Required: discount_amount (>= 0), updated_by'
       });
     }
 
-    const result = await bookingService.applyFinalSettlementDiscount(
+    const parsedAmount = Math.floor(parseInt(discount_amount) || 0);
+    if (parsedAmount < 0) {
+      return res.status(400).json({ error: 'discount_amount must be >= 0' });
+    }
+
+    const result = await chargeAccountingService.updateBookingDiscount(
       parseInt(id),
-      discount_amount,
-      reason || 'Final settlement discount',
-      applied_by
+      parsedAmount,
+      updated_by
     );
 
     res.json({
-      message: 'Final settlement discount applied successfully',
-      discount_details: result
+      success: true,
+      message: `Discount updated: ₹${result.old_discount} → ₹${result.new_discount}`,
+      ...result
     });
   } catch (error) {
     if (error.message === 'Booking not found') {
       return res.status(404).json({ error: 'Booking not found' });
     }
-    if (error.message.includes('already has') || error.message.includes('Cannot apply')) {
+    if (error.message === 'Discount amount unchanged') {
       return res.status(400).json({ error: error.message });
     }
-    console.error('Error applying final discount:', error);
-    res.status(500).json({ error: 'Failed to apply final discount', details: error.message });
+    console.error('Error updating discount:', error);
+    res.status(500).json({ error: 'Failed to update discount', details: error.message });
   }
 });
 

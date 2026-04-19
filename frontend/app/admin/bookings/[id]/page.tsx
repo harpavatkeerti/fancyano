@@ -586,6 +586,62 @@ export default function OrderDetailsPage() {
                 <span>Security Deposit</span>
                 <span>₹{paymentSummary ? Math.floor(paymentSummary.charges.security.due || 0).toLocaleString('en-IN') : '0'}</span>
               </div>
+              {/* Editable Booking Discount */}
+              {(() => {
+                const currentDiscount = parseFloat(booking.final_discount || '0') || 0;
+                return (
+                  <div className="flex justify-between items-center">
+                    <span className="flex items-center gap-1">
+                      Booking Discount
+                      <span className="text-xs text-gray-400">(editable)</span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-gray-500">-₹</span>
+                      <input
+                        type="number"
+                        min="0"
+                        defaultValue={currentDiscount}
+                        key={`discount-${booking.id}-${currentDiscount}`}
+                        onBlur={async (e) => {
+                          const newAmount = Math.floor(parseFloat(e.target.value) || 0);
+                          if (newAmount === currentDiscount) return;
+                          
+                          const confirmed = window.confirm(
+                            `Change booking discount from ₹${currentDiscount.toLocaleString('en-IN')} to ₹${newAmount.toLocaleString('en-IN')}?\n\nThis will be recorded in the audit trail.`
+                          );
+                          if (!confirmed) {
+                            e.target.value = String(currentDiscount);
+                            return;
+                          }
+                          
+                          try {
+                            const userData = localStorage.getItem('user');
+                            let userName = 'Admin';
+                            if (userData) {
+                              try { userName = JSON.parse(userData).name || 'Admin'; } catch {}
+                            }
+                            
+                            await bookingsApi.updateDiscount(booking.id, {
+                              discount_amount: newAmount,
+                              updated_by: userName
+                            });
+                            toast.success(`Discount updated: ₹${currentDiscount.toLocaleString('en-IN')} → ₹${newAmount.toLocaleString('en-IN')}`);
+                            // Refresh data
+                            await fetchBooking();
+                          } catch (error: any) {
+                            toast.error(error.response?.data?.error || 'Failed to update discount');
+                            e.target.value = String(currentDiscount);
+                          }
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                        }}
+                        className="w-24 px-2 py-1 text-right text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="flex justify-between font-bold text-lg border-t pt-2">
                 <span>Total</span>
                 <span>₹{(() => {

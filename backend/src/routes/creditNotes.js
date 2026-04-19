@@ -154,18 +154,18 @@ router.put('/:id/use', async (req, res) => {
     }
 
     const note = noteResult.rows[0];
-    const newUsedAmount = parseFloat(note.used_amount) + parseFloat(amount_used);
+    const newUsedAmount = (note.used_amount || 0) + (amount_used || 0);
     
-    if (newUsedAmount > parseFloat(note.amount)) {
+    if (newUsedAmount > note.amount) {
       return res.status(400).json({ 
         error: 'Amount used exceeds credit note value',
-        available: parseFloat(note.amount) - parseFloat(note.used_amount)
+        available: note.amount - (note.used_amount || 0)
       });
     }
 
     // Determine new status
     let newStatus = 'active';
-    if (newUsedAmount === parseFloat(note.amount)) {
+    if (newUsedAmount === note.amount) {
       newStatus = 'fully_used';
     } else if (newUsedAmount > 0) {
       newStatus = 'partially_used';

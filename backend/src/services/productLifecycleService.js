@@ -145,7 +145,7 @@ class ProductLifecycleService {
 
       // STEP 4: Record exchange payment from customer (rent difference + penalties)
       let paymentResult = null;
-      const paymentAmount = parseFloat(payment.amount) || 0;
+      const paymentAmount = payment.amount || 0;
       if (paymentAmount > 0) {
         await chargeAccountingService.applyPayment(
           oldBookingProduct.booking_id,
@@ -423,13 +423,13 @@ class ProductLifecycleService {
         // Get current outstanding balance
         const balanceResult = await client.query(
           `SELECT 
-             COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0) as remaining_balance
+             (COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0))::INTEGER as remaining_balance
            FROM product_charges pc
            JOIN booking_products bp ON pc.booking_product_id = bp.id
            WHERE bp.booking_id = $1 AND bp.status != 'cancelled'`,
           [bookingId]
         );
-        const remainingDues = Math.max(0, parseFloat(balanceResult.rows[0].remaining_balance));
+        const remainingDues = Math.max(0, balanceResult.rows[0].remaining_balance || 0);
 
         // Cap adjustment at outstanding dues — remainder becomes an immediate refund
         const adjustAmount = Math.min(amount, remainingDues);
@@ -1228,7 +1228,7 @@ class ProductLifecycleService {
 
         // Use override if provided, otherwise use backend-calculated penalty
         const penalty = penaltyOverrides[product.product_id] !== undefined
-          ? parseFloat(penaltyOverrides[product.product_id]) || 0
+          ? (penaltyOverrides[product.product_id] || 0)
           : product.penalty_amount || 0;
         totalPenalty += penalty;
       }
@@ -1325,9 +1325,9 @@ class ProductLifecycleService {
       }
 
       const oldProduct = bpResult.rows[0];
-      const originalRent = parseFloat(oldProduct.rent) || 0;
-      const effectiveRent = parseFloat(oldProduct.effective_rent) || 0;  // Use effective rent for calculations
-      const originalSecurity = parseFloat(oldProduct.security_deposit) || 0;
+      const originalRent = oldProduct.rent || 0;
+      const effectiveRent = oldProduct.effective_rent || 0;  // Use effective rent for calculations
+      const originalSecurity = oldProduct.security_deposit || 0;
 
       // Get old product's actual rent paid (credit is based on what was PAID, not what was due)
       const oldRentPaidResult = await pool.query(
@@ -1348,8 +1348,8 @@ class ProductLifecycleService {
       }
 
       const newProduct = newProductResult.rows[0];
-      const newRent = parseFloat(newProduct.rent) || 0;
-      const newSecurity = parseFloat(newProduct.security_deposit) || 0;
+      const newRent = newProduct.rent || 0;
+      const newSecurity = newProduct.security_deposit || 0;
 
       // Get additional products if any
       let additionalRent = 0;
@@ -1363,13 +1363,13 @@ class ProductLifecycleService {
         );
 
         for (const product of addResult.rows) {
-          additionalRent += parseFloat(product.rent) || 0;
-          additionalSecurity += parseFloat(product.security_deposit) || 0;
+          additionalRent += product.rent || 0;
+          additionalSecurity += product.security_deposit || 0;
           additionalProducts.push({
             id: product.id,
             name: product.name,
-            rent: parseFloat(product.rent) || 0,
-            security_deposit: parseFloat(product.security_deposit) || 0
+            rent: product.rent || 0,
+            security_deposit: product.security_deposit || 0
           });
         }
       }
@@ -1404,8 +1404,8 @@ class ProductLifecycleService {
       let currentTotalRent = 0;
       let currentTotalSecurity = 0;
       for (const bp of allBpResult.rows) {
-        currentTotalRent += parseFloat(bp.effective_rent) || parseFloat(bp.rent) || 0;
-        currentTotalSecurity += parseFloat(bp.security_deposit) || 0;
+        currentTotalRent += bp.effective_rent || bp.rent || 0;
+        currentTotalSecurity += bp.security_deposit || 0;
       }
 
       // After exchange: remove exchanged product, add new product(s)
@@ -1419,7 +1419,7 @@ class ProductLifecycleService {
           name: oldProduct.product_name,
           rent: originalRent,
           effective_rent: effectiveRent,
-          discount_amount: parseFloat(oldProduct.discount_amount) || 0,
+          discount_amount: oldProduct.discount_amount || 0,
           discount_type: oldProduct.discount_type || null,
           security_deposit: originalSecurity
         },

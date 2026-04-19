@@ -18,12 +18,11 @@ export function createBookingsApi(api: AxiosInstance) {
     updateStatus: (id: number) => 
       api.put(`/bookings/${id}/status`),
     
-    // Final discount
-    applyFinalDiscount: (id: number, data: { 
+    // Booking discount (create, update, or remove)
+    updateDiscount: (id: number, data: { 
       discount_amount: number; 
-      reason?: string;
-      recorded_by: string;
-    }) => api.post(`/bookings/${id}/final-discount`, data),
+      updated_by: string;
+    }) => api.put(`/bookings/${id}/discount`, data),
     
     // Finalization
     finalize: (id: number, data: { 

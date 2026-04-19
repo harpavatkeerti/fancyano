@@ -141,13 +141,15 @@ class ChargeAccountingService {
       summary.charge_breakdown = chargeBreakdown;
 
       // Calculate totals
+      // Note: final_discount is NOT subtracted here because it is applied as a real
+      // payment to charges (paid_amount) via applyBookingDiscount. The final_discount
+      // field on the booking is purely informational/audit.
       summary.totals.total_due =
         summary.charges.rent.due +
         summary.charges.transport.due +
         summary.charges.penalties.due +
         summary.charges.fees.due +
-        summary.charges.security.due -
-        summary.final_discount; // Discount reduces what's due
+        summary.charges.security.due;
 
       summary.totals.total_paid =
         summary.charges.rent.paid +
@@ -161,12 +163,12 @@ class ChargeAccountingService {
       // (includes security refunds for completed products, cancellation refunds,
       // and correctly reflects any penalty/damage deductions)
       const refundResult = await client.query(
-        `SELECT COALESCE(SUM(amount), 0) as total_refunded
+        `SELECT COALESCE(SUM(amount), 0)::INTEGER as total_refunded
          FROM payment_transactions
          WHERE booking_id = $1 AND type = 'refund'`,
         [bookingId]
       );
-      summary.totals.total_refunded = parseFloat(refundResult.rows[0].total_refunded) || 0;
+      summary.totals.total_refunded = refundResult.rows[0].total_refunded || 0;
 
       // Balance based on charges only (what's owed minus what's been applied to charges)
       summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
@@ -474,8 +476,8 @@ class ChargeAccountingService {
         // Get current balance to enforce hard cap
         const summaryResult = await client.query(
            `SELECT 
-             COALESCE(SUM(pc.due_amount), 0) as total_charge_due,
-             COALESCE(SUM(pc.paid_amount), 0) as total_charge_paid
+             COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_charge_due,
+             COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_charge_paid
             FROM product_charges pc
             JOIN booking_products bp ON pc.booking_product_id = bp.id
             WHERE bp.booking_id = $1 AND (
@@ -489,11 +491,10 @@ class ChargeAccountingService {
           [bookingId]
         );
         const b = booking.rows[0];
-        const totalDue = parseFloat(summaryResult.rows[0].total_charge_due) +
-          (parseFloat(b.transport_charge) || 0) -
-          (parseFloat(b.final_discount) || 0);
-        const totalPaid = parseFloat(summaryResult.rows[0].total_charge_paid) +
-          (parseFloat(b.transport_paid) || 0);
+        const totalDue = (summaryResult.rows[0].total_charge_due || 0) +
+          (b.transport_charge || 0);
+        const totalPaid = (summaryResult.rows[0].total_charge_paid || 0) +
+          (b.transport_paid || 0);
         const remainingBalance = totalDue - totalPaid;
 
         if (remainingBalance <= 0) {
@@ -634,6 +635,217 @@ class ChargeAccountingService {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Apply booking-level discount as an internal payment routed through charges.
+   * Calls _applyPaymentInternal directly (rather than _applyPaymentOrAdjustment)
+   * to use custom transaction type 'booking_discount' and activity event.
+   * @param {number} bookingId
+   * @param {number} discountAmount
+   * @param {string} appliedBy
+   * @param {string} notes
+   * @param {Object} [existingClient]
+   */
+  async applyBookingDiscount(bookingId, discountAmount, appliedBy, notes, existingClient) {
+    const ownClient = !existingClient;
+    const client = existingClient || await pool.connect();
+    try {
+      if (ownClient) await client.query('BEGIN');
+
+      // Route discount through charge system (custom transaction type, not via _applyPaymentOrAdjustment)
+      const breakdown = await this._applyPaymentInternal(bookingId, discountAmount, client);
+
+      // Create transaction record for audit trail
+      await client.query(
+        `INSERT INTO payment_transactions
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, $2, 'booking_discount', 'discount', $3, $4, CURRENT_TIMESTAMP)`,
+        [bookingId, discountAmount, notes || '', appliedBy]
+      );
+
+      // Activity log
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, 'booking_discount_applied', $2, $3)`,
+        [bookingId, JSON.stringify({
+          discount_amount: discountAmount,
+          notes,
+          breakdown: breakdown.applications
+        }), appliedBy]
+      );
+
+      if (ownClient) await client.query('COMMIT');
+      return breakdown;
+    } catch (error) {
+      if (ownClient) await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      if (ownClient) client.release();
+    }
+  }
+
+  /**
+   * Update booking-level discount using delta approach.
+   * If new > old, applies additional payment. If new < old, reverses the difference.
+   * @param {number} bookingId
+   * @param {number} newDiscountAmount
+   * @param {string} updatedBy
+   * @param {Object} [existingClient]
+   */
+  async updateBookingDiscount(bookingId, newDiscountAmount, updatedBy, existingClient) {
+    const ownClient = !existingClient;
+    const client = existingClient || await pool.connect();
+    try {
+      if (ownClient) await client.query('BEGIN');
+
+      // Get current discount
+      const booking = await client.query(
+        'SELECT final_discount FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+      if (booking.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+      const oldDiscount = booking.rows[0].final_discount || 0;
+
+      if (oldDiscount === newDiscountAmount) {
+        throw new Error('Discount amount unchanged');
+      }
+
+      // Apply delta: only apply/reverse the difference
+      const delta = newDiscountAmount - oldDiscount;
+      if (delta > 0) {
+        // Discount increased — apply additional amount to charges
+        await this._applyPaymentInternal(bookingId, delta, client);
+      } else {
+        // Discount decreased — reverse the difference from charges
+        await this._reversePaymentInternal(bookingId, Math.abs(delta), client);
+      }
+
+      // Update final_discount on booking
+      await client.query(
+        'UPDATE bookings SET final_discount = $1 WHERE id = $2',
+        [newDiscountAmount, bookingId]
+      );
+
+      // Audit trail
+      const notes = `Booking discount changed: \u20b9${oldDiscount} \u2192 \u20b9${newDiscountAmount}`;
+      await client.query(
+        `INSERT INTO payment_transactions
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, $2, 'booking_discount', 'discount', $3, $4, CURRENT_TIMESTAMP)`,
+        [bookingId, newDiscountAmount, notes, updatedBy]
+      );
+
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, 'booking_discount_updated', $2, $3)`,
+        [bookingId, JSON.stringify({
+          old_discount: oldDiscount,
+          new_discount: newDiscountAmount,
+          change: delta
+        }), updatedBy]
+      );
+
+      if (ownClient) await client.query('COMMIT');
+      return { old_discount: oldDiscount, new_discount: newDiscountAmount };
+    } catch (error) {
+      if (ownClient) await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      if (ownClient) client.release();
+    }
+  }
+
+  /**
+   * Reverse a payment amount from charges in REVERSE priority order.
+   * Security → Fees → Penalties → Transport → Rent
+   * Reduces paid_amount on charges that have been paid.
+   * @param {number} bookingId
+   * @param {number} amount
+   * @param {Object} client
+   */
+  async _reversePaymentInternal(bookingId, amount, client) {
+    let remaining = amount;
+
+    // Reverse in opposite priority order: Security → Fees → Penalties → Transport → Rent
+    remaining = await this._reverseFromChargeType(bookingId, remaining, client, 'security');
+    if (remaining <= 0) return;
+    remaining = await this._reverseFromChargeType(bookingId, remaining, client, 'fee');
+    if (remaining <= 0) return;
+    remaining = await this._reverseFromChargeType(bookingId, remaining, client, 'penalty');
+    if (remaining <= 0) return;
+    remaining = await this._reverseFromTransport(bookingId, remaining, client);
+    if (remaining <= 0) return;
+    remaining = await this._reverseFromChargeType(bookingId, remaining, client, 'rent');
+  }
+
+  /**
+   * Reverse payment from a specific charge type category
+   * @param {number} bookingId
+   * @param {number} amount
+   * @param {Object} client
+   * @param {string} chargeCategory - 'rent', 'security', 'fee', or 'penalty'
+   */
+  async _reverseFromChargeType(bookingId, amount, client, chargeCategory) {
+    // Map category to charge_type patterns
+    let typeCondition;
+    if (chargeCategory === 'rent') {
+      typeCondition = "pc.charge_type = 'rent'";
+    } else if (chargeCategory === 'security') {
+      typeCondition = "pc.charge_type = 'security'";
+    } else if (chargeCategory === 'fee') {
+      typeCondition = "pc.charge_type IN ('late_fee', 'damage_fee')";
+    } else if (chargeCategory === 'penalty') {
+      typeCondition = "pc.charge_type IN ('exchange_penalty', 'downgrade_penalty', 'cancellation_penalty')";
+    } else {
+      return amount;
+    }
+
+    const charges = await client.query(
+      `SELECT pc.*
+       FROM product_charges pc
+       JOIN booking_products bp ON pc.booking_product_id = bp.id
+       WHERE bp.booking_id = $1
+       AND ${typeCondition}
+       AND pc.paid_amount > 0
+       ORDER BY bp.id DESC`,
+      [bookingId]
+    );
+
+    let remaining = amount;
+    for (const charge of charges.rows) {
+      if (remaining <= 0) break;
+      const toReverse = Math.min(remaining, charge.paid_amount);
+      await client.query(
+        'UPDATE product_charges SET paid_amount = paid_amount - $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+        [toReverse, charge.id]
+      );
+      remaining -= toReverse;
+    }
+    return remaining;
+  }
+
+  /**
+   * Reverse payment from transport charge
+   */
+  async _reverseFromTransport(bookingId, amount, client) {
+    const booking = await client.query(
+      'SELECT transport_paid FROM bookings WHERE id = $1',
+      [bookingId]
+    );
+    if (booking.rows.length === 0) return amount;
+
+    const paid = booking.rows[0].transport_paid || 0;
+    if (paid <= 0) return amount;
+
+    const toReverse = Math.min(amount, paid);
+    await client.query(
+      'UPDATE bookings SET transport_paid = transport_paid - $1 WHERE id = $2',
+      [toReverse, bookingId]
+    );
+    return amount - toReverse;
   }
 }
 

@@ -44,7 +44,7 @@ router.post('/calculate-summary', async (req, res) => {
       parseInt(booking_id),
       selected_product_ids.map(id => parseInt(id)),
       penalty_overrides || {},
-      parseFloat(extra_refund) || 0
+      parseInt(extra_refund) || 0
     );
 
     res.json(summary);

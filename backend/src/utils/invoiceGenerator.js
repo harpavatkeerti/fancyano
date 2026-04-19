@@ -100,7 +100,7 @@ class InvoiceGenerator {
       
       products.forEach((product, index) => {
         const quantity = product.quantity || 1;
-        const rentPerDay = parseFloat(product.rent || 0);
+        const rentPerDay = product.rent || 0;
         const total = rentPerDay * quantity;
         calculatedSubtotal += total;
         
@@ -143,7 +143,7 @@ class InvoiceGenerator {
         .text(`₹${calculatedSubtotal.toFixed(2)}`, 450, currentY);
 
       // Show Transportation Charges only if transportation was opted AND charge > 0
-      const transportCharge = parseFloat(bookingData.transport_charge || 0);
+      const transportCharge = bookingData.transport_charge || 0;
       const isTransportOpted = transportCharge > 0;
       
       if (isTransportOpted && transportCharge > 0) {
@@ -170,14 +170,14 @@ class InvoiceGenerator {
         (calculatedSubtotal + transportCharge);
       const securityDeposit = paymentSummary.totals?.security_due ?
         paymentSummary.totals.security_due + paymentSummary.totals.security_paid :
-        products.reduce((sum, p) => sum + parseFloat(p.security_deposit || 0), 0);
+        products.reduce((sum, p) => sum + (p.security_deposit || 0), 0);
       const totalRequired = totalRent + securityDeposit;
       
       // Calculate Advance Paid (sum of all payment transactions only, excluding refunds and adjustments)
       const advancePaid = transactions && transactions.length > 0
         ? transactions
             .filter(t => t.type === 'payment')
-            .reduce((sum, t) => sum + parseFloat(t.amount || 0), 0)
+            .reduce((sum, t) => sum + (t.amount || 0), 0)
         : (paymentSummary.totals?.total_paid || 0);
       
       doc.fontSize(10).font('Helvetica-Bold')
@@ -260,7 +260,7 @@ class InvoiceGenerator {
           }
           
           const transMethod = transaction.method || 'N/A';
-          const transAmount = parseFloat(transaction.amount || 0);
+          const transAmount = transaction.amount || 0;
           const transNotes = transaction.notes || '-';
           
           // Wrap long notes
@@ -289,8 +289,8 @@ class InvoiceGenerator {
       }
 
       // Payment Summary (if there are refunds or adjustments, show them)
-      const totalRefunded = parseFloat(paymentSummary.total_refunds || 0);
-      const totalAdjustments = parseFloat(paymentSummary.total_adjustments || 0);
+      const totalRefunded = paymentSummary.total_refunds || 0;
+      const totalAdjustments = paymentSummary.total_adjustments || 0;
       
       if (totalRefunded > 0 || totalAdjustments > 0) {
         currentY += 30;

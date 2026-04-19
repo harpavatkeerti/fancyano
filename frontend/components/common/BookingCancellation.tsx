@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { bookingCancellationApi, paymentTransactionsApi } from '@/lib/api';
+import { bookingCancellationApi, bookingsApi, paymentTransactionsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { PaymentMethodInput } from './PaymentMethodInput';
 
@@ -93,6 +93,10 @@ export function BookingCancellation({
   const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust' | 'collect'>('refund');
   const [refundMethod, setRefundMethod] = useState('Cash');
   const [remainingDues, setRemainingDues] = useState(0);
+
+  // Booking discount state
+  const [bookingDiscount, setBookingDiscount] = useState(0);
+  const [bookingDiscountInput, setBookingDiscountInput] = useState('');
 
   // Debounce timer ref
   const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -192,6 +196,17 @@ export function BookingCancellation({
       } catch (e) {
         setRemainingDues(0);
       }
+
+      // Fetch booking to get current final_discount
+      try {
+        const bookingResponse = await bookingsApi.getById(bookingId);
+        const discount = parseFloat(bookingResponse.data?.final_discount || '0') || 0;
+        setBookingDiscount(discount);
+        setBookingDiscountInput(String(discount));
+      } catch (e) {
+        setBookingDiscount(0);
+        setBookingDiscountInput('0');
+      }
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
       toast.error(error.response?.data?.error || 'Failed to fetch cancellation details');
@@ -262,6 +277,21 @@ export function BookingCancellation({
         penalty_amount: amount,
       }));
 
+      // Update booking discount if changed
+      const newDiscount = Math.floor(parseFloat(bookingDiscountInput) || 0);
+      if (newDiscount !== bookingDiscount) {
+        try {
+          await bookingsApi.updateDiscount(bookingId, {
+            discount_amount: newDiscount,
+            updated_by: userName || 'system'
+          });
+        } catch (discountError: any) {
+          toast.error(`Failed to update discount: ${discountError.response?.data?.error || discountError.message}`);
+          setLoading(false);
+          return;
+        }
+      }
+
       const result = await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
         cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
@@ -287,6 +317,8 @@ export function BookingCancellation({
       setCancellationReason('');
       setExtraRefund('');
       setExtraRefundNote('');
+      setBookingDiscountInput('0');
+      setBookingDiscount(0);
       setPreview(null);
       setSummary(null);
       setSelectedProducts([]);
@@ -654,6 +686,30 @@ export function BookingCancellation({
                       <div className="flex justify-between text-xs text-gray-500">
                         <span>Extra Refund:</span>
                         <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
+                      </div>
+                    )}
+                    {/* Booking Discount Editor */}
+                    {bookingDiscount > 0 && (
+                      <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                        <span className="text-gray-600 flex items-center gap-1">
+                          Booking Discount
+                          <span className="text-xs text-gray-400">(editable)</span>
+                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-gray-500 text-sm">-₹</span>
+                          <input
+                            type="number"
+                            min="0"
+                            value={bookingDiscountInput}
+                            onChange={(e) => setBookingDiscountInput(e.target.value)}
+                            className="w-20 px-2 py-1 text-right text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                    )}
+                    {bookingDiscount > 0 && Math.floor(parseFloat(bookingDiscountInput) || 0) !== bookingDiscount && (
+                      <div className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1">
+                        ⚠️ Discount will change: ₹{bookingDiscount.toLocaleString('en-IN')} → ₹{Math.floor(parseFloat(bookingDiscountInput) || 0).toLocaleString('en-IN')}
                       </div>
                     )}
                     <div className="flex justify-between pt-2 border-t border-gray-200">
