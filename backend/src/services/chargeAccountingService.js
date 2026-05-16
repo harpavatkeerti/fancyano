@@ -141,9 +141,8 @@ class ChargeAccountingService {
       summary.charge_breakdown = chargeBreakdown;
 
       // Calculate totals
-      // Note: final_discount is NOT subtracted here because it is applied as a real
-      // payment to charges (paid_amount) via applyBookingDiscount. The final_discount
-      // field on the booking is purely informational/audit.
+      // Note: final_discount is NOT subtracted here because it is already distributed
+      // into product effective_rents and reflected in charge due_amounts.
       summary.totals.total_due =
         summary.charges.rent.due +
         summary.charges.transport.due +
@@ -170,7 +169,7 @@ class ChargeAccountingService {
       );
       summary.totals.total_refunded = refundResult.rows[0].total_refunded || 0;
 
-      // Balance based on charges only (what's owed minus what's been applied to charges)
+      // Balance = what's owed (after discount) minus what's been paid
       summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
 
       return summary;
@@ -638,9 +637,9 @@ class ChargeAccountingService {
   }
 
   /**
-   * Apply booking-level discount as an internal payment routed through charges.
-   * Calls _applyPaymentInternal directly (rather than _applyPaymentOrAdjustment)
-   * to use custom transaction type 'booking_discount' and activity event.
+   * Distribute global discount proportionally across active products by rent.
+   * Updates each product's global_discount_share, discount_amount, effective_rent,
+   * and rent charge due_amount.
    * @param {number} bookingId
    * @param {number} discountAmount
    * @param {string} appliedBy
@@ -653,16 +652,41 @@ class ChargeAccountingService {
     try {
       if (ownClient) await client.query('BEGIN');
 
-      // Route discount through charge system (custom transaction type, not via _applyPaymentOrAdjustment)
-      const breakdown = await this._applyPaymentInternal(bookingId, discountAmount, client);
-
-      // Create transaction record for audit trail
-      await client.query(
-        `INSERT INTO payment_transactions
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, 'booking_discount', 'discount', $3, $4, CURRENT_TIMESTAMP)`,
-        [bookingId, discountAmount, notes || '', appliedBy]
+      // Get active products
+      const products = await client.query(
+        `SELECT id, rent, discount_amount, global_discount_share
+         FROM booking_products
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+         ORDER BY rent DESC`,
+        [bookingId]
       );
+
+      if (products.rows.length === 0) {
+        throw new Error('No active products to apply discount');
+      }
+
+      const allocations = this._distributeProportionally(products.rows, discountAmount);
+
+      // Apply allocations
+      for (const alloc of allocations) {
+        const newDiscountAmount = (alloc.product.discount_amount || 0) + alloc.share;
+        const newEffectiveRent = alloc.product.rent - newDiscountAmount;
+
+        await client.query(
+          `UPDATE booking_products
+           SET global_discount_share = $1, discount_amount = $2, effective_rent = $3,
+               discount_type = CASE WHEN $2 > 0 THEN 'fixed' ELSE NULL END
+           WHERE id = $4`,
+          [alloc.share, newDiscountAmount, newEffectiveRent, alloc.product.id]
+        );
+
+        // Update rent charge due_amount
+        await client.query(
+          `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
+           WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+          [newEffectiveRent, alloc.product.id]
+        );
+      }
 
       // Activity log
       await client.query(
@@ -671,12 +695,12 @@ class ChargeAccountingService {
         [bookingId, JSON.stringify({
           discount_amount: discountAmount,
           notes,
-          breakdown: breakdown.applications
+          allocations: allocations.map(a => ({ product_id: a.product.id, share: a.share }))
         }), appliedBy]
       );
 
       if (ownClient) await client.query('COMMIT');
-      return breakdown;
+      return { discount_amount: discountAmount, allocations };
     } catch (error) {
       if (ownClient) await client.query('ROLLBACK');
       throw error;
@@ -686,8 +710,7 @@ class ChargeAccountingService {
   }
 
   /**
-   * Update booking-level discount using delta approach.
-   * If new > old, applies additional payment. If new < old, reverses the difference.
+   * Update booking-level discount. Reverses old allocation, applies new one.
    * @param {number} bookingId
    * @param {number} newDiscountAmount
    * @param {string} updatedBy
@@ -699,7 +722,6 @@ class ChargeAccountingService {
     try {
       if (ownClient) await client.query('BEGIN');
 
-      // Get current discount
       const booking = await client.query(
         'SELECT final_discount FROM bookings WHERE id = $1',
         [bookingId]
@@ -713,38 +735,55 @@ class ChargeAccountingService {
         throw new Error('Discount amount unchanged');
       }
 
-      // Apply delta: only apply/reverse the difference
-      const delta = newDiscountAmount - oldDiscount;
-      if (delta > 0) {
-        // Discount increased — apply additional amount to charges
-        await this._applyPaymentInternal(bookingId, delta, client);
-      } else {
-        // Discount decreased — reverse the difference from charges
-        await this._reversePaymentInternal(bookingId, Math.abs(delta), client);
+      // Step 1: Reverse old allocations on active products
+      await this._reverseGlobalDiscountShares(bookingId, client);
+
+      // Step 2: Apply new allocations if newDiscountAmount > 0
+      if (newDiscountAmount > 0) {
+        const products = await client.query(
+          `SELECT id, rent, discount_amount, global_discount_share
+           FROM booking_products
+           WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+           ORDER BY rent DESC`,
+          [bookingId]
+        );
+
+        const allocations = this._distributeProportionally(products.rows, newDiscountAmount);
+
+        for (const alloc of allocations) {
+          const newDiscAmount = (alloc.product.discount_amount || 0) + alloc.share;
+          const newEffectiveRent = alloc.product.rent - newDiscAmount;
+
+          await client.query(
+            `UPDATE booking_products
+             SET global_discount_share = $1, discount_amount = $2, effective_rent = $3,
+                 discount_type = CASE WHEN $2 > 0 THEN 'fixed' ELSE NULL END
+             WHERE id = $4`,
+            [alloc.share, newDiscAmount, newEffectiveRent, alloc.product.id]
+          );
+
+          await client.query(
+            `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
+             WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+            [newEffectiveRent, alloc.product.id]
+          );
+        }
       }
 
-      // Update final_discount on booking
+      // Step 3: Update final_discount
       await client.query(
         'UPDATE bookings SET final_discount = $1 WHERE id = $2',
         [newDiscountAmount, bookingId]
       );
 
       // Audit trail
-      const notes = `Booking discount changed: \u20b9${oldDiscount} \u2192 \u20b9${newDiscountAmount}`;
-      await client.query(
-        `INSERT INTO payment_transactions
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, 'booking_discount', 'discount', $3, $4, CURRENT_TIMESTAMP)`,
-        [bookingId, newDiscountAmount, notes, updatedBy]
-      );
-
       await client.query(
         `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
          VALUES ($1, 'booking_discount_updated', $2, $3)`,
         [bookingId, JSON.stringify({
           old_discount: oldDiscount,
           new_discount: newDiscountAmount,
-          change: delta
+          change: newDiscountAmount - oldDiscount
         }), updatedBy]
       );
 
@@ -755,6 +794,190 @@ class ChargeAccountingService {
       throw error;
     } finally {
       if (ownClient) client.release();
+    }
+  }
+
+  /**
+   * Revoke global discount for an exchanged product.
+   * Reduces final_discount by the exchanged product's share. Other products keep their shares.
+   * @param {number} bookingId
+   * @param {number} exchangedProductShare - the global_discount_share of the exchanged product
+   * @param {Object} client
+   */
+  async revokeGlobalDiscountForExchange(bookingId, exchangedProductShare, client) {
+    if (!exchangedProductShare || exchangedProductShare <= 0) return;
+
+    await client.query(
+      'UPDATE bookings SET final_discount = GREATEST(final_discount - $1, 0) WHERE id = $2',
+      [exchangedProductShare, bookingId]
+    );
+
+    await client.query(
+      `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+       VALUES ($1, 'global_discount_reduced_exchange', $2, 'system')`,
+      [bookingId, JSON.stringify({
+        reduced_by: exchangedProductShare,
+        reason: 'Product exchanged — its global discount share removed'
+      })]
+    );
+  }
+
+  /**
+   * Revoke entire global discount for a cancellation.
+   * Returns the discount_reverted amount and adjusts remaining products.
+   * - Sets final_discount to 0
+   * - For remaining active products: removes global_discount_share, restores effective_rent,
+   *   increases rent charge due_amount, and adds adjustment payment for the difference.
+   * @param {number} bookingId
+   * @param {Object} client
+   * @returns {{ discountReverted: number }} The total global discount that was revoked
+   */
+  async revokeGlobalDiscountForCancellation(bookingId, client) {
+    const booking = await client.query(
+      'SELECT final_discount FROM bookings WHERE id = $1',
+      [bookingId]
+    );
+    const globalDiscount = booking.rows[0].final_discount || 0;
+
+    if (globalDiscount <= 0) {
+      return { discountReverted: 0 };
+    }
+
+    // Get remaining active products (NOT the one being cancelled — caller sets that status first)
+    const activeProducts = await client.query(
+      `SELECT id, rent, discount_amount, global_discount_share
+       FROM booking_products
+       WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+       ORDER BY id`,
+      [bookingId]
+    );
+
+    // For each remaining active product: remove global share, restore effective_rent, add adjustment
+    const adjustmentDetails = [];
+    for (const product of activeProducts.rows) {
+      const share = product.global_discount_share || 0;
+      if (share <= 0) continue;
+
+      const newDiscountAmount = (product.discount_amount || 0) - share;
+      const newEffectiveRent = product.rent - newDiscountAmount;
+
+      await client.query(
+        `UPDATE booking_products
+         SET global_discount_share = 0, discount_amount = $1, effective_rent = $2,
+             discount_type = CASE WHEN $1 > 0 THEN 'fixed' ELSE NULL END
+         WHERE id = $3`,
+        [newDiscountAmount, newEffectiveRent, product.id]
+      );
+
+      // Increase rent charge due_amount
+      await client.query(
+        `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+        [newEffectiveRent, product.id]
+      );
+
+      // Add adjustment payment to cover the increase (funded from cancelled product's reduced refund)
+      await client.query(
+        `UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP
+         WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+        [share, product.id]
+      );
+
+      adjustmentDetails.push({ booking_product_id: product.id, amount: share });
+    }
+
+    // Log adjustment in payment_transactions (total amount across all remaining products)
+    const totalAdjustment = adjustmentDetails.reduce((sum, d) => sum + d.amount, 0);
+    if (totalAdjustment > 0) {
+      await client.query(
+        `INSERT INTO payment_transactions
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, $2, 'adjustment', 'Adjustment', $3, 'system', CURRENT_TIMESTAMP)`,
+        [bookingId, totalAdjustment,
+          `Discount revocation adjustment: global discount ₹${globalDiscount} revoked, ₹${totalAdjustment} applied as adjustment to remaining products`]
+      );
+    }
+
+    // Set final_discount to 0
+    await client.query(
+      'UPDATE bookings SET final_discount = 0 WHERE id = $1',
+      [bookingId]
+    );
+
+    // Activity log
+    await client.query(
+      `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+       VALUES ($1, 'global_discount_revoked_cancellation', $2, 'system')`,
+      [bookingId, JSON.stringify({
+        discount_reverted: globalDiscount,
+        adjustment_total: totalAdjustment,
+        adjustments: adjustmentDetails,
+        reason: 'Product cancelled — entire global discount revoked'
+      })]
+    );
+
+    return { discountReverted: globalDiscount };
+  }
+
+  /**
+   * Distribute amount proportionally across products by rent.
+   * Uses floor() for each, assigns remainder to the product with highest rent (first in array).
+   * @param {Array} products - sorted by rent DESC
+   * @param {number} amount
+   * @returns {Array<{product, share}>}
+   */
+  _distributeProportionally(products, amount) {
+    const totalRent = products.reduce((sum, p) => sum + p.rent, 0);
+    if (totalRent <= 0) return [];
+
+    const allocations = products.map(product => ({
+      product,
+      share: Math.floor(amount * product.rent / totalRent)
+    }));
+
+    // Assign remainder to product with highest rent (first in sorted array)
+    const allocated = allocations.reduce((sum, a) => sum + a.share, 0);
+    const remainder = amount - allocated;
+    if (remainder > 0 && allocations.length > 0) {
+      allocations[0].share += remainder;
+    }
+
+    return allocations;
+  }
+
+  /**
+   * Reverse all global_discount_share allocations on active products.
+   * Removes the global share from discount_amount, restores effective_rent,
+   * and updates rent charge due_amount.
+   * @param {number} bookingId
+   * @param {Object} client
+   */
+  async _reverseGlobalDiscountShares(bookingId, client) {
+    const products = await client.query(
+      `SELECT id, rent, discount_amount, global_discount_share
+       FROM booking_products
+       WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+       AND global_discount_share > 0`,
+      [bookingId]
+    );
+
+    for (const product of products.rows) {
+      const newDiscountAmount = (product.discount_amount || 0) - (product.global_discount_share || 0);
+      const newEffectiveRent = product.rent - newDiscountAmount;
+
+      await client.query(
+        `UPDATE booking_products
+         SET global_discount_share = 0, discount_amount = $1, effective_rent = $2,
+             discount_type = CASE WHEN $1 > 0 THEN 'fixed' ELSE NULL END
+         WHERE id = $3`,
+        [newDiscountAmount, newEffectiveRent, product.id]
+      );
+
+      await client.query(
+        `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+        [newEffectiveRent, product.id]
+      );
     }
   }
 

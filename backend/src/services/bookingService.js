@@ -619,9 +619,9 @@ class BookingService {
         b.created_by,
         b.created_at,
         COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
-        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_rent,
-        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_effective_rent,
-        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0) as total_security,
+        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_rent,
+        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_effective_rent,
+        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_security,
         COALESCE((
           SELECT SUM(pc.paid_amount) 
           FROM product_charges pc 
@@ -631,7 +631,7 @@ class BookingService {
             bp2.status NOT IN ('exchanged', 'cancelled')
             OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
           )
-        ), 0) as total_paid,
+        ), 0)::INTEGER as total_paid,
         json_agg(
           DISTINCT jsonb_build_object(
             'id', bp.id,

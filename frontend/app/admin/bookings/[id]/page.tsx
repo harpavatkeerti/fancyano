@@ -33,6 +33,7 @@ export default function OrderDetailsPage() {
   const [pdfPublicUrl, setPdfPublicUrl] = useState<string | null>(null);
   const [showWhatsAppShareModal, setShowWhatsAppShareModal] = useState(false);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   useEffect(() => {
     if (params.id) {
@@ -628,6 +629,8 @@ export default function OrderDetailsPage() {
                             toast.success(`Discount updated: ₹${currentDiscount.toLocaleString('en-IN')} → ₹${newAmount.toLocaleString('en-IN')}`);
                             // Refresh data
                             await fetchBooking();
+                            await fetchPaymentSummary();
+                            setRefreshTrigger(prev => prev + 1);
                           } catch (error: any) {
                             toast.error(error.response?.data?.error || 'Failed to update discount');
                             e.target.value = String(currentDiscount);
@@ -1131,6 +1134,7 @@ export default function OrderDetailsPage() {
             return (
               <PaymentManagement
                 bookingId={booking.id}
+                refreshTrigger={refreshTrigger}
                 totalAmount={(() => {
                   if (!paymentSummary) return 0;
                   return paymentSummary.charges.rent.due || 0;

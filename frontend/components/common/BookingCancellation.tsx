@@ -32,8 +32,10 @@ interface CancellationPreview {
   total_rent_paid: number;
   total_security_paid: number;
   total_penalty_amount: number;
+  discount_reverted: number;
   total_refund_amount: number;
-  payment_action: 'collect' | 'refund' | 'none';
+  refund_blocked: boolean;
+  payment_action: 'collect' | 'refund' | 'blocked' | 'none';
   payment_difference: number;
   is_partial: boolean;
 }
@@ -46,9 +48,11 @@ interface CancellationSummary {
   selected_rent_paid: number;
   selected_security_paid: number;
   total_penalty: number;
+  discount_reverted: number;
   extra_refund: number;
   refund_amount: number;
-  payment_action: 'collect' | 'refund' | 'none';
+  refund_blocked: boolean;
+  payment_action: 'collect' | 'refund' | 'blocked' | 'none';
   payment_difference: number;
 }
 
@@ -277,20 +281,7 @@ export function BookingCancellation({
         penalty_amount: amount,
       }));
 
-      // Update booking discount if changed
-      const newDiscount = Math.floor(parseFloat(bookingDiscountInput) || 0);
-      if (newDiscount !== bookingDiscount) {
-        try {
-          await bookingsApi.updateDiscount(bookingId, {
-            discount_amount: newDiscount,
-            updated_by: userName || 'system'
-          });
-        } catch (discountError: any) {
-          toast.error(`Failed to update discount: ${discountError.response?.data?.error || discountError.message}`);
-          setLoading(false);
-          return;
-        }
-      }
+      // Global discount is automatically revoked by backend during cancellation
 
       const result = await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
@@ -526,11 +517,24 @@ export function BookingCancellation({
                               <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
                             </div>
                           )}
+                          {summary.discount_reverted > 0 && (
+                            <div className="flex justify-between text-xs text-red-600 font-medium">
+                              <span>Discount Reverted:</span>
+                              <span>- ₹{Math.floor(summary.discount_reverted).toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="border-t border-yellow-300 pt-2 mt-1">
                           <div className="flex justify-between items-center">
-                            {summary.payment_action === 'collect' ? (
+                            {summary.refund_blocked ? (
+                              <>
+                                <span className="font-semibold text-red-900">⚠️ Cancellation Blocked</span>
+                                <span className="font-bold text-red-600 text-lg">
+                                  Deficit: ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
+                                </span>
+                              </>
+                            ) : summary.payment_action === 'collect' ? (
                               <>
                                 <span className="font-semibold text-yellow-900">Amount to Collect:</span>
                                 <span className="font-bold text-orange-600 text-lg">
@@ -546,6 +550,11 @@ export function BookingCancellation({
                               </>
                             )}
                           </div>
+                          {summary.refund_blocked && (
+                            <p className="text-xs text-red-700 mt-1">
+                              Refund after discount revocation and penalty is negative. Cancellation is not allowed.
+                            </p>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -620,10 +629,10 @@ export function BookingCancellation({
                     </button>
                     <button
                       onClick={handleProceedToConfirmation}
-                      disabled={selectedProducts.length === 0 || !cancellationReason.trim()}
+                      disabled={selectedProducts.length === 0 || !cancellationReason.trim() || (summary?.refund_blocked === true)}
                       className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
                     >
-                      Proceed to Confirm
+                      {summary?.refund_blocked ? 'Cancellation Not Allowed' : 'Proceed to Confirm'}
                     </button>
                   </div>
                 </div>
@@ -688,28 +697,10 @@ export function BookingCancellation({
                         <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
                       </div>
                     )}
-                    {/* Booking Discount Editor */}
-                    {bookingDiscount > 0 && (
-                      <div className="flex justify-between items-center pt-2 border-t border-gray-200">
-                        <span className="text-gray-600 flex items-center gap-1">
-                          Booking Discount
-                          <span className="text-xs text-gray-400">(editable)</span>
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <span className="text-gray-500 text-sm">-₹</span>
-                          <input
-                            type="number"
-                            min="0"
-                            value={bookingDiscountInput}
-                            onChange={(e) => setBookingDiscountInput(e.target.value)}
-                            className="w-20 px-2 py-1 text-right text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                      </div>
-                    )}
-                    {bookingDiscount > 0 && Math.floor(parseFloat(bookingDiscountInput) || 0) !== bookingDiscount && (
-                      <div className="text-xs text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1">
-                        ⚠️ Discount will change: ₹{bookingDiscount.toLocaleString('en-IN')} → ₹{Math.floor(parseFloat(bookingDiscountInput) || 0).toLocaleString('en-IN')}
+                    {summary.discount_reverted > 0 && (
+                      <div className="flex justify-between text-xs text-red-600 font-medium pt-1">
+                        <span>Discount Reverted:</span>
+                        <span>- ₹{Math.floor(summary.discount_reverted).toLocaleString('en-IN')}</span>
                       </div>
                     )}
                     <div className="flex justify-between pt-2 border-t border-gray-200">

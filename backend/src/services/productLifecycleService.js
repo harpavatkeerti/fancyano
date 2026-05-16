@@ -169,6 +169,15 @@ class ProductLifecycleService {
         ['exchanged', bookingProductId]
       );
 
+      // Revoke the exchanged product's global discount share
+      if (oldBookingProduct.global_discount_share > 0) {
+        await chargeAccountingService.revokeGlobalDiscountForExchange(
+          oldBookingProduct.booking_id,
+          oldBookingProduct.global_discount_share,
+          client
+        );
+      }
+
       // STEP 6: Derive booking-level status from product statuses
       await bookingService.updateBookingStatus(oldBookingProduct.booking_id);
 
@@ -282,9 +291,15 @@ class ProductLifecycleService {
         );
       }
 
+      // Revoke global discount (sets final_discount to 0, adjusts remaining products)
+      const { discountReverted } = await chargeAccountingService.revokeGlobalDiscountForCancellation(
+        bookingProduct.booking_id, client
+      );
+
       // diffAmount: positive = refund to customer, negative = collect from customer
+      // discount_reverted is deducted from the refund
       const totalPaidForProduct = rentPaid + securityPaid;
-      const diffAmount = totalPaidForProduct - cancellationPenalty;
+      const diffAmount = totalPaidForProduct - cancellationPenalty - discountReverted;
 
       // MONEY FIRST — process settlement before status change, in same transaction
       const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes } = settlement;
@@ -336,7 +351,12 @@ class ProductLifecycleService {
           bookingProduct.booking_id,
           'product_cancelled',
           cancelResult.rows[0].id,
-          { product_id: bookingProduct.product_id, penalty: cancellationPenalty, diff_amount: diffAmount },
+          {
+            product_id: bookingProduct.product_id,
+            penalty: cancellationPenalty,
+            discount_reverted: discountReverted,
+            diff_amount: diffAmount
+          },
           userId
         ]
       );
@@ -354,6 +374,7 @@ class ProductLifecycleService {
         booking_product_id: bookingProductId,
         booking_id: bookingProduct.booking_id,
         cancellation_penalty: cancellationPenalty,
+        discount_reverted: discountReverted,
         rent_paid: rentPaid,
         security_paid: securityPaid,
         diff_amount: diffAmount,
@@ -1069,17 +1090,19 @@ class ProductLifecycleService {
     try {
       // 1. Get booking info
       const bookingResult = await pool.query(
-        'SELECT id, booking_date, created_at FROM bookings WHERE id = $1',
+        'SELECT id, booking_date, created_at, final_discount FROM bookings WHERE id = $1',
         [bookingId]
       );
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
       }
       const booking = bookingResult.rows[0];
+      const discountReverted = booking.final_discount || 0;
 
       // 2. Get all booking products with product details AND per-product paid amounts
       const bpResult = await pool.query(
         `SELECT bp.id, bp.product_id, bp.rent, bp.effective_rent, bp.security_deposit, bp.status, bp.created_at,
+                bp.global_discount_share,
                 p.name, p.code,
                 COALESCE((SELECT paid_amount FROM product_charges WHERE booking_product_id = bp.id AND charge_type = 'rent'), 0) as rent_paid,
                 COALESCE((SELECT paid_amount FROM product_charges WHERE booking_product_id = bp.id AND charge_type = 'security'), 0) as security_paid
@@ -1143,7 +1166,10 @@ class ProductLifecycleService {
       const totalRentPaid = allProducts.reduce((sum, p) => sum + p.rent_paid, 0);
       const totalSecurityPaid = allProducts.reduce((sum, p) => sum + p.security_paid, 0);
       const totalPenaltyAmount = productsToCancel.reduce((sum, p) => sum + p.penalty_amount, 0);
-      const totalRefundAmount = productsToCancel.reduce((sum, p) => sum + p.refund_amount, 0);
+      const totalRefundBeforeDiscount = productsToCancel.reduce((sum, p) => sum + p.refund_amount, 0);
+      // Deduct global discount reverted from total refund
+      const totalRefundAmount = Math.max(0, totalRefundBeforeDiscount - discountReverted);
+      const refundBlocked = (totalRefundBeforeDiscount - discountReverted) < 0;
 
       // Days from booking
       const bookingDate = new Date(booking.booking_date || booking.created_at);
@@ -1155,13 +1181,16 @@ class ProductLifecycleService {
       // Payment action based on total refund
       let paymentAction = 'none';
       let paymentDifference = 0;
-      if (totalRefundAmount > 0) {
+      if (refundBlocked) {
+        paymentAction = 'blocked';
+        paymentDifference = Math.abs(totalRefundBeforeDiscount - discountReverted);
+      } else if (totalRefundAmount > 0) {
         paymentAction = 'refund';
         paymentDifference = totalRefundAmount;
-      } else if (totalPenaltyAmount > (totalRentPaid + totalSecurityPaid)) {
-        // Penalty exceeds what was paid for these products — need to collect
+      } else if (totalPenaltyAmount + discountReverted > (totalRentPaid + totalSecurityPaid)) {
+        // Penalty + discount exceeds what was paid — need to collect
         paymentAction = 'collect';
-        paymentDifference = totalPenaltyAmount - (totalRentPaid + totalSecurityPaid);
+        paymentDifference = totalPenaltyAmount + discountReverted - (totalRentPaid + totalSecurityPaid);
       }
 
       return {
@@ -1178,7 +1207,9 @@ class ProductLifecycleService {
         total_rent_paid: totalRentPaid,
         total_security_paid: totalSecurityPaid,
         total_penalty_amount: totalPenaltyAmount,
+        discount_reverted: discountReverted,
         total_refund_amount: totalRefundAmount,
+        refund_blocked: refundBlocked,
         // Payment action
         payment_action: paymentAction,
         payment_difference: paymentDifference,
@@ -1234,17 +1265,23 @@ class ProductLifecycleService {
       }
 
       const totalPaidForSelected = totalSelectedRentPaid + totalSelectedSecurityPaid;
-      const refundAmount = Math.max(0, Math.floor(totalPaidForSelected - totalPenalty + extraRefund));
+      const discountReverted = preview.discount_reverted || 0;
+      const refundBeforeDiscount = Math.floor(totalPaidForSelected - totalPenalty + extraRefund);
+      const refundAmount = Math.max(0, refundBeforeDiscount - discountReverted);
+      const refundBlocked = (refundBeforeDiscount - discountReverted) < 0;
 
       // Payment action
       let paymentAction = 'none';
       let paymentDifference = 0;
-      if (refundAmount > 0) {
+      if (refundBlocked) {
+        paymentAction = 'blocked';
+        paymentDifference = Math.abs(refundBeforeDiscount - discountReverted);
+      } else if (refundAmount > 0) {
         paymentAction = 'refund';
         paymentDifference = refundAmount;
-      } else if (totalPenalty > totalPaidForSelected) {
+      } else if (totalPenalty + discountReverted > totalPaidForSelected) {
         paymentAction = 'collect';
-        paymentDifference = Math.ceil(totalPenalty - totalPaidForSelected);
+        paymentDifference = Math.ceil(totalPenalty + discountReverted - totalPaidForSelected);
       }
 
       return {
@@ -1255,8 +1292,10 @@ class ProductLifecycleService {
         selected_rent_paid: totalSelectedRentPaid,
         selected_security_paid: totalSelectedSecurityPaid,
         total_penalty: totalPenalty,
+        discount_reverted: discountReverted,
         extra_refund: extraRefund,
         refund_amount: refundAmount,
+        refund_blocked: refundBlocked,
         payment_action: paymentAction,
         payment_difference: paymentDifference,
       };

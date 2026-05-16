@@ -355,9 +355,11 @@ export function PaymentManagement({
             }
 
             // All values come from backend payment-summary API
+            // Discount is already embedded in charge due_amounts, so total_due reflects it
             const totalRequired = summary.totals?.total_due || 0;
             const totalPaid = summary.totals?.total_paid || 0;
             const totalRefunded = summary.totals?.total_refunded || 0;
+            const discountAmount = summary.final_discount || 0;
             // Display balance accounts for refunds: what's owed - (paid - refunded)
             const balanceDue = totalRequired - totalPaid + totalRefunded;
             const isFullyPaid = balanceDue <= 0;
@@ -366,11 +368,11 @@ export function PaymentManagement({
 
             return (
               <>
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Payment Summary</h3>
-                  {userRole === 'admin' && (
-                    // Admin: Always show both buttons
-                    <div className="flex gap-3">
+                {/* Action buttons header */}
+                <div className="flex flex-col gap-3 mb-4">
+                  <h3 className="text-lg font-bold text-gray-900">Payment Management</h3>
+                  {!isFullyCancelled && (
+                    <div className="flex flex-wrap gap-2">
                       <Button
                         onClick={() => {
                           setTransactionType('payment');
@@ -416,6 +418,7 @@ export function PaymentManagement({
                       <span className="text-sm font-semibold text-gray-700">Total Charges</span>
                       <span className="text-sm font-bold text-gray-900">{formatCurrency(totalRequired)}</span>
                     </div>
+
                     {/* Itemized charges - ordered by priority, only show non-zero */}
                     <div className="ml-4 space-y-1">
                       {(() => {
@@ -439,10 +442,10 @@ export function PaymentManagement({
                             </div>
                           ));
                       })()}
-                      {summary.final_discount > 0 && (
-                        <div className="flex justify-between text-xs text-green-600 bg-green-50 px-1 py-0.5 rounded">
-                          <span>Booking Discount (applied)</span>
-                          <span>{formatCurrency(summary.final_discount)}</span>
+                      {discountAmount > 0 && (
+                        <div className="flex justify-between text-xs text-green-700 bg-green-50 px-2 py-1 rounded mt-1">
+                          <span>💚 Discount Included</span>
+                          <span className="font-medium">₹{discountAmount.toLocaleString('en-IN')}</span>
                         </div>
                       )}
                     </div>
