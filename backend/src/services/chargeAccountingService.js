@@ -243,19 +243,53 @@ class ChargeAccountingService {
    * Apply payment to rent charges
    */
   async _applyToRent(bookingId, amount, breakdown, client) {
-    const charges = await client.query(
-      `SELECT pc.*, bp.id as booking_product_id
-       FROM product_charges pc
-       JOIN booking_products bp ON pc.booking_product_id = bp.id
-       WHERE bp.booking_id = $1 
-       AND bp.status NOT IN ('exchanged', 'cancelled')
-       AND pc.charge_type = 'rent'
-       AND pc.paid_amount < pc.due_amount
-       ORDER BY bp.id`,
+    const result = await client.query(
+      `SELECT bp.id as booking_product_id, bp.rent,
+              pc.id as charge_id, pc.due_amount, pc.paid_amount
+       FROM booking_products bp
+       JOIN product_charges pc ON pc.booking_product_id = bp.id
+       WHERE bp.booking_id = $1
+         AND bp.status NOT IN ('exchanged', 'cancelled')
+         AND pc.charge_type = 'rent'
+         AND pc.due_amount > pc.paid_amount
+       ORDER BY bp.rent DESC`,
       [bookingId]
     );
 
-    return await this._applyToCharges(charges.rows, amount, breakdown, client, 'rent');
+    if (result.rows.length === 0) return amount;
+
+    const products = result.rows.map(r => ({
+      ...r,
+      outstanding: r.due_amount - r.paid_amount
+    }));
+
+    const totalOutstanding = products.reduce((s, p) => s + p.outstanding, 0);
+    const toDistribute = Math.min(amount, totalOutstanding);
+
+    // Distribute proportionally by original rent
+    const allocations = this._distributeProportionally(products, toDistribute);
+
+    let totalApplied = 0;
+    for (const alloc of allocations) {
+      const toApply = Math.min(alloc.share, alloc.product.outstanding);
+      if (toApply > 0) {
+        await client.query(
+          'UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [toApply, alloc.product.charge_id]
+        );
+
+        breakdown.applications.push({
+          category: 'rent',
+          charge_type: 'rent',
+          booking_product_id: alloc.product.booking_product_id,
+          amount: toApply
+        });
+
+        totalApplied += toApply;
+      }
+    }
+
+    return amount - totalApplied;
   }
 
   /**
@@ -343,7 +377,7 @@ class ChargeAccountingService {
        AND bp.status NOT IN ('exchanged', 'cancelled')
        AND pc.charge_type = 'security'
        AND pc.paid_amount < pc.due_amount
-       ORDER BY bp.id`,
+       ORDER BY bp.booked_from ASC, bp.id ASC`,
       [bookingId]
     );
 
@@ -501,6 +535,34 @@ class ChargeAccountingService {
         }
         if (amount > remainingBalance) {
           throw new Error(`Payment amount (${amount}) exceeds outstanding balance (${remainingBalance}). Maximum allowed: ${remainingBalance}`);
+        }
+      }
+
+      // 50% minimum rule: first payment must cover ≥ 50% of total rent
+      if (transactionType === 'payment') {
+        const rentStatus = await client.query(
+          `SELECT
+             COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_rent_paid,
+             COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_rent_due
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1
+             AND bp.status NOT IN ('exchanged', 'cancelled')
+             AND pc.charge_type = 'rent'`,
+          [bookingId]
+        );
+
+        const totalRentPaid = rentStatus.rows[0].total_rent_paid || 0;
+        const totalRentDue = rentStatus.rows[0].total_rent_due || 0;
+
+        if (totalRentPaid === 0 && totalRentDue > 0) {
+          const minimumRequired = Math.ceil(totalRentDue / 2);
+          if (amount < minimumRequired) {
+            throw new Error(
+              `First payment must be at least 50% of total rent. ` +
+              `Minimum required: ₹${minimumRequired}, provided: ₹${amount}`
+            );
+          }
         }
       }
 
@@ -710,94 +772,6 @@ class ChargeAccountingService {
   }
 
   /**
-   * Update booking-level discount. Reverses old allocation, applies new one.
-   * @param {number} bookingId
-   * @param {number} newDiscountAmount
-   * @param {string} updatedBy
-   * @param {Object} [existingClient]
-   */
-  async updateBookingDiscount(bookingId, newDiscountAmount, updatedBy, existingClient) {
-    const ownClient = !existingClient;
-    const client = existingClient || await pool.connect();
-    try {
-      if (ownClient) await client.query('BEGIN');
-
-      const booking = await client.query(
-        'SELECT final_discount FROM bookings WHERE id = $1',
-        [bookingId]
-      );
-      if (booking.rows.length === 0) {
-        throw new Error('Booking not found');
-      }
-      const oldDiscount = booking.rows[0].final_discount || 0;
-
-      if (oldDiscount === newDiscountAmount) {
-        throw new Error('Discount amount unchanged');
-      }
-
-      // Step 1: Reverse old allocations on active products
-      await this._reverseGlobalDiscountShares(bookingId, client);
-
-      // Step 2: Apply new allocations if newDiscountAmount > 0
-      if (newDiscountAmount > 0) {
-        const products = await client.query(
-          `SELECT id, rent, discount_amount, global_discount_share
-           FROM booking_products
-           WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
-           ORDER BY rent DESC`,
-          [bookingId]
-        );
-
-        const allocations = this._distributeProportionally(products.rows, newDiscountAmount);
-
-        for (const alloc of allocations) {
-          const newDiscAmount = (alloc.product.discount_amount || 0) + alloc.share;
-          const newEffectiveRent = alloc.product.rent - newDiscAmount;
-
-          await client.query(
-            `UPDATE booking_products
-             SET global_discount_share = $1, discount_amount = $2, effective_rent = $3,
-                 discount_type = CASE WHEN $2 > 0 THEN 'fixed' ELSE NULL END
-             WHERE id = $4`,
-            [alloc.share, newDiscAmount, newEffectiveRent, alloc.product.id]
-          );
-
-          await client.query(
-            `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
-             WHERE booking_product_id = $2 AND charge_type = 'rent'`,
-            [newEffectiveRent, alloc.product.id]
-          );
-        }
-      }
-
-      // Step 3: Update final_discount
-      await client.query(
-        'UPDATE bookings SET final_discount = $1 WHERE id = $2',
-        [newDiscountAmount, bookingId]
-      );
-
-      // Audit trail
-      await client.query(
-        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
-         VALUES ($1, 'booking_discount_updated', $2, $3)`,
-        [bookingId, JSON.stringify({
-          old_discount: oldDiscount,
-          new_discount: newDiscountAmount,
-          change: newDiscountAmount - oldDiscount
-        }), updatedBy]
-      );
-
-      if (ownClient) await client.query('COMMIT');
-      return { old_discount: oldDiscount, new_discount: newDiscountAmount };
-    } catch (error) {
-      if (ownClient) await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      if (ownClient) client.release();
-    }
-  }
-
-  /**
    * Revoke global discount for an exchanged product.
    * Reduces final_discount by the exchanged product's share. Other products keep their shares.
    * @param {number} bookingId
@@ -943,42 +917,6 @@ class ChargeAccountingService {
     }
 
     return allocations;
-  }
-
-  /**
-   * Reverse all global_discount_share allocations on active products.
-   * Removes the global share from discount_amount, restores effective_rent,
-   * and updates rent charge due_amount.
-   * @param {number} bookingId
-   * @param {Object} client
-   */
-  async _reverseGlobalDiscountShares(bookingId, client) {
-    const products = await client.query(
-      `SELECT id, rent, discount_amount, global_discount_share
-       FROM booking_products
-       WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
-       AND global_discount_share > 0`,
-      [bookingId]
-    );
-
-    for (const product of products.rows) {
-      const newDiscountAmount = (product.discount_amount || 0) - (product.global_discount_share || 0);
-      const newEffectiveRent = product.rent - newDiscountAmount;
-
-      await client.query(
-        `UPDATE booking_products
-         SET global_discount_share = 0, discount_amount = $1, effective_rent = $2,
-             discount_type = CASE WHEN $1 > 0 THEN 'fixed' ELSE NULL END
-         WHERE id = $3`,
-        [newDiscountAmount, newEffectiveRent, product.id]
-      );
-
-      await client.query(
-        `UPDATE product_charges SET due_amount = $1, updated_at = CURRENT_TIMESTAMP
-         WHERE booking_product_id = $2 AND charge_type = 'rent'`,
-        [newEffectiveRent, product.id]
-      );
-    }
   }
 
   /**

@@ -1177,7 +1177,8 @@ export default function BookingsPage() {
         } catch (paymentError: any) {
           console.error('❌ Error recording payment:', paymentError);
           console.error('Error response:', paymentError.response?.data);
-          toast.warning('Booking created but failed to record payment. Please record it manually.');
+          const message = paymentError.response?.data?.error || paymentError.response?.data?.details || 'Failed to record payment';
+          toast.error(message);
         }
       }
 

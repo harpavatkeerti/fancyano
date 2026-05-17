@@ -82,7 +82,7 @@ class BookingCalculationService {
     
     if (discountType && discountValue) {
       if (discountType === 'percentage') {
-        bookingDiscountAmount = Math.floor((subtotal * discountValue) / 100);
+        bookingDiscountAmount = subtotal - Math.floor(subtotal / (1 + discountValue / 100));
       } else if (discountType === 'amount') {
         bookingDiscountAmount = Math.min(discountValue, subtotal);
       }

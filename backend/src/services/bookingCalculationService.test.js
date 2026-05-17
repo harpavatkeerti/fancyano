@@ -91,13 +91,14 @@ describe('BookingCalculationService', () => {
   });
 
   describe('calculateBookingDiscount', () => {
-    it('should calculate percentage discount', () => {
+    it('should calculate percentage discount (inclusive formula)', () => {
       const result = bookingCalculationService.calculateBookingDiscount(
         1000,
         'percentage',
         10
       );
-      expect(result).toBe(100); // 10% of 1000
+      // Inclusive: 1000 - floor(1000 / 1.1) = 1000 - 909 = 91
+      expect(result).toBe(91);
     });
 
     it('should calculate fixed amount discount', () => {
@@ -187,8 +188,8 @@ describe('BookingCalculationService', () => {
         ],
         subtotal: 2900,
         transport_charge: 200,
-        booking_discount_amount: 145, // 5% of 2900
-        total: 2955 // 2900 + 200 - 145
+        booking_discount_amount: 139, // inclusive 5% of 2900: 2900 - floor(2900/1.05) = 2900 - 2761 = 139
+        total: 2961 // 2900 + 200 - 139
       });
     });
 

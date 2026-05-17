@@ -62,28 +62,58 @@ describe('DiscountCalculator', () => {
       expect(result.discountAmount).toBe(0);
     });
 
-    test('should calculate percentage discount correctly', () => {
+    test('should calculate percentage discount using tax-inclusive formula', () => {
+      // 10% on 5000: floor(5000 / 1.10) = floor(4545.45) = 4545, discount = 455
       const result = DiscountCalculator.calculateEffectiveRent(5000, 'percentage', 10);
-      expect(result.discountAmount).toBe(500);  // 10% of 5000
-      expect(result.effectiveRent).toBe(4500);  // 5000 - 500
+      expect(result.effectiveRent).toBe(4545);
+      expect(result.discountAmount).toBe(455);
+    });
+
+    test('0% discount should return original rent', () => {
+      const result = DiscountCalculator.calculateEffectiveRent(10000, 'percentage', 0);
+      expect(result.effectiveRent).toBe(10000);
+      expect(result.discountAmount).toBe(0);
+    });
+
+    test('10% on ₹10,000 → effectiveRent = 9091, discount = 909', () => {
+      // floor(10000 / 1.10) = floor(9090.909) = 9090, discount = 910
+      const result = DiscountCalculator.calculateEffectiveRent(10000, 'percentage', 10);
+      expect(result.effectiveRent).toBe(9090);
+      expect(result.discountAmount).toBe(910);
+    });
+
+    test('50% on ₹10,000 → effectiveRent = 6666, discount = 3334', () => {
+      // floor(10000 / 1.50) = floor(6666.67) = 6666, discount = 3334
+      const result = DiscountCalculator.calculateEffectiveRent(10000, 'percentage', 50);
+      expect(result.effectiveRent).toBe(6666);
+      expect(result.discountAmount).toBe(3334);
+    });
+
+    test('100% on ₹10,000 → effectiveRent = 5000, discount = 5000', () => {
+      // floor(10000 / 2.00) = 5000, discount = 5000
+      const result = DiscountCalculator.calculateEffectiveRent(10000, 'percentage', 100);
+      expect(result.effectiveRent).toBe(5000);
+      expect(result.discountAmount).toBe(5000);
+    });
+
+    test('small rent values with rounding (₹100, 15%)', () => {
+      // floor(100 / 1.15) = floor(86.956) = 86, discount = 14
+      const result = DiscountCalculator.calculateEffectiveRent(100, 'percentage', 15);
+      expect(result.effectiveRent).toBe(86);
+      expect(result.discountAmount).toBe(14);
     });
 
     test('should floor percentage discount amounts', () => {
+      // 10% on 5555: floor(5555 / 1.10) = floor(5050.0) = 5050, discount = 505
       const result = DiscountCalculator.calculateEffectiveRent(5555, 'percentage', 10);
-      expect(result.discountAmount).toBe(555);  // floor(555.5)
-      expect(result.effectiveRent).toBe(5000);  // 5555 - 555
+      expect(result.effectiveRent).toBe(5050);
+      expect(result.discountAmount).toBe(505);
     });
 
     test('should calculate fixed discount correctly', () => {
       const result = DiscountCalculator.calculateEffectiveRent(5000, 'fixed', 1000);
       expect(result.discountAmount).toBe(1000);
       expect(result.effectiveRent).toBe(4000);  // 5000 - 1000
-    });
-
-    test('should handle 100% discount', () => {
-      const result = DiscountCalculator.calculateEffectiveRent(5000, 'percentage', 100);
-      expect(result.discountAmount).toBe(5000);
-      expect(result.effectiveRent).toBe(0);
     });
 
     test('should handle discount equal to rent', () => {

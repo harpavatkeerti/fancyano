@@ -19,6 +19,23 @@ class ProductLifecycleService {
   }
 
   /**
+   * Helper: Check how much security deposit has been paid for a booking product
+   * @private
+   * @param {number} bookingProductId
+   * @param {Object} [dbClient] - Optional DB client (for use inside transactions). Falls back to pool.
+   * @returns {Promise<number>} - Amount of security paid (0 if none)
+   */
+  async _getSecurityPaidAmount(bookingProductId, dbClient) {
+    const db = dbClient || pool;
+    const result = await db.query(
+      `SELECT COALESCE(paid_amount, 0) as paid FROM product_charges
+       WHERE booking_product_id = $1 AND charge_type = 'security'`,
+      [bookingProductId]
+    );
+    return parseInt(result.rows[0]?.paid) || 0;
+  }
+
+  /**
    * Exchange a product in a booking (ONE-TO-MANY: one old product for multiple new products)
    * @param {number} bookingProductId - The booking product to exchange
    * @param {Array<Object>} newProducts - Array of {productId, rent, securityDeposit}
@@ -46,6 +63,12 @@ class ProductLifecycleService {
 
       if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(oldBookingProduct.status)) {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
+      }
+
+      // Check if any security has been paid — blocks exchange
+      const securityPaid = await this._getSecurityPaidAmount(bookingProductId, client);
+      if (securityPaid > 0) {
+        throw new Error('Cannot exchange product: security deposit has been partially or fully paid. Amount paid: ₹' + securityPaid);
       }
 
       // Calculate exchange penalty based on EFFECTIVE rent (after discount)
@@ -264,6 +287,12 @@ class ProductLifecycleService {
         throw new Error(`Cannot cancel product with status: ${bookingProduct.status}`);
       }
 
+      // Check if any security has been paid — blocks cancel
+      const securityPaidAmount = await this._getSecurityPaidAmount(bookingProductId, client);
+      if (securityPaidAmount > 0) {
+        throw new Error('Cannot cancel product: security deposit has been partially or fully paid. Amount paid: ₹' + securityPaidAmount);
+      }
+
       // Get per-product paid amounts from product_charges (rent + security paid for THIS product)
       const chargesResult = await client.query(
         `SELECT charge_type, due_amount, paid_amount
@@ -300,6 +329,15 @@ class ProductLifecycleService {
       // discount_reverted is deducted from the refund
       const totalPaidForProduct = rentPaid + securityPaid;
       const diffAmount = totalPaidForProduct - cancellationPenalty - discountReverted;
+
+      // Block cancellation if refund is negative — penalty + discount exceeds what was paid
+      if (diffAmount < 0) {
+        throw new Error(
+          `Cannot cancel: refund would be negative (₹${diffAmount}). ` +
+          `Paid: ₹${totalPaidForProduct}, Penalty: ₹${cancellationPenalty}, ` +
+          `Discount reverted: ₹${discountReverted}`
+        );
+      }
 
       // MONEY FIRST — process settlement before status change, in same transaction
       const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes } = settlement;
@@ -1018,6 +1056,16 @@ class ProductLifecycleService {
         };
       }
 
+      // Check if any security has been paid — blocks exchange
+      const securityPaid = await this._getSecurityPaidAmount(bookingProductId);
+      if (securityPaid > 0) {
+        return {
+          eligible: false,
+          reason: `Cannot exchange: security deposit already paid (₹${securityPaid})`,
+          product
+        };
+      }
+
       return {
         eligible: true,
         reason: 'Product is eligible for exchange',
@@ -1055,6 +1103,18 @@ class ProductLifecycleService {
         return {
           eligible: false,
           reason: `Cannot cancel product with status: ${product.status}`,
+          product,
+          max_penalty: 0,
+          policy: null
+        };
+      }
+
+      // Check if any security has been paid — blocks cancellation
+      const securityPaid = await this._getSecurityPaidAmount(bookingProductId);
+      if (securityPaid > 0) {
+        return {
+          eligible: false,
+          reason: 'Cannot cancel: security deposit already paid (₹' + securityPaid + ')',
           product,
           max_penalty: 0,
           policy: null

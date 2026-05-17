@@ -931,7 +931,8 @@ export default function OrderDetailsPage() {
       setShowMeasurementModal(true);
     } catch (error) {
       console.error('Error recording payment:', error);
-      toast.error('Error recording payment');
+      const message = (error as any).response?.data?.error || (error as any).response?.data?.details || 'Error recording payment';
+      toast.error(message);
     }
   }
 

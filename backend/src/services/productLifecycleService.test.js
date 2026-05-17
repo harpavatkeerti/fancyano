@@ -772,6 +772,171 @@ describe('ProductLifecycleService', () => {
     });
   });
 
+  describe('Security Gate: Cancel & Exchange blocked when security paid', () => {
+    // Test: Cancel with 0 security paid → allowed
+    test('should allow cancel when no security is paid', async () => {
+      // Security paid_amount is 0 by default in beforeEach
+      const result = await productLifecycleService.cancelProduct(
+        testBookingProductId,
+        0,
+        'Test cancel with no security',
+        testUserId
+      );
+      
+      expect(result.status).toBe('cancelled');
+    });
+
+    // Test: Cancel with partial security paid → blocked
+    test('should block cancel when partial security is paid', async () => {
+      // Pay partial security
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 500 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+      
+      await expect(
+        productLifecycleService.cancelProduct(
+          testBookingProductId,
+          0,
+          'Test cancel with partial security',
+          testUserId
+        )
+      ).rejects.toThrow('Cannot cancel product: security deposit has been partially or fully paid');
+    });
+
+    // Test: Cancel with full security paid → blocked
+    test('should block cancel when full security is paid', async () => {
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = due_amount 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+      
+      await expect(
+        productLifecycleService.cancelProduct(
+          testBookingProductId,
+          300,
+          'Test cancel with full security',
+          testUserId
+        )
+      ).rejects.toThrow('Cannot cancel product: security deposit has been partially or fully paid');
+    });
+
+    // Test: Exchange with 0 security paid → allowed
+    test('should allow exchange when no security is paid', async () => {
+      const result = await productLifecycleService.exchangeProduct(
+        testBookingProductId,
+        [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+        'Test exchange with no security',
+        String(testUserId)
+      );
+      
+      expect(result.old_booking_product_id).toBe(testBookingProductId);
+    });
+
+    // Test: Exchange with any security paid → blocked
+    test('should block exchange when security is paid', async () => {
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 200 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+      
+      await expect(
+        productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+          'Test exchange with security paid',
+          String(testUserId)
+        )
+      ).rejects.toThrow('Cannot exchange product: security deposit has been partially or fully paid');
+    });
+
+    // Test: validateCancellationEligibility reflects security paid status
+    test('validateCancellationEligibility should return ineligible when security paid', async () => {
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 500 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+      
+      const result = await productLifecycleService.validateCancellationEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('security deposit already paid');
+    });
+
+    // Test: validateExchangeEligibility reflects security paid status
+    test('validateExchangeEligibility should return ineligible when security paid', async () => {
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 500 
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [testBookingProductId]
+      );
+      
+      const result = await productLifecycleService.validateExchangeEligibility(testBookingProductId);
+      
+      expect(result.eligible).toBe(false);
+      expect(result.reason).toContain('security deposit already paid');
+    });
+  });
+
+  describe('Negative Refund Block: cancel blocked when refund would be negative', () => {
+    // Test: Cancel with diffAmount >= 0 proceeds normally (rent paid covers penalty)
+    test('should allow cancel when paid amount covers penalty', async () => {
+      // Pay some rent so totalPaid >= penalty
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 500 
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [testBookingProductId]
+      );
+      
+      const result = await productLifecycleService.cancelProduct(
+        testBookingProductId,
+        300, // penalty < 500 paid
+        'Test cancel with sufficient funds',
+        testUserId
+      );
+      
+      expect(result.status).toBe('cancelled');
+      expect(result.diff_amount).toBeGreaterThanOrEqual(0);
+    });
+
+    // Test: Cancel with diffAmount < 0 (penalty > paid) → throws error, no status change
+    test('should block cancel when penalty exceeds paid amount', async () => {
+      // No rent paid (0 by default), penalty = 500 → diffAmount = -500
+      await expect(
+        productLifecycleService.cancelProduct(
+          testBookingProductId,
+          500, // penalty > 0 paid
+          'Test cancel with insufficient funds',
+          testUserId
+        )
+      ).rejects.toThrow('Cannot cancel: refund would be negative');
+      
+      // Verify product status unchanged
+      const product = await pool.query(
+        'SELECT status FROM booking_products WHERE id = $1',
+        [testBookingProductId]
+      );
+      expect(product.rows[0].status).toBe('confirmed');
+    });
+
+    // Test: Cancel with zero penalty and zero paid → diffAmount = 0 → allowed
+    test('should allow cancel with zero penalty and zero paid', async () => {
+      const result = await productLifecycleService.cancelProduct(
+        testBookingProductId,
+        0,
+        'Free cancellation',
+        testUserId
+      );
+      
+      expect(result.status).toBe('cancelled');
+      expect(result.diff_amount).toBe(0);
+    });
+  });
+
   describe('calculateExchangePreview', () => {
     // Test: Returns complete exchange preview with all calculations
     test('should calculate exchange preview for upgrade (no downgrade penalty)', async () => {

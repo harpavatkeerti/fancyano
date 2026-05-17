@@ -270,45 +270,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// PUT update booking discount (create, update, or remove booking-level discount)
-router.put('/:id/discount', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { discount_amount, updated_by } = req.body;
-
-    if (discount_amount === undefined || !updated_by) {
-      return res.status(400).json({
-        error: 'Required: discount_amount (>= 0), updated_by'
-      });
-    }
-
-    const parsedAmount = Math.floor(parseInt(discount_amount) || 0);
-    if (parsedAmount < 0) {
-      return res.status(400).json({ error: 'discount_amount must be >= 0' });
-    }
-
-    const result = await chargeAccountingService.updateBookingDiscount(
-      parseInt(id),
-      parsedAmount,
-      updated_by
-    );
-
-    res.json({
-      success: true,
-      message: `Discount updated: ₹${result.old_discount} → ₹${result.new_discount}`,
-      ...result
-    });
-  } catch (error) {
-    if (error.message === 'Booking not found') {
-      return res.status(404).json({ error: 'Booking not found' });
-    }
-    if (error.message === 'Discount amount unchanged') {
-      return res.status(400).json({ error: error.message });
-    }
-    console.error('Error updating discount:', error);
-    res.status(500).json({ error: 'Failed to update discount', details: error.message });
-  }
-});
 
 // GET activity log for a booking
 router.get('/:id/activity-log', async (req, res) => {

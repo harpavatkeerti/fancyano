@@ -141,27 +141,31 @@ describe('ChargeAccountingService', () => {
   });
 
   describe('applyPayment', () => {
-    // Test: Applies payment to rent charges first (Priority 1) before any other charge category
-    test('should apply payment to rent first (priority 1)', async () => {
+    test('should apply payment to rent first (priority 1) — proportionally', async () => {
       const result = await chargeAccountingService.applyPayment(
         testBookingId,
-        1000,
+        2000, // 50% of total rent (4000) — meets minimum
         'Cash',
         'test-user',
         'Partial payment'
       );
 
-      expect(result.total_applied).toBe(1000);
-      expect(result.breakdown).toHaveLength(1);
-      expect(result.breakdown[0].category).toBe('rent');
-      expect(result.breakdown[0].amount).toBe(1000);
+      expect(result.total_applied).toBe(2000);
+      // Proportional: 2500/4000 * 2000 = 1250, 1500/4000 * 2000 = 750
+      expect(result.breakdown).toHaveLength(2);
+      expect(result.breakdown.every(b => b.category === 'rent')).toBe(true);
 
-      // Verify rent charge updated
-      const charges = await pool.query(
-        'SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+      // Verify proportional split on charges
+      const charge0 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
         [testProductIds[0], 'rent']
       );
-      expect(charges.rows[0].paid_amount).toBe(1000);
+      const charge1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      expect(charge0.rows[0].paid_amount).toBe(1250);
+      expect(charge1.rows[0].paid_amount).toBe(750);
     });
 
     // Test: After rent is fully paid, applies remaining payment to transport (Priority 2)
@@ -175,11 +179,13 @@ describe('ChargeAccountingService', () => {
         'Payment'
       );
 
+      // Proportional rent: 2 entries + 1 transport
       expect(result.breakdown).toHaveLength(3);
-      expect(result.breakdown[0].category).toBe('rent'); // 2500
-      expect(result.breakdown[1].category).toBe('rent'); // 1500
-      expect(result.breakdown[2].category).toBe('transport'); // 100
-      expect(result.breakdown[2].amount).toBe(100);
+      const rentApps = result.breakdown.filter(b => b.category === 'rent');
+      const transportApps = result.breakdown.filter(b => b.category === 'transport');
+      expect(rentApps).toHaveLength(2);
+      expect(transportApps).toHaveLength(1);
+      expect(transportApps[0].amount).toBe(100);
 
       // Verify transport updated
       const booking = await pool.query(
@@ -691,6 +697,120 @@ describe('ChargeAccountingService', () => {
       await expect(
         chargeAccountingService.recordRefund(testBookingId, -100, 'Cash', 'admin', 'Test')
       ).rejects.toThrow('Refund amount must be greater than 0');
+    });
+  });
+
+  describe('Proportional Rent Distribution', () => {
+    // Test: 2 products with different rent → proportional split
+    test('should split payment proportionally by rent (62.5%/37.5%)', async () => {
+      // Rents are 2500 and 1500 (62.5% / 37.5%)
+      await chargeAccountingService.applyPayment(
+        testBookingId, 2000, 'Cash', 'test-user', 'Proportional test'
+      );
+
+      const charge0 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'rent']
+      );
+      const charge1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      // 2000 * 2500/4000 = 1250, 2000 * 1500/4000 = 750
+      expect(charge0.rows[0].paid_amount).toBe(1250);
+      expect(charge1.rows[0].paid_amount).toBe(750);
+    });
+
+    // Test: Payment exceeds total outstanding → capped, remainder returned
+    test('should cap at outstanding and return remainder', async () => {
+      // Pay rent fully first
+      await chargeAccountingService.applyPayment(
+        testBookingId, 4000, 'Cash', 'test-user', 'Full rent'
+      );
+
+      // Both products should be fully paid
+      const c0 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'rent']
+      );
+      const c1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      expect(c0.rows[0].paid_amount).toBe(2500);
+      expect(c1.rows[0].paid_amount).toBe(1500);
+    });
+
+    // Test: 1 product already fully paid → all goes to remaining
+    test('should give all to remaining product when one is fully paid', async () => {
+      // Manually mark first product's rent as fully paid
+      await pool.query(
+        'UPDATE product_charges SET paid_amount = due_amount WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'rent']
+      );
+
+      // Now pay ₹500 — should only go to product[1]
+      await chargeAccountingService.applyPayment(
+        testBookingId, 500, 'Cash', 'test-user', 'Remaining product'
+      );
+
+      const c1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      expect(c1.rows[0].paid_amount).toBe(500);
+    });
+  });
+
+  describe('50% Minimum Payment Rule', () => {
+    // Test: First payment exactly 50% → accepted
+    test('should accept first payment at exactly 50% of total rent', async () => {
+      // Total rent = 4000, 50% = 2000
+      const result = await chargeAccountingService.applyPayment(
+        testBookingId, 2000, 'Cash', 'test-user', 'Exactly 50%'
+      );
+      expect(result.total_applied).toBe(2000);
+    });
+
+    // Test: First payment > 50% → accepted
+    test('should accept first payment above 50% of total rent', async () => {
+      const result = await chargeAccountingService.applyPayment(
+        testBookingId, 3000, 'Cash', 'test-user', 'Above 50%'
+      );
+      expect(result.total_applied).toBe(3000);
+    });
+
+    // Test: First payment < 50% → rejected
+    test('should reject first payment below 50% of total rent', async () => {
+      // Total rent = 4000, 50% = 2000, trying to pay 1000
+      await expect(
+        chargeAccountingService.applyPayment(
+          testBookingId, 1000, 'Cash', 'test-user', 'Below 50%'
+        )
+      ).rejects.toThrow('First payment must be at least 50% of total rent');
+    });
+
+    // Test: Second payment with any amount → accepted (no minimum)
+    test('should accept any amount on second payment', async () => {
+      // First payment meets minimum
+      await chargeAccountingService.applyPayment(
+        testBookingId, 2000, 'Cash', 'test-user', 'First payment'
+      );
+
+      // Second payment with small amount — should succeed
+      const result = await chargeAccountingService.applyPayment(
+        testBookingId, 100, 'Cash', 'test-user', 'Small second payment'
+      );
+      expect(result.total_applied).toBe(100);
+    });
+
+    // Test: Adjustment → no minimum enforced
+    test('should not enforce minimum on adjustments', async () => {
+      // ₹500 adjustment should succeed even though it's < 50% of rent
+      const result = await chargeAccountingService.applyAdjustment(
+        testBookingId, 500, 'Adjustment', 'admin', 'Small adjustment'
+      );
+      expect(result.total_applied).toBe(500);
     });
   });
 });

@@ -85,8 +85,10 @@ class DiscountCalculator {
     let discountAmount = 0;
 
     if (discountType === 'percentage') {
-      // Calculate percentage discount
-      discountAmount = Math.floor((rent * discountValue) / 100);
+      // Calculate percentage discount using tax-inclusive formula
+      // effective_rent = rent / (1 + discountValue / 100)
+      const effectiveRentCalc = Math.floor(rent / (1 + discountValue / 100));
+      discountAmount = rent - effectiveRentCalc;
     } else if (discountType === 'fixed') {
       // Use fixed discount (already validated to not exceed rent)
       discountAmount = discountValue;
