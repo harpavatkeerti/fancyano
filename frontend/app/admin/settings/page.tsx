@@ -377,7 +377,7 @@ export default function SettingsPage() {
       closeEditModal();
     } catch (error: any) {
       console.error('Error saving policy:', error);
-      toast.error(error?.response?.data?.error || 'Error saving policy. Please try again.');
+      toast.error(error?.response?.data?.details || error?.response?.data?.error || 'Error saving policy. Please try again.');
     }
   }
 

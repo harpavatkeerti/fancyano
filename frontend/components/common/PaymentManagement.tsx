@@ -183,7 +183,8 @@ export function PaymentManagement({
       onPaymentUpdate();
     } catch (error) {
       console.error('Error recording transaction:', error);
-      toast.error('Error recording transaction');
+      const message = (error as any).response?.data?.details || (error as any).response?.data?.error || 'Error recording transaction';
+      toast.error(message);
     }
   }
 
@@ -334,7 +335,8 @@ export function PaymentManagement({
       onPaymentUpdate();
     } catch (error) {
       console.error('Error recording refund:', error);
-      toast.error('Error recording refund');
+      const message = (error as any).response?.data?.details || (error as any).response?.data?.error || 'Error recording refund';
+      toast.error(message);
     }
   }
 

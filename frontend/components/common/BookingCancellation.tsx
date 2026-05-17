@@ -213,7 +213,7 @@ export function BookingCancellation({
       }
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
-      toast.error(error.response?.data?.error || 'Failed to fetch cancellation details');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to fetch cancellation details');
     } finally {
       setFetchingPreview(false);
     }
@@ -320,7 +320,7 @@ export function BookingCancellation({
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
-      toast.error(error.response?.data?.error || 'Failed to cancel booking');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to cancel booking');
     } finally {
       setLoading(false);
     }

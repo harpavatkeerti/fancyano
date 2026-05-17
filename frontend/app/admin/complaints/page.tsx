@@ -167,7 +167,7 @@ export default function ComplaintsPage() {
       setNewNote('');
     } catch (error: any) {
       console.error('Error updating complaint:', error);
-      toast.error(error.response?.data?.error || 'Failed to update complaint');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to update complaint');
     }
   };
 

@@ -409,7 +409,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error exchanging product:', error);
-      toast.error(error.response?.data?.error || 'Failed to exchange product');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to exchange product');
     } finally {
       setLoading(false);
     }
@@ -544,7 +544,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error recording payment:', error);
-      toast.error(error.response?.data?.error || 'Failed to record payment');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to record payment');
     } finally {
       setLoading(false);
     }
@@ -578,7 +578,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error preparing exchange deletion:', error);
-      toast.error(error.response?.data?.error || 'Failed to prepare exchange deletion');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to prepare exchange deletion');
       setLoading(false);
     }
   }
@@ -617,7 +617,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error deleting exchange:', error);
-      toast.error(error.response?.data?.error || 'Failed to delete exchange');
+      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to delete exchange');
     } finally {
       setLoading(false);
       setShowRefundModal(false);

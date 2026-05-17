@@ -165,7 +165,7 @@ export default function InventoryPage() {
       console.error('❌ Error saving product:', error);
       console.error('   Error response:', error.response?.data);
       console.error('   Error status:', error.response?.status);
-      const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+      const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
       toast.error(`Error saving product: ${errorMessage}`);
     }
   }

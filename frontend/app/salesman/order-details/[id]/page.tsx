@@ -471,7 +471,7 @@ export default function OrderDetailsPage() {
       }
     } catch (error: any) {
       console.error(`Error generating ${type}:`, error);
-      const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+      const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
       toast.error(`Error generating ${type}: ${errorMessage}`);
     }
   }
@@ -657,7 +657,7 @@ export default function OrderDetailsPage() {
         window.location.href = mailtoLink;
         toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
       } else {
-        toast.error(`Failed to send email: ${error.response?.data?.error || error.message}`);
+        toast.error(`Failed to send email: ${error.response?.data?.details || error.response?.data?.error || error.message}`);
       }
     }
   }
@@ -931,7 +931,7 @@ export default function OrderDetailsPage() {
       setShowMeasurementModal(true);
     } catch (error) {
       console.error('Error recording payment:', error);
-      const message = (error as any).response?.data?.error || (error as any).response?.data?.details || 'Error recording payment';
+      const message = (error as any).response?.data?.details || (error as any).response?.data?.error || 'Error recording payment';
       toast.error(message);
     }
   }
@@ -1048,7 +1048,7 @@ export default function OrderDetailsPage() {
           console.log('✅ Pickup successful');
         } catch (pickupError: any) {
           console.error('❌ Pickup failed:', pickupError.response?.data || pickupError.message);
-          toast.error(`Pickup failed: ${pickupError.response?.data?.error || pickupError.message}`);
+          toast.error(`Pickup failed: ${pickupError.response?.data?.details || pickupError.response?.data?.error || pickupError.message}`);
           return;
         }
       }
@@ -1069,7 +1069,7 @@ export default function OrderDetailsPage() {
           console.log('✅ Return successful — booking status should now be updated');
         } catch (returnError: any) {
           console.error('❌ Return failed:', returnError.response?.data || returnError.message);
-          toast.error(`Return failed: ${returnError.response?.data?.error || returnError.message}`);
+          toast.error(`Return failed: ${returnError.response?.data?.details || returnError.response?.data?.error || returnError.message}`);
           return;
         }
       }
@@ -3942,7 +3942,7 @@ export default function OrderDetailsPage() {
                         toast.success('Measurements saved successfully!');
                       } catch (error: any) {
                         console.error('Error saving measurements:', error);
-                        const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+                        const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
                         if (error.response?.status === 404) {
                           toast.error(`Booking not found. Please refresh the page.`);
                         } else {

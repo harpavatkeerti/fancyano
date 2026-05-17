@@ -179,7 +179,7 @@ export function BookingProductTrackingModal({ booking, onClose }: BookingProduct
       console.error('Error details:', error?.response?.data);
       console.error('Full error:', JSON.stringify(error, null, 2));
       
-      const errorMessage = error?.response?.data?.error || error?.message || 'Unknown error';
+      const errorMessage = error?.response?.data?.details || error?.response?.data?.error || error?.message || 'Unknown error';
       alert(`Error updating product pickup status: ${errorMessage}`);
     } finally {
       setLoading(false);
@@ -247,7 +247,7 @@ export function BookingProductTrackingModal({ booking, onClose }: BookingProduct
       console.error('Error details:', error?.response?.data);
       console.error('Full error:', JSON.stringify(error, null, 2));
       
-      const errorMessage = error?.response?.data?.error || error?.message || 'Unknown error';
+      const errorMessage = error?.response?.data?.details || error?.response?.data?.error || error?.message || 'Unknown error';
       alert(`Error updating product return status: ${errorMessage}`);
     } finally {
       setLoading(false);

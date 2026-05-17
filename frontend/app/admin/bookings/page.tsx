@@ -562,7 +562,7 @@ export default function BookingsPage() {
             toast.success('Booking cancelled and credit note issued successfully');
           } catch (error: any) {
             console.error('Error creating credit note:', error);
-            const errorMessage = error.response?.data?.message || error.response?.data?.error || 'Failed to create credit note';
+            const errorMessage = error.response?.data?.details || error.response?.data?.message || error.response?.data?.error || 'Failed to create credit note';
             toast.error(errorMessage);
             // Still show success for cancellation even if credit note creation fails
             toast.success('Booking cancelled successfully');
@@ -1177,7 +1177,7 @@ export default function BookingsPage() {
         } catch (paymentError: any) {
           console.error('❌ Error recording payment:', paymentError);
           console.error('Error response:', paymentError.response?.data);
-          const message = paymentError.response?.data?.error || paymentError.response?.data?.details || 'Failed to record payment';
+          const message = paymentError.response?.data?.details || paymentError.response?.data?.error || 'Failed to record payment';
           toast.error(message);
         }
       }

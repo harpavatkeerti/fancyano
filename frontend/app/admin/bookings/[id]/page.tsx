@@ -275,7 +275,7 @@ export default function OrderDetailsPage() {
       }
     } catch (error: any) {
       console.error(`Error generating ${type}:`, error);
-      const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+      const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
       toast.error(`Error generating ${type}: ${errorMessage}`);
     }
   }
@@ -458,7 +458,7 @@ export default function OrderDetailsPage() {
         window.location.href = mailtoLink;
         toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
       } else {
-        toast.error(`Failed to send email: ${error.response?.data?.error || error.message}`);
+        toast.error(`Failed to send email: ${error.response?.data?.details || error.response?.data?.error || error.message}`);
       }
     }
   }
