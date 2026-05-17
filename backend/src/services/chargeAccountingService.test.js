@@ -762,6 +762,418 @@ describe('ChargeAccountingService', () => {
     });
   });
 
+  describe('settleExchange', () => {
+    async function createNewProduct(client, bookingId, rent) {
+      const productId = (await client.query("SELECT id FROM products WHERE code = 'TEST001'")).rows[0].id;
+      const bp = await client.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', $3, 1000, $3)
+         RETURNING id`,
+        [bookingId, productId, rent]
+      );
+      const bpId = bp.rows[0].id;
+      await chargeAccountingService.initializeProductCharges(bpId, rent, 1000, client);
+      return bpId;
+    }
+
+    // Full exchange scenario (order #9978): credit from old product + payment covering penalty + rent
+    test('should zero old rent, pay penalty, then cover new product rent from credit + payment', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Old product (testProductIds[1], rent 1500) has 1437 paid toward rent
+        await client.query(
+          `UPDATE product_charges SET paid_amount = 1437 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[1]]
+        );
+        await chargeAccountingService.addCharge(testProductIds[1], 'exchange_penalty', 264, null, null, client);
+        const bp3Id = await createNewProduct(client, testBookingId, 5200);
+
+        // paymentAmount = 4027 (cash collected). Pool = 1437 + 4027 = 5464.
+        // 264 goes to penalty, 5200 goes to new rent. 5464 - 264 - 5200 = 0 remaining.
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 4027, 'Cash', 'maya', 'Exchange payment', client
+        );
+
+        const oldRent = await client.query(
+          `SELECT due_amount, paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[1]]
+        );
+        expect(oldRent.rows[0].due_amount).toBe(0);
+        expect(oldRent.rows[0].paid_amount).toBe(0);
+
+        const penalty = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'exchange_penalty'`,
+          [testProductIds[1]]
+        );
+        expect(penalty.rows[0].paid_amount).toBe(264);
+
+        const bp3Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp3Id]
+        );
+        expect(bp3Rent.rows[0].paid_amount).toBe(5200); // fully covered
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Old product with 0 paid — rent still zeroed, new product funded entirely by payment
+    test('should zero old rent even when old product had 0 paid, fund new product from payment only', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // testProductIds[1] has paid_amount = 0 (default from beforeEach)
+        const bp3Id = await createNewProduct(client, testBookingId, 2000);
+
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 2000, 'Cash', 'admin', 'Test', client
+        );
+
+        const oldRent = await client.query(
+          `SELECT due_amount, paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[1]]
+        );
+        expect(oldRent.rows[0].due_amount).toBe(0);
+        expect(oldRent.rows[0].paid_amount).toBe(0);
+
+        const bp3Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp3Id]
+        );
+        expect(bp3Rent.rows[0].paid_amount).toBe(2000);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Credit drains into first new product (ORDER BY rent DESC); second gets remainder
+    test('should carry credit sequentially across 2 new products', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await client.query(
+          `UPDATE product_charges SET paid_amount = 1200 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[1]]
+        );
+        const bp3Id = await createNewProduct(client, testBookingId, 3000); // first (rent DESC)
+        const bp4Id = await createNewProduct(client, testBookingId, 2000);
+
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id, bp4Id], 0, 'Cash', 'admin', null, client
+        );
+
+        const bp3Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp3Id]
+        );
+        const bp4Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp4Id]
+        );
+        // bp3 (3000 due) absorbs all 1200; bp4 gets 0
+        expect(bp3Rent.rows[0].paid_amount).toBe(1200);
+        expect(bp4Rent.rows[0].paid_amount).toBe(0);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Credit capped at new product's due_amount
+    test('should cap credit at new product due_amount', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await client.query(
+          `UPDATE product_charges SET paid_amount = 2000 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[0]]
+        );
+
+        const productId = (await client.query("SELECT id FROM products WHERE code = 'TEST001'")).rows[0].id;
+        const bp3Result = await client.query(
+          `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+           VALUES ($1, $2, 1, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 2000, 1000, 2000) RETURNING id`,
+          [testBookingId, productId]
+        );
+        const bp3Id = bp3Result.rows[0].id;
+        await client.query(
+          `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+           VALUES ($1, 'rent', 1000, 0), ($1, 'security', 1000, 0)`,
+          [bp3Id]
+        );
+
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[0], [bp3Id], 0, 'Cash', 'admin', null, client
+        );
+
+        const bp3Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp3Id]
+        );
+        expect(bp3Rent.rows[0].paid_amount).toBe(1000); // capped, not 2000
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Downgrade penalty paid after exchange_penalty, before new product rent
+    test('should pay exchange_penalty then downgrade_penalty before rent', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        await chargeAccountingService.addCharge(testProductIds[1], 'exchange_penalty', 200, null, null, client);
+        await chargeAccountingService.addCharge(testProductIds[1], 'downgrade_penalty', 300, null, null, client);
+        const bp3Id = await createNewProduct(client, testBookingId, 5000);
+
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 500, 'Cash', 'admin', 'Test', client
+        );
+
+        const exchPenalty = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'exchange_penalty'`,
+          [testProductIds[1]]
+        );
+        const downgradePenalty = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'downgrade_penalty'`,
+          [testProductIds[1]]
+        );
+        const bp3Rent = await client.query(
+          `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [bp3Id]
+        );
+        expect(exchPenalty.rows[0].paid_amount).toBe(200);
+        expect(downgradePenalty.rows[0].paid_amount).toBe(300);
+        expect(bp3Rent.rows[0].paid_amount).toBe(0); // 500 - 200 - 300 = 0
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Single payment_transaction of type 'payment', no 'adjustment' row
+    test('should create exactly one payment transaction, never adjustment', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const bp3Id = await createNewProduct(client, testBookingId, 3000);
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 1000, 'Cash', 'admin', 'Test', client
+        );
+
+        const txns = await client.query(
+          `SELECT type, amount FROM payment_transactions WHERE booking_id = $1`,
+          [testBookingId]
+        );
+        expect(txns.rows.filter(r => r.type === 'payment')).toHaveLength(1);
+        expect(parseInt(txns.rows.find(r => r.type === 'payment').amount)).toBe(1000);
+        expect(txns.rows.filter(r => r.type === 'adjustment')).toHaveLength(0);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // No transaction created when paymentAmount = 0
+    test('should not create payment_transaction when paymentAmount is 0', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const bp3Id = await createNewProduct(client, testBookingId, 3000);
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 0, 'Cash', 'admin', null, client
+        );
+
+        const txns = await client.query(
+          `SELECT id FROM payment_transactions WHERE booking_id = $1`,
+          [testBookingId]
+        );
+        expect(txns.rows).toHaveLength(0);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Pre-existing products must be completely untouched
+    test('should not modify pre-existing product charges', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const preExistingBefore = await client.query(
+          `SELECT charge_type, paid_amount FROM product_charges
+           WHERE booking_product_id = $1 ORDER BY charge_type`,
+          [testProductIds[0]]
+        );
+
+        await chargeAccountingService.addCharge(testProductIds[1], 'exchange_penalty', 200, null, null, client);
+        const bp3Id = await createNewProduct(client, testBookingId, 3000);
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 1000, 'Cash', 'admin', 'Test', client
+        );
+
+        const preExistingAfter = await client.query(
+          `SELECT charge_type, paid_amount FROM product_charges
+           WHERE booking_product_id = $1 ORDER BY charge_type`,
+          [testProductIds[0]]
+        );
+        expect(preExistingAfter.rows).toEqual(preExistingBefore.rows);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Full-scope isolation: snapshots ALL product_charges before and after settleExchange,
+    // then asserts that only the expected rows changed (old rent zeroed, penalties paid,
+    // new product rent funded) and every other row is byte-for-byte identical.
+    test('full-scope isolation: only old product rent+penalties and new product rent are modified', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Pre-existing (testProductIds[0]): 500 paid rent, 0 paid security
+        await client.query(
+          `UPDATE product_charges SET paid_amount = 500 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[0]]
+        );
+        // Old product (testProductIds[1]): 800 paid rent, exchange_penalty due=200
+        await client.query(
+          `UPDATE product_charges SET paid_amount = 800 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testProductIds[1]]
+        );
+        await chargeAccountingService.addCharge(testProductIds[1], 'exchange_penalty', 200, null, null, client);
+        // New product (bp3): rent due=3000, security due=1000, both paid=0
+        const bp3Id = await createNewProduct(client, testBookingId, 3000);
+
+        // Snapshot ALL charges before settlement
+        const before = await client.query(
+          `SELECT pc.booking_product_id, pc.charge_type, pc.paid_amount
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1
+           ORDER BY pc.booking_product_id, pc.charge_type`,
+          [testBookingId]
+        );
+
+        // pool = 800 (old rent credit) + 1200 (payment) = 2000
+        // pay exchange_penalty(200): remaining = 1800
+        // bp3 rent (due=3000): toApply = min(1800, 3000) = 1800
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 1200, 'Cash', 'admin', 'Test', client
+        );
+
+        const after = await client.query(
+          `SELECT pc.booking_product_id, pc.charge_type, pc.paid_amount
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1
+           ORDER BY pc.booking_product_id, pc.charge_type`,
+          [testBookingId]
+        );
+
+        // Define exactly which rows should have changed and to what values
+        const expectedNewValues = {
+          [`${testProductIds[1]}_rent`]: 0,            // zeroed
+          [`${testProductIds[1]}_exchange_penalty`]: 200, // paid in full
+          [`${bp3Id}_rent`]: 1800                        // funded from pool
+        };
+
+        for (const afterRow of after.rows) {
+          const key = `${afterRow.booking_product_id}_${afterRow.charge_type}`;
+          const beforeRow = before.rows.find(
+            r => r.booking_product_id === afterRow.booking_product_id && r.charge_type === afterRow.charge_type
+          );
+          if (Object.prototype.hasOwnProperty.call(expectedNewValues, key)) {
+            expect(afterRow.paid_amount).toBe(expectedNewValues[key]);
+          } else {
+            // Every other row must be completely unchanged
+            expect(afterRow.paid_amount).toBe(beforeRow.paid_amount);
+          }
+        }
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+
+    // Activity log records exchange_payment with correct references
+    test('should create activity log entry with correct product references', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const bp3Id = await createNewProduct(client, testBookingId, 3000);
+        await chargeAccountingService.settleExchange(
+          testBookingId, testProductIds[1], [bp3Id], 1000, 'Cash', 'admin', 'Test', client
+        );
+
+        const log = await client.query(
+          `SELECT details FROM booking_activity_log WHERE booking_id = $1 AND event_type = 'exchange_payment'`,
+          [testBookingId]
+        );
+        expect(log.rows).toHaveLength(1);
+        expect(log.rows[0].details.old_product).toBe(testProductIds[1]);
+        expect(log.rows[0].details.new_products).toContain(bp3Id);
+        expect(log.rows[0].details.amount).toBe(1000);
+
+        await client.query('ROLLBACK');
+      } catch (error) {
+        await client.query('ROLLBACK');
+        throw error;
+      } finally {
+        client.release();
+      }
+    });
+  });
+
   describe('50% Minimum Payment Rule', () => {
     // Test: First payment exactly 50% → accepted
     test('should accept first payment at exactly 50% of total rent', async () => {

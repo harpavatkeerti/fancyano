@@ -264,6 +264,306 @@ describe('ProductLifecycleService', () => {
       expect(log.rows.length).toBe(1);
       expect(log.rows[0].performed_by).toBe(String(testUserId));
     });
+
+    // Test: Verifies correct financial settlement when exchange payment is collected.
+    // Pins the two original bugs:
+    //   Bug #1 — no adjustment transaction double-counting old rent
+    //   Bug #2 — exchange penalty must be paid from exchange payment, not silently dropped
+    // Also asserts old product rent zeroed, new product rent fully funded,
+    // and pre-existing (non-exchanged) product rent is byte-for-byte unchanged.
+    test('should correctly settle exchange finances with payment: no adjustment, penalty paid, new rent funded, pre-existing unchanged', async () => {
+      // Add a pre-existing product to the same booking (not involved in the exchange)
+      const preExistingResult = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 1500, 800, 1500)
+         RETURNING id`,
+        [testBookingId, testProductId2]
+      );
+      const preExistingBpId = preExistingResult.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 1500, 0), ($1, 'security', 800, 0)`,
+        [preExistingBpId]
+      );
+
+      // Simulate prior partial payments already applied:
+      //   testBookingProductId (old, rent=2500): 1000 paid
+      //   preExistingBpId (rent=1500): 600 paid
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 1000
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [testBookingProductId]
+      );
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 600
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [preExistingBpId]
+      );
+
+      // exchange_penalty = 10% of 2500 (effective_rent) = 250
+      // settleExchange pool = old rent paid (1000) + paymentAmount
+      // new product rent = 3000, outstanding after redistribution = 3000 - 1000 = 2000
+      // paymentAmount = penalty (250) + outstanding new rent (2000) = 2250
+      const paymentAmount = 2250;
+
+      const result = await productLifecycleService.exchangeProduct(
+        testBookingProductId,
+        [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+        'Test exchange with payment',
+        String(testUserId),
+        { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
+      );
+
+      // Bug #1 pin: no adjustment transaction must exist
+      const adjustmentTxRows = await pool.query(
+        `SELECT id FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'`,
+        [testBookingId]
+      );
+      expect(adjustmentTxRows.rows.length).toBe(0);
+
+      // Single payment transaction of correct amount
+      const paymentTxRows = await pool.query(
+        `SELECT amount, type FROM payment_transactions WHERE booking_id = $1 AND type = 'payment'`,
+        [testBookingId]
+      );
+      expect(paymentTxRows.rows.length).toBe(1);
+      expect(parseInt(paymentTxRows.rows[0].amount)).toBe(paymentAmount);
+
+      // Old product rent zeroed (due=0, paid=0)
+      const oldRentCharge = await pool.query(
+        `SELECT due_amount, paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [testBookingProductId]
+      );
+      expect(oldRentCharge.rows[0].due_amount).toBe(0);
+      expect(oldRentCharge.rows[0].paid_amount).toBe(0);
+
+      // Bug #2 pin: exchange penalty must be fully paid on old product
+      const penaltyCharge = await pool.query(
+        `SELECT due_amount, paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'exchange_penalty'`,
+        [testBookingProductId]
+      );
+      expect(penaltyCharge.rows[0].due_amount).toBe(250);
+      expect(penaltyCharge.rows[0].paid_amount).toBe(250);
+
+      // New product rent fully funded: 1000 (from redistribution) + 2000 (from payment) = 3000
+      const newBpId = result.new_booking_product_ids[0];
+      const newRentCharge = await pool.query(
+        `SELECT due_amount, paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [newBpId]
+      );
+      expect(newRentCharge.rows[0].due_amount).toBe(3000);
+      expect(newRentCharge.rows[0].paid_amount).toBe(3000);
+
+      // Pre-existing product rent completely unchanged (still 600)
+      const preExistingRentCharge = await pool.query(
+        `SELECT paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [preExistingBpId]
+      );
+      expect(preExistingRentCharge.rows[0].paid_amount).toBe(600);
+    });
+
+    describe('financial edge cases', () => {
+      // Financial invariant: total payment_transactions sum equals all money collected.
+      // Guards against double-counting via adjustment (Bug #1 regression).
+      test('SUM(payment_transactions) equals total payments collected — no double-count', async () => {
+        // Simulate a prior payment: insert a transaction record and set paid_amount
+        const priorPayment = 1200;
+        await pool.query(
+          `INSERT INTO payment_transactions (booking_id, amount, type, method, notes, recorded_by)
+           VALUES ($1, $2, 'payment', 'Cash', 'Prior payment', 'admin')`,
+          [testBookingId, priorPayment]
+        );
+        await pool.query(
+          `UPDATE product_charges SET paid_amount = $1
+           WHERE booking_product_id = $2 AND charge_type = 'rent'`,
+          [priorPayment, testBookingProductId]
+        );
+
+        // exchange_penalty = 250. pool = 1200 + exchangePayment.
+        // New product rent = 3000. outstanding = 3000 - 1200 = 1800. Need: 250 + 1800 = 2050.
+        const exchangePayment = 2050;
+        await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+          'Financial invariant test',
+          String(testUserId),
+          { amount: exchangePayment, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
+        );
+
+        // SUM of all payment transactions must equal prior + exchange (no inflation via adjustment)
+        const sumResult = await pool.query(
+          `SELECT COALESCE(SUM(amount::INTEGER), 0) AS total
+           FROM payment_transactions WHERE booking_id = $1 AND type = 'payment'`,
+          [testBookingId]
+        );
+        expect(parseInt(sumResult.rows[0].total)).toBe(priorPayment + exchangePayment);
+
+        // Confirm absolutely no adjustment transaction exists
+        const adjResult = await pool.query(
+          `SELECT id FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'`,
+          [testBookingId]
+        );
+        expect(adjResult.rows.length).toBe(0);
+      });
+
+      // Zero redistribution: old product had no prior paid rent.
+      // New product must be funded entirely from the exchange payment (not from any phantom credit).
+      test('old product with 0 prior paid rent: new product funded entirely from exchange payment', async () => {
+        // testBookingProductId: effective_rent=2500, paid_amount=0 (default from beforeEach)
+        // exchange_penalty = 10% of 2500 = 250; downgrade_penalty = max(0, 2500-(250+3000)) = 0
+        // paymentAmount = 250 (penalty) + 3000 (full new rent, no prior credit) = 3250
+        const paymentAmount = 3250;
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+          'Zero redistribution test',
+          String(testUserId),
+          { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
+        );
+
+        const newBpId = result.new_booking_product_ids[0];
+
+        // Old product rent: due=0, paid=0 (was already 0 before; still zeroed correctly)
+        const oldRent = await pool.query(
+          `SELECT due_amount, paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [testBookingProductId]
+        );
+        expect(oldRent.rows[0].due_amount).toBe(0);
+        expect(oldRent.rows[0].paid_amount).toBe(0);
+
+        // Exchange penalty paid from payment (not from any phantom redistribution)
+        const penalty = await pool.query(
+          `SELECT paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'exchange_penalty'`,
+          [testBookingProductId]
+        );
+        expect(penalty.rows[0].paid_amount).toBe(250);
+
+        // New product rent = 0 (redistribution) + (3250 - 250) = 3000: fully covered
+        const newRent = await pool.query(
+          `SELECT paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [newBpId]
+        );
+        expect(newRent.rows[0].paid_amount).toBe(3000);
+      });
+
+      // 1-to-2 exchange: pool fills the highest-rent new product first (ORDER BY rent DESC),
+      // remainder flows to the second. Confirms sequential (not proportional) fill.
+      test('1-to-2 exchange: pool fills highest-rent new product first, remainder to second', async () => {
+        await pool.query(`DELETE FROM products WHERE code = 'TEST003'`);
+        const product3 = await pool.query(
+          `INSERT INTO products (name, code, category, size, rent, security_deposit)
+           VALUES ('Test Product 3', 'TEST003', 'Test', 'S', 400, 800)
+           RETURNING id`
+        );
+        const testProductId3 = product3.rows[0].id;
+
+        try {
+          // exchange_penalty = 250. No prior paid → redistribution = 0.
+          // 2 new products: newA (rent=1500), newB (rent=2500).
+          // settleExchange processes ORDER BY rent DESC → newB first, then newA.
+          // paymentAmount = 2000: pool = 0 + 2000 = 2000.
+          // After penalty: remaining = 1750.
+          // newB (due=2500): toApply = min(1750, 2500) = 1750 → paid=1750. remaining=0.
+          // newA (due=1500): remaining=0 → paid=0.
+          const paymentAmount = 2000;
+
+          const result = await productLifecycleService.exchangeProduct(
+            testBookingProductId,
+            [
+              { productId: testProductId2, rent: 1500, securityDeposit: 600 },
+              { productId: testProductId3, rent: 2500, securityDeposit: 1000 }
+            ],
+            '1-to-2 exchange sequential fill test',
+            String(testUserId),
+            { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
+          );
+
+          expect(result.new_booking_product_ids).toHaveLength(2);
+
+          // Identify which new bp has rent=2500 (high) and rent=1500 (low)
+          const newBps = await pool.query(
+            `SELECT id, rent FROM booking_products WHERE id = ANY($1) ORDER BY rent DESC`,
+            [result.new_booking_product_ids]
+          );
+          const highRentBpId = newBps.rows[0].id; // rent=2500
+          const lowRentBpId = newBps.rows[1].id;  // rent=1500
+
+          // High-rent product receives 1750 (all remaining after penalty)
+          const highRent = await pool.query(
+            `SELECT paid_amount FROM product_charges
+             WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+            [highRentBpId]
+          );
+          expect(highRent.rows[0].paid_amount).toBe(1750);
+
+          // Low-rent product receives 0 (pool exhausted by high-rent product)
+          const lowRent = await pool.query(
+            `SELECT paid_amount FROM product_charges
+             WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+            [lowRentBpId]
+          );
+          expect(lowRent.rows[0].paid_amount).toBe(0);
+        } finally {
+          await pool.query('DELETE FROM products WHERE id = $1', [testProductId3]);
+        }
+      });
+
+      // Downgrade penalty: when new product rent < (old effective_rent - exchange_penalty),
+      // both exchange_penalty and downgrade_penalty are paid in full before any rent is covered.
+      test('downgrade penalty paid in full before new product rent is funded', async () => {
+        // testBookingProductId: effective_rent=2500, 0 prior paid
+        // exchange_penalty = 10% of 2500 = 250
+        // new product rent = 1000 → downgrade_penalty = max(0, 2500 - (250 + 1000)) = 1250
+        // paymentAmount = 250 + 1250 + 1000 = 2500 (exact: covers both penalties + new rent)
+        const paymentAmount = 2500;
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, rent: 1000, securityDeposit: 400 }],
+          'Downgrade to lower rent product',
+          String(testUserId),
+          { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
+        );
+
+        expect(result.exchange_penalty).toBe(250);
+        expect(result.downgrade_penalty).toBe(1250);
+
+        const newBpId = result.new_booking_product_ids[0];
+
+        // exchange_penalty fully paid (priority 1)
+        const exchPenalty = await pool.query(
+          `SELECT paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'exchange_penalty'`,
+          [testBookingProductId]
+        );
+        expect(exchPenalty.rows[0].paid_amount).toBe(250);
+
+        // downgrade_penalty fully paid (priority 2)
+        const downgradePenalty = await pool.query(
+          `SELECT paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'downgrade_penalty'`,
+          [testBookingProductId]
+        );
+        expect(downgradePenalty.rows[0].paid_amount).toBe(1250);
+
+        // New product rent paid only after both penalties consumed (priority 3)
+        // pool = 0 + 2500 = 2500; after 250+1250 = 1000 remaining → rent paid = 1000
+        const newRent = await pool.query(
+          `SELECT paid_amount FROM product_charges
+           WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+          [newBpId]
+        );
+        expect(newRent.rows[0].paid_amount).toBe(1000);
+      });
+    });
   });
 
   describe('cancelProduct', () => {

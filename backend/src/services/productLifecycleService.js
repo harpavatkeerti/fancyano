@@ -144,53 +144,32 @@ class ProductLifecycleService {
         );
       }
 
-      // STEP 3: Redistribute old product's rent credit via adjustment
-      // The old rent paid is credited toward new charges (rent first, then penalties)
-      // Must happen BEFORE exchange payment so B's rent is partially filled,
-      // and the exchange payment's remaining flows to penalties
-      const oldRentPaidResult = await client.query(
-        `SELECT COALESCE(paid_amount, 0) as paid FROM product_charges 
-         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
-        [bookingProductId]
-      );
-      const rentCredit = parseInt(oldRentPaidResult.rows[0]?.paid) || 0;
-
-      if (rentCredit > 0) {
-        await chargeAccountingService.applyAdjustment(
-          oldBookingProduct.booking_id,
-          rentCredit,
-          'Adjustment',
-          userId,
-          `Exchange credit: ₹${rentCredit} rent from exchanged product #${bookingProductId}`,
-          client  // same transaction
-        );
-      }
-
-      // STEP 4: Record exchange payment from customer (rent difference + penalties)
-      let paymentResult = null;
-      const paymentAmount = payment.amount || 0;
-      if (paymentAmount > 0) {
-        await chargeAccountingService.applyPayment(
-          oldBookingProduct.booking_id,
-          paymentAmount,
-          payment.method || 'Cash',
-          payment.recorded_by || userId,
-          payment.notes || 'Exchange payment',
-          client  // same transaction
-        );
-
-        paymentResult = {
-          amount: paymentAmount,
-          method: payment.method || 'Cash',
-          transaction_recorded: true
-        };
-      }
-
-      // STEP 5: Status change LAST — mark old product as exchanged
+      // STEP 3: Mark old product as exchanged FIRST — waterfall now excludes it
       await client.query(
         'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
         ['exchanged', bookingProductId]
       );
+
+      // STEP 4: Settle exchange finances — zeros old product's rent, combines old rent credit
+      // + payment into one pool, pays penalties first, drains remainder into new product(s)'
+      // rent only. Records a single payment_transaction only when paymentAmount > 0.
+      const paymentAmount = payment.amount || 0;
+      await chargeAccountingService.settleExchange(
+        oldBookingProduct.booking_id,
+        bookingProductId,
+        newBookingProductIds,
+        paymentAmount,
+        payment.method || 'Cash',
+        payment.recorded_by || userId,
+        payment.notes || 'Exchange payment',
+        client
+      );
+
+      const paymentResult = paymentAmount > 0 ? {
+        amount: paymentAmount,
+        method: payment.method || 'Cash',
+        transaction_recorded: true
+      } : null;
 
       // Revoke the exchanged product's global discount share
       if (oldBookingProduct.global_discount_share > 0) {
@@ -233,8 +212,7 @@ class ProductLifecycleService {
           {
             old_product_id: oldBookingProduct.product_id,
             new_product_ids: newProducts.map(p => p.productId),
-            new_booking_product_ids: newBookingProductIds,
-            rent_credit: rentCredit
+            new_booking_product_ids: newBookingProductIds
           },
           userId
         ]

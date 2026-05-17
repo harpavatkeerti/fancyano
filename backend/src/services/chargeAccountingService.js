@@ -894,6 +894,108 @@ class ChargeAccountingService {
   }
 
   /**
+   * Settle the financial side of an exchange in one operation:
+   * Zeros the old product's rent, then distributes (oldRentPaid + paymentAmount) as:
+   * exchange_penalty → downgrade_penalty → new product(s)' rent.
+   * Records a single payment_transaction when paymentAmount > 0.
+   * No other pre-existing product in the booking is touched.
+   * @param {number} bookingId
+   * @param {number} oldBookingProductId
+   * @param {number[]} newBookingProductIds
+   * @param {number} paymentAmount - 0 if no payment collected at exchange time
+   * @param {string} method
+   * @param {string} recordedBy
+   * @param {string} notes
+   * @param {Object} client
+   */
+  async settleExchange(bookingId, oldBookingProductId, newBookingProductIds, paymentAmount, method, recordedBy, notes, client) {
+    const oldRentResult = await client.query(
+      `SELECT paid_amount FROM product_charges
+       WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+      [oldBookingProductId]
+    );
+    const oldRentPaid = oldRentResult.rows[0].paid_amount;
+
+    await client.query(
+      `UPDATE product_charges SET due_amount = 0, paid_amount = 0, updated_at = CURRENT_TIMESTAMP
+       WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+      [oldBookingProductId]
+    );
+
+    let remaining = oldRentPaid + paymentAmount;
+    remaining = await this._paySpecificCharge(oldBookingProductId, 'exchange_penalty', remaining, client);
+    remaining = await this._paySpecificCharge(oldBookingProductId, 'downgrade_penalty', remaining, client);
+
+    if (remaining > 0) {
+      const newRentResult = await client.query(
+        `SELECT pc.id as charge_id, pc.due_amount
+         FROM booking_products bp
+         JOIN product_charges pc ON pc.booking_product_id = bp.id
+         WHERE bp.id = ANY($1::int[])
+           AND pc.charge_type = 'rent'
+         ORDER BY bp.rent DESC`,
+        [newBookingProductIds]
+      );
+      for (const row of newRentResult.rows) {
+        if (remaining <= 0) break;
+        const toApply = Math.min(remaining, row.due_amount);
+        await client.query(
+          `UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP
+           WHERE id = $2`,
+          [toApply, row.charge_id]
+        );
+        remaining -= toApply;
+      }
+    }
+
+    if (paymentAmount > 0) {
+      await client.query(
+        `INSERT INTO payment_transactions
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP)`,
+        [bookingId, paymentAmount, method, notes || 'Exchange payment', recordedBy]
+      );
+
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, 'exchange_payment', $2, $3)`,
+        [bookingId, JSON.stringify({ amount: paymentAmount, old_product: oldBookingProductId, new_products: newBookingProductIds }), recordedBy]
+      );
+    }
+  }
+
+  /**
+   * Pay a specific charge type on a specific booking product.
+   * @param {number} bookingProductId
+   * @param {string} chargeType
+   * @param {number} amount
+   * @param {Object} client
+   * @returns {number} remaining amount after payment
+   */
+  async _paySpecificCharge(bookingProductId, chargeType, amount, client) {
+    const result = await client.query(
+      `SELECT id, due_amount, paid_amount FROM product_charges
+       WHERE booking_product_id = $1 AND charge_type = $2`,
+      [bookingProductId, chargeType]
+    );
+
+    if (result.rows.length === 0) return amount;
+
+    const charge = result.rows[0];
+    const outstanding = charge.due_amount - charge.paid_amount;
+    if (outstanding <= 0) return amount;
+
+    const toApply = Math.min(amount, outstanding);
+    await client.query(
+      `UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2`,
+      [toApply, charge.id]
+    );
+
+    return amount - toApply;
+  }
+
+  /**
    * Distribute amount proportionally across products by rent.
    * Uses floor() for each, assigns remainder to the product with highest rent (first in array).
    * @param {Array} products - sorted by rent DESC
