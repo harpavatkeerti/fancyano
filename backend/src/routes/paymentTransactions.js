@@ -56,7 +56,8 @@ router.post('/', async (req, res) => {
       type,
       booking_product_id,
       deduction_amount,
-      deduction_type
+      deduction_type,
+      security_product_ids
     } = req.body;
 
     // Accept both 'payment_method' and 'method' for compatibility
@@ -96,7 +97,11 @@ router.post('/', async (req, res) => {
       amount,
       resolvedMethod,
       recorded_by,
-      notes
+      notes,
+      null,
+      (Array.isArray(security_product_ids) && security_product_ids.length > 0)
+        ? security_product_ids
+        : null
     );
 
     res.status(201).json({

@@ -929,6 +929,15 @@ export default function OrderDetailsPage() {
               onExchangeComplete={fetchBooking}
               userRole="admin"
               bookingStatus={booking.status}
+              securityPaidByProduct={
+                paymentSummary?.products?.reduce(
+                  (acc: Record<number, number>, p: any) => {
+                    acc[p.product.id] = p.charges?.security?.paid ?? 0;
+                    return acc;
+                  },
+                  {}
+                ) ?? {}
+              }
             />
           </div>
         )}

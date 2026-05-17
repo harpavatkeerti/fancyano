@@ -18,6 +18,7 @@ interface ProductExchangeProps {
   userRole?: 'admin' | 'salesman';
   userName?: string;
   bookingStatus?: string;
+  securityPaidByProduct?: Record<number, number>; // bookingProductId → security paid amount
 }
 
 export function ProductExchange({
@@ -27,7 +28,8 @@ export function ProductExchange({
   onExchangeComplete,
   userRole = 'admin',
   userName,
-  bookingStatus
+  bookingStatus,
+  securityPaidByProduct = {}
 }: ProductExchangeProps) {
   const [exchanges, setExchanges] = useState<any[]>([]);
   const [showExchangeModal, setShowExchangeModal] = useState(false);
@@ -829,11 +831,16 @@ export function ProductExchange({
                   className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"
                 >
                   <option value="">Select product to exchange</option>
-                  {currentProducts.map((product) => (
-                    <option key={product.id} value={product.id}>
-                      {product.name} ({product.code}) - ₹{product.effective_rent || product.rent}/day
-                    </option>
-                  ))}
+                  {currentProducts.map((product) => {
+                    const secPaid = securityPaidByProduct[product.id] ?? 0;
+                    const isDisabled = secPaid > 0;
+                    return (
+                      <option key={product.id} value={product.id} disabled={isDisabled}>
+                        {product.name} ({product.code}) — ₹{product.effective_rent || product.rent}/day
+                        {isDisabled ? ` (Security paid ₹${secPaid.toLocaleString('en-IN')} — not exchangeable)` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 

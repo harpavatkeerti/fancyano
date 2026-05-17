@@ -6,7 +6,9 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi, lifecycleApi, PaymentSummary } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, PaymentMethodInput } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, PaymentMethodInput, SecurityAllocationSection } from '@/components/common';
+import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
+import { toEligibleSecProducts } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
@@ -63,6 +65,19 @@ export default function OrderDetailsPage() {
     refundToCustomer: 0,
     hasTransport: false,
   });
+
+  // Boundary warning + security allocation state
+  const {
+    securityPortion, rentPortion,
+    boundaryAcknowledged, setBoundaryAcknowledged,
+    eligibleSecProducts,
+    selectedSecProductIds, setSelectedSecProductIds,
+    projectedSecAllocation,
+    secAllocationError,
+    updateSplit,
+    resetAll: resetSecurityState,
+    canConfirmSecurity,
+  } = useSecurityAllocation();
 
   // Helper function to calculate paid amount excluding exchange penalties
 
@@ -840,6 +855,9 @@ export default function OrderDetailsPage() {
       refundToCustomer: refund,
       hasTransport,
     });
+
+    // Boundary warning + allocation state
+    updateSplit(securityPayment, rentPayment, paymentSummary?.products ?? []);
   }
 
   async function saveTransportationCharges() {
@@ -902,7 +920,7 @@ export default function OrderDetailsPage() {
         return;
       }
 
-      await paymentTransactionsApi.create({
+      const paymentPayload: any = {
         booking_id: bookingId,
         amount: amount,
         type: 'payment',
@@ -910,7 +928,13 @@ export default function OrderDetailsPage() {
         method: paymentMethod,
         recorded_by: 'Salesman',
         notes: paymentNotes || 'Payment recorded from customer',
-      });
+      };
+
+      if (securityPortion > 0 && selectedSecProductIds.length > 0) {
+        paymentPayload.security_product_ids = selectedSecProductIds;
+      }
+
+      await paymentTransactionsApi.create(paymentPayload);
 
       toast.success('Payment recorded successfully!');
       setShowRecordPayment(false);
@@ -918,6 +942,7 @@ export default function OrderDetailsPage() {
       setPaymentAmount('');
       setPaymentMethod('Cash');
       setPaymentNotes('');
+      resetSecurityState();
 
       // Auto-confirm booking after first payment if still pending
       if (booking?.status === 'pending') {
@@ -1556,6 +1581,15 @@ export default function OrderDetailsPage() {
                 userRole="salesman"
                 bookingStatus={booking.status}
                 userName={userName}
+                securityPaidByProduct={
+                  paymentSummary?.products?.reduce(
+                    (acc: Record<number, number>, p: any) => {
+                      acc[p.product.id] = p.charges?.security?.paid ?? 0;
+                      return acc;
+                    },
+                    {}
+                  ) ?? {}
+                }
               />
             </div>
           )}
@@ -2361,6 +2395,7 @@ export default function OrderDetailsPage() {
                   setPaymentAmount('');
                   setPaymentMethod('Cash');
                   setPaymentNotes('');
+                  resetSecurityState();
                 }}
                 className="mr-4 text-gray-600 hover:text-gray-900"
               >
@@ -2463,17 +2498,68 @@ export default function OrderDetailsPage() {
                   </div>
                 </div>
 
+                {/* Boundary Warning — shown when payment crosses rent/security line */}
+                {securityPortion > 0 && rentPortion > 0 && (
+                  <div className="mt-4 bg-amber-50 border border-amber-300 rounded-lg p-4">
+                    <div className="flex items-start gap-3 mb-3">
+                      <span className="text-xl flex-shrink-0">⚠️</span>
+                      <div>
+                        <p className="font-semibold text-amber-900 mb-1">Payment spans two categories</p>
+                        <p className="text-sm text-amber-800">This payment will be credited as:</p>
+                      </div>
+                    </div>
+                    <div className="ml-8 space-y-1 mb-4">
+                      <div className="flex justify-between text-sm font-medium text-amber-900">
+                        <span>Rent / other charges</span>
+                        <span>₹{rentPortion.toLocaleString('en-IN')}</span>
+                      </div>
+                      <div className="flex justify-between text-sm font-medium text-amber-900">
+                        <span>Security deposit</span>
+                        <span>₹{securityPortion.toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                    <label className="flex items-start gap-3 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={boundaryAcknowledged}
+                        onChange={e => setBoundaryAcknowledged(e.target.checked)}
+                        className="mt-1 w-4 h-4 text-amber-600 rounded"
+                      />
+                      <span className="text-sm text-amber-900">
+                        I confirm this split is correct before proceeding
+                      </span>
+                    </label>
+                  </div>
+                )}
+
+                {/* Security Allocation Section */}
+                {securityPortion > 0 && (rentPortion === 0 || boundaryAcknowledged) && (
+                  <SecurityAllocationSection
+                    securityAmount={securityPortion}
+                    eligibleProducts={eligibleSecProducts}
+                    selectedIds={selectedSecProductIds}
+                    onSelectionChange={setSelectedSecProductIds}
+                    projectedAllocation={projectedSecAllocation}
+                    error={secAllocationError}
+                  />
+                )}
+
                 {/* Confirm Button */}
-                <button
-                  onClick={confirmPaymentRecord}
-                  disabled={paymentBreakdown.refundToCustomer > 0}
-                  className={`w-full max-w-sm mx-auto block px-6 py-3 rounded-lg font-bold transition-colors ${paymentBreakdown.refundToCustomer > 0
-                    ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                    : 'bg-green-600 text-white hover:bg-green-700'
-                    }`}
-                >
-                  CONFIRM & SAVE
-                </button>
+                {(() => {
+                  const canConfirm = !paymentBreakdown.refundToCustomer && canConfirmSecurity;
+                  return (
+                    <button
+                      onClick={confirmPaymentRecord}
+                      disabled={!canConfirm}
+                      className={`w-full max-w-sm mx-auto block px-6 py-3 rounded-lg font-bold transition-colors mt-6 ${!canConfirm
+                        ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                        : 'bg-green-600 text-white hover:bg-green-700'
+                        }`}
+                    >
+                      CONFIRM & SAVE
+                    </button>
+                  );
+                })()}
               </div>
             )}
           </div>

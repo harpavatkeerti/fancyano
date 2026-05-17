@@ -6,6 +6,8 @@ import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
+import { SecurityAllocationSection } from './SecurityAllocationSection';
+import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
 
 interface PaymentManagementProps {
   bookingId: number;
@@ -24,6 +26,8 @@ interface Product {
   name: string;
   security_deposit: number;
   rent: number;
+  booked_from?: string;
+  status?: string;
 }
 
 export function PaymentManagement({
@@ -52,6 +56,18 @@ export function PaymentManagement({
   const [itemRefunds, setItemRefunds] = useState<{ [key: number]: { selected: boolean; amount: string; notes: string } }>({});
   const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
 
+  // Boundary warning + security allocation state
+  const {
+    securityPortion, rentPortion,
+    boundaryAcknowledged, setBoundaryAcknowledged,
+    eligibleSecProducts,
+    selectedSecProductIds, setSelectedSecProductIds,
+    projectedSecAllocation,
+    secAllocationError,
+    updateSplit,
+    resetAll: resetSecurityState,
+    canConfirmSecurity,
+  } = useSecurityAllocation();
 
   useEffect(() => {
     fetchBookingData();
@@ -60,6 +76,27 @@ export function PaymentManagement({
     // Auto-check and update status on page load (for orders with completed refunds)
     calculateAndUpdateBookingStatus();
   }, [bookingId, refreshTrigger]);
+
+  // Recompute security/rent portions live as the admin types the amount
+  useEffect(() => {
+    if (transactionType !== 'payment' || !summary) {
+      resetSecurityState();
+      return;
+    }
+    const amount = parseFloat(formData.amount) || 0;
+    if (amount <= 0) {
+      resetSecurityState();
+      return;
+    }
+    const nonSecOutstanding = Math.max(0,
+      (summary.charges.rent.due - summary.charges.rent.paid) +
+      (summary.charges.transport.due - summary.charges.transport.paid) +
+      (summary.charges.penalties.due - summary.charges.penalties.paid) +
+      (summary.charges.fees.due - summary.charges.fees.paid)
+    );
+    const secAmt = Math.max(0, amount - nonSecOutstanding);
+    updateSplit(secAmt, amount - secAmt, summary.products ?? []);
+  }, [formData.amount, summary, transactionType]);
 
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
@@ -159,18 +196,25 @@ export function PaymentManagement({
         }
       }
 
-      await paymentTransactionsApi.create({
+      const payload: any = {
         booking_id: bookingId,
         amount: amount,
         type: transactionType,
         method: formData.method,
         recorded_by: 'Admin', // TODO: Get from auth context
         notes: formData.notes || undefined,
-      });
+      };
+
+      if (transactionType === 'payment' && securityPortion > 0 && selectedSecProductIds.length > 0) {
+        payload.security_product_ids = selectedSecProductIds;
+      }
+
+      await paymentTransactionsApi.create(payload);
 
       toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
       setShowRecordModal(false);
       setFormData({ amount: '', method: 'Cash', notes: '' });
+      resetSecurityState();
 
       // Refresh transactions and summary
       await fetchTransactions();
@@ -953,7 +997,7 @@ export function PaymentManagement({
       ) : showRecordModal ? (
         // Simple Modal for Payment/Adjustment
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
+          <div className="bg-white rounded-lg max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-xl font-bold text-gray-900 mb-4">
               {transactionType === 'payment' ? '💰 Collect Payment' : transactionType === 'refund' ? '💸 Refund Payment' : 'Record Adjustment'}
             </h3>
@@ -985,11 +1029,58 @@ export function PaymentManagement({
               />
             </div>
 
+            {/* Boundary warning — only when payment crosses rent/security line */}
+            {transactionType === 'payment' && securityPortion > 0 && rentPortion > 0 && (
+              <div className="mt-4 bg-amber-50 border border-amber-300 rounded-lg p-4">
+                <div className="flex items-start gap-3 mb-3">
+                  <span className="text-xl flex-shrink-0">⚠️</span>
+                  <div>
+                    <p className="font-semibold text-amber-900 mb-1">Payment spans two categories</p>
+                    <p className="text-sm text-amber-800">This payment will be credited as:</p>
+                  </div>
+                </div>
+                <div className="ml-8 space-y-1 mb-4">
+                  <div className="flex justify-between text-sm font-medium text-amber-900">
+                    <span>Rent / other charges</span>
+                    <span>₹{rentPortion.toLocaleString('en-IN')}</span>
+                  </div>
+                  <div className="flex justify-between text-sm font-medium text-amber-900">
+                    <span>Security deposit</span>
+                    <span>₹{securityPortion.toLocaleString('en-IN')}</span>
+                  </div>
+                </div>
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={boundaryAcknowledged}
+                    onChange={e => setBoundaryAcknowledged(e.target.checked)}
+                    className="mt-1 w-4 h-4 text-amber-600 rounded"
+                  />
+                  <span className="text-sm text-amber-900">
+                    I confirm this split is correct before proceeding
+                  </span>
+                </label>
+              </div>
+            )}
+
+            {/* Security allocation — shown when any amount goes to security and boundary is ack'd */}
+            {transactionType === 'payment' && securityPortion > 0 && (rentPortion === 0 || boundaryAcknowledged) && (
+              <SecurityAllocationSection
+                securityAmount={securityPortion}
+                eligibleProducts={eligibleSecProducts}
+                selectedIds={selectedSecProductIds}
+                onSelectionChange={setSelectedSecProductIds}
+                projectedAllocation={projectedSecAllocation}
+                error={secAllocationError}
+              />
+            )}
+
             <div className="flex gap-3 mt-6">
               <Button
                 onClick={() => {
                   setShowRecordModal(false);
                   setFormData({ amount: '', method: 'Cash', notes: '' });
+                  resetSecurityState();
                 }}
                 className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800"
               >
@@ -997,8 +1088,9 @@ export function PaymentManagement({
               </Button>
               <Button
                 onClick={handleSubmit}
+                disabled={transactionType === 'payment' && !canConfirmSecurity}
                 className={`flex-1 text-white ${transactionType === 'payment'
-                  ? 'bg-green-600 hover:bg-green-700'
+                  ? 'bg-green-600 hover:bg-green-700 disabled:bg-green-300 disabled:cursor-not-allowed'
                   : transactionType === 'refund'
                     ? 'bg-red-600 hover:bg-red-700'
                     : 'bg-blue-600 hover:bg-blue-700'

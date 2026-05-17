@@ -135,6 +135,7 @@ export interface PaymentSummary {
     product_name: string;
     product_code: string;
     status: string;
+    booked_from: string;
     rent: number;
     security_deposit: number;
     charges: ProductCharge[];

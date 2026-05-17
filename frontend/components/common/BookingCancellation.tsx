@@ -186,10 +186,12 @@ export function BookingCancellation({
       const response = await bookingCancellationApi.preview(bookingId);
       setPreview(response.data);
 
-      // Initialize all products as selected if none selected yet
+      // Initialize all eligible (non-security-paid) products as selected if none selected yet
       if (selectedProducts.length === 0 && response.data.all_products.length > 0) {
-        const allIds = response.data.all_products.map((p: Product) => p.product_id);
-        setSelectedProducts(allIds);
+        const eligibleIds = response.data.all_products
+          .filter((p: Product) => (p.security_paid ?? 0) === 0)
+          .map((p: Product) => p.product_id);
+        setSelectedProducts(eligibleIds);
       }
 
       // Fetch payment summary to know remaining dues
@@ -220,6 +222,8 @@ export function BookingCancellation({
   }
 
   function handleProductSelection(productId: number, checked: boolean) {
+    const product = preview?.all_products.find(p => p.product_id === productId);
+    if (product && (product.security_paid ?? 0) > 0) return;
     if (checked) {
       setSelectedProducts(prev => [...prev, productId]);
     } else {
@@ -229,7 +233,10 @@ export function BookingCancellation({
 
   function handleSelectAll(checked: boolean) {
     if (checked && preview) {
-      setSelectedProducts(preview.all_products.map(p => p.product_id));
+      const eligible = preview.all_products
+        .filter(p => (p.security_paid ?? 0) === 0)
+        .map(p => p.product_id);
+      setSelectedProducts(eligible);
     } else {
       setSelectedProducts([]);
     }
@@ -395,7 +402,10 @@ export function BookingCancellation({
                       <label className="flex items-center space-x-2 cursor-pointer">
                         <input
                           type="checkbox"
-                          checked={selectedProducts.length === preview.all_products.length}
+                          checked={(() => {
+                            const eligible = preview.all_products.filter(p => (p.security_paid ?? 0) === 0);
+                            return eligible.length > 0 && selectedProducts.length === eligible.length;
+                          })()}
                           onChange={(e) => handleSelectAll(e.target.checked)}
                           className="w-4 h-4 text-blue-600 rounded"
                         />
@@ -405,6 +415,7 @@ export function BookingCancellation({
 
                     <div className="space-y-2">
                       {preview.all_products.map((product) => {
+                        const hasSecurityPaid = (product.security_paid ?? 0) > 0;
                         const isSelected = selectedProducts.includes(product.product_id);
                         const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
                         const calculatedPenalty = penaltyProduct ? penaltyProduct.penalty_amount : 0;
@@ -413,21 +424,33 @@ export function BookingCancellation({
                         return (
                           <div
                             key={product.product_id}
-                            className={`border rounded-lg p-4 ${isSelected ? 'border-blue-500 bg-blue-50' : 'border-gray-200'
-                              }`}
+                            className={`border rounded-lg p-4 ${
+                              hasSecurityPaid
+                                ? 'border-gray-200 bg-gray-100 opacity-60'
+                                : isSelected
+                                  ? 'border-blue-500 bg-blue-50'
+                                  : 'border-gray-200'
+                            }`}
                           >
                             <div className="flex items-start space-x-3">
                               <input
                                 type="checkbox"
                                 checked={isSelected}
+                                disabled={hasSecurityPaid}
                                 onChange={(e) => handleProductSelection(product.product_id, e.target.checked)}
-                                className="mt-1 w-5 h-5 text-blue-600 rounded"
+                                className="mt-1 w-5 h-5 text-blue-600 rounded disabled:cursor-not-allowed"
                               />
                               <div className="flex-1">
                                 <div className="flex justify-between">
                                   <div>
                                     <h4 className="font-medium text-gray-900">{product.name}</h4>
                                     <p className="text-sm text-gray-600">Code: {product.code}</p>
+                                    {hasSecurityPaid && (
+                                      <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                                        <span>🔒</span>
+                                        <span>Security paid (₹{product.security_paid.toLocaleString('en-IN')}) — cannot cancel</span>
+                                      </p>
+                                    )}
                                   </div>
                                   <div className="text-right">
                                     <p className="text-sm text-gray-600">

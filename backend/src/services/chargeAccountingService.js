@@ -72,6 +72,7 @@ class ChargeAccountingService {
           product_name: p.product_name,
           product_code: p.product_code,
           status: p.status,
+          booked_from: p.booked_from,
           rent: p.rent,
           security_deposit: p.security_deposit,
           charges: p.charges
@@ -185,9 +186,11 @@ class ChargeAccountingService {
    * @param {string} paymentMethod - Payment method (Cash, Card, etc.)
    * @param {string} recordedBy - User who recorded the payment
    * @param {string} notes - Optional notes
+   * @param {Object} [existingClient] - Optional DB client for running within an existing transaction
+   * @param {number[]|null} [securityProductIds] - Optional list of booking_product IDs to restrict security allocation
    * @returns {Promise<Object>} - Payment details with breakdown
    */
-  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient) {
+  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient, securityProductIds = null) {
     return await this._applyPaymentOrAdjustment(
       bookingId,
       paymentAmount,
@@ -196,7 +199,8 @@ class ChargeAccountingService {
       notes,
       'payment',
       'payment_applied',
-      existingClient
+      existingClient,
+      securityProductIds
     );
   }
 
@@ -206,9 +210,10 @@ class ChargeAccountingService {
    * @param {number} bookingId
    * @param {number} paymentAmount - Amount in integer (paise/cents)
    * @param {Object} client - Database client (transaction)
+   * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation
    * @returns {Promise<Object>} - Payment application breakdown
    */
-  async _applyPaymentInternal(bookingId, paymentAmount, client) {
+  async _applyPaymentInternal(bookingId, paymentAmount, client, securityProductIds = null) {
     const breakdown = {
       total_applied: paymentAmount,
       applications: []
@@ -233,7 +238,7 @@ class ChargeAccountingService {
     if (remaining <= 0) return breakdown;
 
     // Priority 5: Security
-    remaining = await this._applyToSecurity(bookingId, remaining, breakdown, client);
+    remaining = await this._applyToSecurity(bookingId, remaining, breakdown, client, securityProductIds);
     if (remaining <= 0) return breakdown;
 
     return breakdown;
@@ -367,19 +372,57 @@ class ChargeAccountingService {
 
   /**
    * Apply payment to security charges
+   * @param {number[]|null} [productIds] - When provided, restrict allocation to these booking_product IDs
+   *   and use partial-paid-first sort order. When null/empty, use existing pickup-date waterfall.
    */
-  async _applyToSecurity(bookingId, amount, breakdown, client) {
-    const charges = await client.query(
-      `SELECT pc.*, bp.id as booking_product_id
-       FROM product_charges pc
-       JOIN booking_products bp ON pc.booking_product_id = bp.id
-       WHERE bp.booking_id = $1 
-       AND bp.status NOT IN ('exchanged', 'cancelled')
-       AND pc.charge_type = 'security'
-       AND pc.paid_amount < pc.due_amount
-       ORDER BY bp.booked_from ASC, bp.id ASC`,
-      [bookingId]
-    );
+  async _applyToSecurity(bookingId, amount, breakdown, client, productIds = null) {
+    const hasProductFilter = productIds && productIds.length > 0;
+    let query;
+    let queryParams;
+
+    if (hasProductFilter) {
+      // User-specified allocation: partial-paid products first (asc remaining), then by pickup date
+      query = `SELECT pc.*, bp.id as booking_product_id
+               FROM product_charges pc
+               JOIN booking_products bp ON pc.booking_product_id = bp.id
+               WHERE bp.booking_id = $1
+                 AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+                 AND pc.charge_type = 'security'
+                 AND pc.paid_amount < pc.due_amount
+                 AND bp.id = ANY($2::int[])
+               ORDER BY (pc.paid_amount > 0) DESC,
+                        (pc.due_amount - pc.paid_amount) ASC,
+                        bp.booked_from ASC, bp.id ASC`;
+      queryParams = [bookingId, productIds];
+    } else {
+      // Existing behavior: all eligible products ordered by pickup date
+      query = `SELECT pc.*, bp.id as booking_product_id
+               FROM product_charges pc
+               JOIN booking_products bp ON pc.booking_product_id = bp.id
+               WHERE bp.booking_id = $1
+                 AND bp.status NOT IN ('exchanged', 'cancelled')
+                 AND pc.charge_type = 'security'
+                 AND pc.paid_amount < pc.due_amount
+               ORDER BY bp.booked_from ASC, bp.id ASC`;
+      queryParams = [bookingId];
+    }
+
+    const charges = await client.query(query, queryParams);
+
+    if (charges.rows.length === 0) return amount;
+
+    if (hasProductFilter) {
+      const totalCapacity = charges.rows.reduce(
+        (sum, row) => sum + (row.due_amount - row.paid_amount), 0
+      );
+      if (totalCapacity < amount) {
+        throw new Error(
+          `Security allocation insufficient: selected products can absorb ` +
+          `₹${totalCapacity} but ₹${amount} is being credited. ` +
+          `Please select more products or reduce the payment amount.`
+        );
+      }
+    }
 
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'security');
   }
@@ -483,8 +526,9 @@ class ChargeAccountingService {
   /**
    * Internal method to apply payment or adjustment (shared logic)
    * @private
+   * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation (payments only)
    */
-  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient) {
+  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient, securityProductIds = null) {
     const ownClient = !existingClient;
     const client = existingClient || await pool.connect();
     try {
@@ -567,7 +611,7 @@ class ChargeAccountingService {
       }
 
       // Apply payment using internal helper
-      const breakdown = await this._applyPaymentInternal(bookingId, amount, client);
+      const breakdown = await this._applyPaymentInternal(bookingId, amount, client, securityProductIds);
       const totalApplied = amount;
 
       // Create payment transaction record
