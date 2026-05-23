@@ -7,7 +7,7 @@ import { creditNotesApi } from '@/lib/creditNotesApi';
 import { settingsApi } from '@/lib/settingsApi';
 import { productTrackingApi } from '@/lib/productTrackingApi';
 import { Booking } from '@/types';
-import { Button, PaymentManagement, ProductExchange } from '@/components/common';
+import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary } from '@/components/common';
 import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -930,13 +930,7 @@ export default function OrderDetailsPage() {
               userRole="admin"
               bookingStatus={booking.status}
               securityPaidByProduct={
-                paymentSummary?.products?.reduce(
-                  (acc: Record<number, number>, p: any) => {
-                    acc[p.product.id] = p.charges?.security?.paid ?? 0;
-                    return acc;
-                  },
-                  {}
-                ) ?? {}
+                securityPaidByProductFromSummary(paymentSummary?.products ?? [])
               }
             />
           </div>

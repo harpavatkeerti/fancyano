@@ -115,6 +115,12 @@ router.post('/', async (req, res) => {
     if (error.message === 'Payment amount must be greater than 0') {
       return res.status(400).json({ error: error.message });
     }
+    if (error.message.includes('exceeds outstanding balance')) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message.startsWith('Security allocation insufficient')) {
+      return res.status(400).json({ error: error.message });
+    }
     console.error('Error recording transaction:', error);
     res.status(500).json({ error: 'Failed to record transaction', details: error.message });
   }
@@ -161,6 +167,9 @@ router.post('/adjustment', async (req, res) => {
       return res.status(404).json({ error: 'Booking not found' });
     }
     if (error.message.includes('must be greater than 0')) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message.includes('exceeds outstanding balance')) {
       return res.status(400).json({ error: error.message });
     }
     console.error('Error applying adjustment:', error);

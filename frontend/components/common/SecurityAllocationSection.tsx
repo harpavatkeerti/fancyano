@@ -81,6 +81,24 @@ export function computeSecAllocationPreview(
   return { allocation, error: null };
 }
 
+/**
+ * Derives a `Record<bookingProductId, securityPaidAmount>` map from a
+ * `PaymentSummary.products` array. Uses the correct API shape: `booking_product_id`
+ * and `charges` as a JSON array (find by `charge_type === 'security'`).
+ */
+export function securityPaidByProductFromSummary(
+  summaryProducts: Array<{
+    booking_product_id: number;
+    charges: Array<{ charge_type: string; paid_amount: number }>;
+  }>,
+): Record<number, number> {
+  return summaryProducts.reduce<Record<number, number>>((acc, p) => {
+    const secCharge = p.charges?.find(c => c.charge_type === 'security');
+    acc[p.booking_product_id] = secCharge?.paid_amount ?? 0;
+    return acc;
+  }, {});
+}
+
 export interface EligibleSecProduct {
   bpId: number;
   name: string;

@@ -6,9 +6,8 @@ import { useParams, useRouter } from 'next/navigation';
 import { bookingsApi, paymentTransactionsApi, lifecycleApi, PaymentSummary } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, PaymentMethodInput, SecurityAllocationSection } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, PaymentMethodInput, SecurityAllocationSection, securityPaidByProductFromSummary } from '@/components/common';
 import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
-import { toEligibleSecProducts } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
@@ -1582,13 +1581,7 @@ export default function OrderDetailsPage() {
                 bookingStatus={booking.status}
                 userName={userName}
                 securityPaidByProduct={
-                  paymentSummary?.products?.reduce(
-                    (acc: Record<number, number>, p: any) => {
-                      acc[p.product.id] = p.charges?.security?.paid ?? 0;
-                      return acc;
-                    },
-                    {}
-                  ) ?? {}
+                  securityPaidByProductFromSummary(paymentSummary?.products ?? [])
                 }
               />
             </div>

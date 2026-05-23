@@ -16,7 +16,7 @@ export { default as ComplaintForm } from './ComplaintForm';
 export { default as FeedbackForm } from './FeedbackForm';
 export { ProductExchange } from './ProductExchange';
 export { BookingCancellation } from './BookingCancellation';
-export { SecurityAllocationSection, computeSecAllocationPreview, toEligibleSecProducts } from './SecurityAllocationSection';
+export { SecurityAllocationSection, computeSecAllocationPreview, toEligibleSecProducts, securityPaidByProductFromSummary } from './SecurityAllocationSection';
 export type { EligibleSecProduct, SecAllocationEntry } from './SecurityAllocationSection';
 export type { Toast, ToastType } from './Toast';
 export type { ConfirmDialogOptions } from './ConfirmDialog';

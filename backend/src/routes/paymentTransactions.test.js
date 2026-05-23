@@ -82,6 +82,29 @@ describe('Payment Transactions Routes', () => {
 
       expect(response.status).toBe(404);
     });
+
+    it('should include per-product breakdown with booking_product_id and charges as an array', async () => {
+      const response = await request(app).get(`/payments/summary/${testBookingId}`);
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body.products)).toBe(true);
+      expect(response.body.products.length).toBeGreaterThan(0);
+
+      const product = response.body.products[0];
+
+      // booking_product_id must be present — not p.product.id which does not exist on this shape
+      expect(product).toHaveProperty('booking_product_id');
+      expect(typeof product.booking_product_id).toBe('number');
+
+      // charges must be an array of charge rows, not a nested object like charges.security.paid
+      expect(Array.isArray(product.charges)).toBe(true);
+      expect(product.charges.length).toBeGreaterThan(0);
+
+      const secCharge = product.charges.find(c => c.charge_type === 'security');
+      expect(secCharge).toBeDefined();
+      expect(secCharge).toHaveProperty('due_amount');
+      expect(secCharge).toHaveProperty('paid_amount');
+    });
   });
 
   describe('POST /payments', () => {
@@ -489,6 +512,94 @@ describe('Payment Transactions Routes', () => {
         });
 
       expect(response.status).toBe(400);
+    });
+  });
+
+  describe('POST /payments — security_product_ids routing', () => {
+    let allocBookingId;
+    let bpSmallId; // booking_product with security_deposit = 3000
+    let bpLargeId; // booking_product with security_deposit = 9000
+
+    beforeEach(async () => {
+      // Two products with rent=0 and no transport so the entire payment goes to security.
+      // Non-overlapping date ranges avoid availability conflicts with each other.
+      const result = await bookingService.createBooking({
+        customerName: 'Alloc Route Test',
+        customerPhone: 'TEST-PAY-ROUTE',
+        bookingDate: '2024-01-01',
+        products: [
+          { productId: testProductId, bookedFrom: '2024-02-10', bookedTo: '2024-02-12', rent: 0, securityDeposit: 3000 },
+          { productId: testProductId, bookedFrom: '2024-03-10', bookedTo: '2024-03-12', rent: 0, securityDeposit: 9000 },
+        ],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+      allocBookingId = result.booking_id;
+      await bookingService.confirmBooking(allocBookingId, 'test-user');
+
+      const bpResult = await pool.query(
+        `SELECT id FROM booking_products WHERE booking_id = $1 ORDER BY security_deposit ASC`,
+        [allocBookingId]
+      );
+      bpSmallId = bpResult.rows[0].id; // security_deposit = 3000
+      bpLargeId = bpResult.rows[1].id; // security_deposit = 9000
+    });
+
+    it('should return 400 with a descriptive error when selected products cannot absorb the security amount', async () => {
+      // bpSmall capacity = 3000; sending 5000 (all security, no rent/transport) → 3000 < 5000
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: allocBookingId,
+          amount: 5000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          security_product_ids: [bpSmallId],
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/Security allocation insufficient/);
+    });
+
+    it('should succeed when selected products capacity exactly equals the security amount', async () => {
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: allocBookingId,
+          amount: 3000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          security_product_ids: [bpSmallId],
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.payment_details).toHaveProperty('total_applied', 3000);
+    });
+
+    it('should credit only the selected product and leave the other untouched', async () => {
+      await request(app)
+        .post('/payments')
+        .send({
+          booking_id: allocBookingId,
+          amount: 3000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          security_product_ids: [bpSmallId],
+        });
+
+      const smallPaid = await pool.query(
+        `SELECT paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [bpSmallId]
+      );
+      const largePaid = await pool.query(
+        `SELECT paid_amount FROM product_charges
+         WHERE booking_product_id = $1 AND charge_type = 'security'`,
+        [bpLargeId]
+      );
+
+      expect(smallPaid.rows[0].paid_amount).toBe(3000); // bpSmall fully credited
+      expect(largePaid.rows[0].paid_amount).toBe(0);    // bpLarge untouched
     });
   });
 });

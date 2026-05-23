@@ -269,11 +269,29 @@ class ChargeAccountingService {
     }));
 
     const totalOutstanding = products.reduce((s, p) => s + p.outstanding, 0);
-    const toDistribute = Math.min(amount, totalOutstanding);
 
-    // Distribute proportionally by original rent
-    const allocations = this._distributeProportionally(products, toDistribute);
+    if (amount >= totalOutstanding) {
+      // Payment spans into security — pay each product's rent exactly so no
+      // Math.floor rounding leaks into the security tier.
+      for (const p of products) {
+        if (p.outstanding <= 0) continue;
+        await client.query(
+          'UPDATE product_charges SET paid_amount = paid_amount + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [p.outstanding, p.charge_id]
+        );
+        breakdown.applications.push({
+          category: 'rent',
+          charge_type: 'rent',
+          booking_product_id: p.booking_product_id,
+          amount: p.outstanding
+        });
+      }
+      return amount - totalOutstanding;
+    }
 
+    // Payment stays within rent — proportional distribution is fine here
+    // because the rounding stays within rent charges and never reaches security.
+    const allocations = this._distributeProportionally(products, amount);
     let totalApplied = 0;
     for (const alloc of allocations) {
       const toApply = Math.min(alloc.share, alloc.product.outstanding);

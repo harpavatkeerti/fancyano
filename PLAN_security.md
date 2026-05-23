@@ -1009,6 +1009,90 @@ Both the **salesman** portal (`bookingsApi.getPaymentSummary(bookingId)`) and **
 
 ---
 
+---
+
+## Known Bugs (found post-commit, not yet fixed)
+
+### Bug 1 — `securityPaidByProduct` uses wrong API shape (Step 3, exchange gate broken)
+
+**Severity**: High — exchange dropdown will never disable security-paid products  
+**Files**: `frontend/app/salesman/order-details/[id]/page.tsx`, `frontend/app/admin/bookings/[id]/page.tsx`
+
+Both pages derive the `securityPaidByProduct` prop passed to `<ProductExchange>` using the old nested summary shape that does not match the actual API response:
+
+```tsx
+// WRONG — currently in both pages:
+paymentSummary?.products?.reduce(
+  (acc: Record<number, number>, p: any) => {
+    acc[p.product.id] = p.charges?.security?.paid ?? 0;  // ← p.product does not exist; charges is an array
+    return acc;
+  },
+  {}
+) ?? {}
+```
+
+`GET /payment-transactions/summary/:bookingId` returns each product as:
+- `p.booking_product_id` — the booking product ID (not `p.product.id`)
+- `p.charges` — a **JSON array** of charge rows (`{ charge_type, due_amount, paid_amount, ... }`), not a nested object
+
+**Correct derivation**:
+
+```tsx
+paymentSummary?.products?.reduce(
+  (acc: Record<number, number>, p: any) => {
+    const secCharge = p.charges?.find((c: any) => c.charge_type === 'security');
+    acc[p.booking_product_id] = secCharge?.paid_amount ?? 0;
+    return acc;
+  },
+  {}
+) ?? {}
+```
+
+A shared helper `securityPaidByProductFromSummary(products)` should be added next to `toEligibleSecProducts()` in `SecurityAllocationSection.tsx` and used in both pages.
+
+---
+
+### Bug 2 — Security allocation validation error returns HTTP 500 instead of 400
+
+**Severity**: Medium — user sees a generic server error instead of the descriptive validation message  
+**File**: `backend/src/routes/paymentTransactions.js`
+
+When `_applyToSecurity()` throws `"Security allocation insufficient: selected products can absorb ₹X but ₹Y is being credited..."`, the `POST /payment-transactions` route catch block does not match it as a known validation error. It falls through to the generic 500 handler:
+
+```js
+// Current catch — missing the security allocation case:
+} catch (error) {
+  if (error.message === 'Booking not found') { ... }
+  if (error.message === 'Payment amount must be greater than 0') { ... }
+  // ↓ Security allocation error lands here as 500
+  res.status(500).json({ error: 'Failed to record transaction', details: error.message });
+}
+```
+
+**Fix**: Add a specific 400 case before the generic 500:
+
+```js
+if (error.message.startsWith('Security allocation insufficient')) {
+  return res.status(400).json({ error: error.message });
+}
+```
+
+---
+
+### Bug 3 — Unused `toEligibleSecProducts` import in salesman page
+
+**Severity**: Minor — lint warning only, no runtime impact  
+**File**: `frontend/app/salesman/order-details/[id]/page.tsx`
+
+`toEligibleSecProducts` is imported at the top of the file but never called directly — it is invoked internally by `updateSplit()` inside `useSecurityAllocation()`. The import should be removed.
+
+```tsx
+// Line 11 — remove this:
+import { toEligibleSecProducts } from '@/components/common';
+```
+
+---
+
 ## Completion Criteria
 
 All steps marked `[x]` with:
