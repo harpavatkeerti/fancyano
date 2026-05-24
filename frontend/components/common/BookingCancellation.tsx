@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { bookingCancellationApi, bookingsApi, paymentTransactionsApi } from '@/lib/api';
+import { bookingCancellationApi, bookingsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { PaymentMethodInput } from './PaymentMethodInput';
 
@@ -54,6 +54,7 @@ interface CancellationSummary {
   refund_blocked: boolean;
   payment_action: 'collect' | 'refund' | 'blocked' | 'none';
   payment_difference: number;
+  remaining_dues_on_other_products: number;
 }
 
 interface BookingCancellationProps {
@@ -96,7 +97,6 @@ export function BookingCancellation({
   const [showConfirmation, setShowConfirmation] = useState(false);
   const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust' | 'collect'>('refund');
   const [refundMethod, setRefundMethod] = useState('Cash');
-  const [remainingDues, setRemainingDues] = useState(0);
 
   // Booking discount state
   const [bookingDiscount, setBookingDiscount] = useState(0);
@@ -194,15 +194,6 @@ export function BookingCancellation({
         setSelectedProducts(eligibleIds);
       }
 
-      // Fetch payment summary to know remaining dues
-      try {
-        const summaryResponse = await paymentTransactionsApi.getSummary(bookingId);
-        const balance = summaryResponse.data?.totals?.balance || 0;
-        setRemainingDues(Math.max(0, balance));
-      } catch (e) {
-        setRemainingDues(0);
-      }
-
       // Fetch booking to get current final_discount
       try {
         const bookingResponse = await bookingsApi.getById(bookingId);
@@ -270,6 +261,8 @@ export function BookingCancellation({
     // Set default settlement action based on payment scenario
     if (summary?.payment_action === 'collect') {
       setSettlementAction('collect');
+    } else if ((summary?.remaining_dues_on_other_products ?? 0) > 0) {
+      setSettlementAction('adjust');
     } else if (summary?.refund_amount && summary.refund_amount > 0) {
       setSettlementAction('refund');
     }
@@ -323,7 +316,6 @@ export function BookingCancellation({
       setEditingPenalties({});
       setSettlementAction('refund');
       setRefundMethod('Cash');
-      setRemainingDues(0);
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
@@ -754,7 +746,7 @@ export function BookingCancellation({
                     How would you like to handle the ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund?
                   </h4>
 
-                  {remainingDues <= 0 ? (
+                  {(summary.remaining_dues_on_other_products ?? 0) <= 0 ? (
                     // No dues — single option, just pick refund method
                     <div className="p-3 rounded-lg border border-green-300 bg-green-100">
                       <p className="font-medium text-green-900">Refund to Customer</p>
@@ -772,56 +764,29 @@ export function BookingCancellation({
                       />
                     </div>
                   ) : (
-                    // Has dues — two smart options
-                    <div className="space-y-3">
-                      <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
-                        <input
-                          type="radio"
-                          name="settlement"
-                          value="refund"
-                          checked={settlementAction === 'refund'}
-                          onChange={() => setSettlementAction('refund')}
-                          className="mt-1 w-4 h-4 text-green-600"
-                        />
-                        <div>
-                          <p className="font-medium text-green-900">Refund ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} to Customer</p>
-                          <p className="text-xs text-green-700">Return the full amount directly to the customer</p>
-                        </div>
-                      </label>
-                      <label className="flex items-start space-x-3 cursor-pointer p-3 rounded-lg border border-green-200 hover:bg-green-100 transition-colors">
-                        <input
-                          type="radio"
-                          name="settlement"
-                          value="adjust"
-                          checked={settlementAction === 'adjust'}
-                          onChange={() => setSettlementAction('adjust')}
-                          className="mt-1 w-4 h-4 text-green-600"
-                        />
-                        <div>
-                          <p className="font-medium text-green-900">
-                            Adjust ₹{Math.floor(Math.min(summary.refund_amount, remainingDues)).toLocaleString('en-IN')} against dues
-                            {summary.refund_amount > remainingDues && (
-                              <span> + Refund ₹{Math.floor(summary.refund_amount - remainingDues).toLocaleString('en-IN')} to customer</span>
-                            )}
-                          </p>
-                          <p className="text-xs text-green-700">
-                            Clears ₹{Math.floor(Math.min(summary.refund_amount, remainingDues)).toLocaleString('en-IN')} of outstanding dues
-                            {summary.refund_amount > remainingDues
-                              ? `, remaining ₹${Math.floor(summary.refund_amount - remainingDues).toLocaleString('en-IN')} refunded`
-                              : ''}
-                          </p>
-                        </div>
-                      </label>
-
-                      {/* Refund method — shown for both options when there's money going back */}
-                      {(settlementAction === 'refund' || summary.refund_amount > remainingDues) && (
-                        <div className="mt-2 pt-3 border-t border-green-200">
+                    // Has dues — only adjust option (refund is not offered)
+                    <div className="p-3 rounded-lg border border-green-300 bg-green-100">
+                      <p className="font-medium text-green-900">
+                        Adjust ₹{Math.floor(Math.min(summary.refund_amount, summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} against outstanding dues
+                        {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0) && (
+                          <span className="ml-1">+ Refund ₹{Math.floor(summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} to customer</span>
+                        )}
+                      </p>
+                      <p className="text-xs text-green-700 mt-1">
+                        Clears ₹{Math.floor(Math.min(summary.refund_amount, summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} of outstanding dues
+                        {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0)
+                          ? `, remaining ₹${Math.floor(summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} refunded`
+                          : ''}
+                      </p>
+                      {/* Show refund method only when a portion is actually refunded to customer */}
+                      {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0) && (
+                        <div className="mt-3 pt-3 border-t border-green-200">
                           <PaymentMethodInput
                             method={refundMethod}
                             onMethodChange={setRefundMethod}
                             notes={extraRefundNote}
                             onNotesChange={setExtraRefundNote}
-                            amount={summary.refund_amount > remainingDues ? summary.refund_amount - remainingDues : summary.refund_amount}
+                            amount={summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)}
                             colorScheme="green"
                             showQR={false}
                           />

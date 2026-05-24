@@ -56,7 +56,7 @@ describe('Booking Cancellation Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    const testPhones = ['TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST', 'CANCEL-SUMMARY-TEST'];
+    const testPhones = ['TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST', 'CANCEL-SUMMARY-TEST', 'CANCEL-SETTLE-TEST'];
     const phoneList = testPhones.map(p => `'${p}'`).join(',');
     await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
     await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
@@ -699,6 +699,438 @@ describe('Booking Cancellation Routes', () => {
 
       expect(response.status).toBe(404);
       expect(response.body).toHaveProperty('error', 'Booking not found');
+    });
+
+    // Case 1: Single-product booking selected → remaining_dues_on_other_products = 0
+    it('Case 1: single-product booking returns remaining_dues_on_other_products = 0', async () => {
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 0);
+    });
+
+    // Case 2: Two-product booking, one selected, other has ₹3,000 unpaid rent → field = 3000
+    it('Case 2: two-product booking, other product has ₹3,000 dues → remaining_dues_on_other_products = 3000', async () => {
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 3000, 0)
+         RETURNING id`,
+        [summaryBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 3000);
+    });
+
+    // Case 3: Two-product booking, both selected → remaining_dues_on_other_products = 0
+    it('Case 3: two-product booking, both selected → remaining_dues_on_other_products = 0', async () => {
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 3000, 0)
+         RETURNING id`,
+        [summaryBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId, bp2Id]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 0);
+    });
+
+    // Case 4: Two-product booking, one selected, other already 'cancelled' → field = 0
+    it('Case 4: two-product booking, other product is cancelled → remaining_dues_on_other_products = 0', async () => {
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'cancelled', 3000, 0)
+         RETURNING id`,
+        [summaryBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 0);
+    });
+
+    // Case 5: Two-product booking, one selected, other is 'exchanged' → field = 0
+    it('Case 5: two-product booking, other product is exchanged → remaining_dues_on_other_products = 0', async () => {
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'exchanged', 3000, 0)
+         RETURNING id`,
+        [summaryBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 0);
+    });
+
+    // Case 6: Two-product booking, one selected, other is fully paid → field = 0
+    it('Case 6: two-product booking, other product fully paid → remaining_dues_on_other_products = 0', async () => {
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 3000, 0)
+         RETURNING id`,
+        [summaryBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 3000)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation/calculate-summary')
+        .send({
+          booking_id: summaryBookingId,
+          selected_product_ids: [summaryBPId]
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('remaining_dues_on_other_products', 0);
+    });
+  });
+
+  describe('processCancellationSettlement — balance excludes cancelling product (Cases 7–13)', () => {
+    let settleBookingId;
+    let settleBPId;
+
+    beforeEach(async () => {
+      const booking = await bookingService.createBooking({
+        customerName: 'Settlement Test Customer',
+        customerPhone: 'CANCEL-SETTLE-TEST',
+        customerEmail: 'settle@test.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: testProductId,
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 9200,
+          securityDeposit: 9000
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user'
+      });
+      settleBookingId = booking.booking_id;
+
+      const bpResult = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1',
+        [settleBookingId]
+      );
+      settleBPId = bpResult.rows[0].id;
+
+      await bookingService.confirmBooking(settleBookingId, 'test-user');
+    });
+
+    afterEach(async () => {
+      await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [settleBookingId]);
+      await pool.query('DELETE FROM booking_cancellation_history WHERE booking_id = $1', [settleBookingId]);
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)', [settleBookingId]);
+      await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [settleBookingId]);
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [settleBookingId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [settleBookingId]);
+    });
+
+    // Case 7: Single-product booking, cancel with settlement_action='adjust' →
+    //   no adjustment transaction (product excluded from balance), refund for full diff_amount
+    it('Case 7: single-product cancel with adjust → no adjustment recorded, refund for full diff_amount', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay ₹9,000 — all goes to rent (rent_paid=9000, security_paid=0)
+      await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'adjust'
+        });
+
+      expect(response.status).toBe(200);
+      // diff_amount = 9000 - 920 = 8080
+      expect(response.body.total_diff_amount).toBe(8080);
+
+      // No adjustment transaction recorded (product excluded → balance = 0)
+      const txResult = await pool.query(
+        `SELECT type FROM payment_transactions WHERE booking_id = $1 ORDER BY transaction_date`,
+        [settleBookingId]
+      );
+      const types = txResult.rows.map(r => r.type);
+      expect(types).not.toContain('adjustment');
+      // A refund for the full 8080 should have been issued instead
+      expect(types).toContain('refund');
+    });
+
+    // Case 8: Two-product booking, cancel A with adjust, B has ₹3,000 dues →
+    //   adjustment of ₹3,000, refund of (diff_amount − 3,000)
+    it('Case 8: two-product booking, cancel A with adjust, B has ₹3,000 dues → adjustment=3000, refund=diff-3000', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay ₹9,000 BEFORE adding product B so the full amount goes to product A's rent
+      await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
+
+      // Now add product B with ₹3,000 unpaid rent (payment already distributed, won't affect B)
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 3000, 0)
+         RETURNING id`,
+        [settleBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'adjust'
+        });
+
+      expect(response.status).toBe(200);
+      // diff_amount = 9000 - 920 = 8080; adjust cap = min(8080, 3000) = 3000; refund = 5080
+      expect(response.body.total_diff_amount).toBe(8080);
+
+      const txResult = await pool.query(
+        `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 ORDER BY transaction_date`,
+        [settleBookingId]
+      );
+      const txTypes = txResult.rows.map(r => r.type);
+      expect(txTypes).toContain('adjustment');
+      expect(txTypes).toContain('refund');
+
+      const adjustTx = txResult.rows.find(r => r.type === 'adjustment');
+      expect(parseFloat(adjustTx.amount)).toBe(3000);
+      const refundTx = txResult.rows.find(r => r.type === 'refund');
+      expect(parseFloat(refundTx.amount)).toBe(5080);
+    });
+
+    // Case 9: Two-product booking, cancel A with refund → refund for full diff_amount, B's dues unchanged
+    it('Case 9: two-product booking, cancel A with refund → full refund, product B dues unchanged', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay ₹9,000 BEFORE adding product B so the full amount goes to product A's rent
+      await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
+
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 3000, 0)
+         RETURNING id`,
+        [settleBookingId, testProductId]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount)
+         VALUES ($1, 'rent', 3000, 0)`,
+        [bp2Id]
+      );
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'refund',
+          payment_method: 'Cash'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.total_diff_amount).toBe(8080);
+
+      const txResult = await pool.query(
+        `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 ORDER BY transaction_date`,
+        [settleBookingId]
+      );
+      const txTypes = txResult.rows.map(r => r.type);
+      expect(txTypes).not.toContain('adjustment');
+      expect(txTypes).toContain('refund');
+      const refundTx = txResult.rows.find(r => r.type === 'refund');
+      expect(parseFloat(refundTx.amount)).toBe(8080);
+
+      // Product B's dues remain unchanged
+      const bp2Charges = await pool.query(
+        `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1`,
+        [bp2Id]
+      );
+      expect(parseFloat(bp2Charges.rows[0].paid_amount)).toBe(0);
+    });
+
+    // Case 10: settlement_action='none' → no settlement transactions recorded
+    it('Case 10: settlement_action=none → no payment_transactions recorded for settlement', async () => {
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'none'
+        });
+
+      expect(response.status).toBe(200);
+      expect(response.body.settlement).toBeNull();
+
+      const txResult = await pool.query(
+        `SELECT COUNT(*) as cnt FROM payment_transactions WHERE booking_id = $1`,
+        [settleBookingId]
+      );
+      expect(parseInt(txResult.rows[0].cnt)).toBe(0);
+    });
+
+    // Case 11: Cancel with penalty=0, no other dues, payment=rent → refund = rent_paid
+    it('Case 11: cancel with penalty=0, payment=rent → refund transaction equals rent paid', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      await chargeAccountingService.applyPayment(settleBookingId, 9200, 'Cash', 'test-user', 'Full rent payment');
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 0 }],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'refund',
+          payment_method: 'Cash'
+        });
+
+      expect(response.status).toBe(200);
+      // diff_amount = rent_paid - 0 = 9200
+      expect(response.body.total_diff_amount).toBe(9200);
+
+      const txResult = await pool.query(
+        `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [settleBookingId]
+      );
+      expect(txResult.rows).toHaveLength(1);
+      expect(parseFloat(txResult.rows[0].amount)).toBe(9200);
+    });
+
+    // Case 12: Cancel where penalty > rent_paid → HTTP 400 before settlement
+    it('Case 12: cancel where penalty > amount paid → HTTP 400, no settlement recorded', async () => {
+      // Directly set paid_amount to ₹3,000 on the rent charge to bypass minimum-payment validation
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 3000
+         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
+        [settleBPId]
+      );
+      // Insert a matching payment_transaction so the DB is consistent
+      await pool.query(
+        `INSERT INTO payment_transactions (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+         VALUES ($1, 3000, 'payment', 'Cash', 'Partial payment', 'test-user', CURRENT_TIMESTAMP)`,
+        [settleBookingId]
+      );
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [settleBPId],
+          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 8000 }],
+          cancellation_reason: 'Test',
+          cancelled_by: 'test-user',
+          settlement_action: 'refund'
+        });
+
+      expect(response.status).toBe(400);
+
+      // No new refund/adjustment transactions recorded
+      const txResult = await pool.query(
+        `SELECT COUNT(*) as cnt FROM payment_transactions WHERE booking_id = $1 AND type IN ('refund', 'adjustment')`,
+        [settleBookingId]
+      );
+      expect(parseInt(txResult.rows[0].cnt)).toBe(0);
+    });
+
+    // Case 13: processCancellationSettlement with empty excludeProductIds → full booking balance included
+    it('Case 13: empty excludeProductIds includes all non-cancelled products in balance', async () => {
+      const productLifecycleService = require('../services/productLifecycleService');
+
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay ₹9,000 (rent mostly covered, security unpaid)
+      await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
+
+      // With empty excludeProductIds, the product being settled is NOT excluded —
+      // remaining_balance includes the single product's dues (rent+security - paid = 9200+9000-9000 = 9200)
+      // adjustAmount = min(8080, 9200) = 8080 → full amount goes to adjustment, no refund
+      const result = await productLifecycleService.processCancellationSettlement(
+        settleBookingId, 8080, 'adjust', 'Cash', 'test-user', 'Case 13 test',
+        null, []  // empty excludeProductIds — product's own dues included
+      );
+
+      expect(result.settlement_action).toBe('adjust');
+      expect(result.transaction_recorded).toBe(true);
+
+      const txResult = await pool.query(
+        `SELECT type, amount FROM payment_transactions WHERE booking_id = $1`,
+        [settleBookingId]
+      );
+      const adjustTx = txResult.rows.find(r => r.type === 'adjustment');
+      // With no exclusion, balance = 9200, adjustAmount = min(8080, 9200) = 8080
+      expect(adjustTx).toBeDefined();
+      expect(parseFloat(adjustTx.amount)).toBe(8080);
+      // No refund remainder since adjustAmount == amount
+      const refundTx = txResult.rows.find(r => r.type === 'refund');
+      expect(refundTx).toBeUndefined();
     });
   });
 });

@@ -127,16 +127,21 @@ class ChargeAccountingService {
             }
           }
 
-          // Add to per-type breakdown
+          // Add to per-type breakdown (store {due, paid} for each charge type)
           if (dueToAdd > 0) {
-            chargeBreakdown[chargeType] = (chargeBreakdown[chargeType] || 0) + dueToAdd;
+            if (!chargeBreakdown[chargeType]) chargeBreakdown[chargeType] = { due: 0, paid: 0 };
+            chargeBreakdown[chargeType].due += dueToAdd;
+            chargeBreakdown[chargeType].paid += charge.paid_amount;
           }
         });
       });
 
       // Add transport to breakdown if non-zero
       if (summary.charges.transport.due > 0) {
-        chargeBreakdown['transport'] = summary.charges.transport.due;
+        chargeBreakdown['transport'] = {
+          due: summary.charges.transport.due,
+          paid: summary.charges.transport.paid
+        };
       }
 
       summary.charge_breakdown = chargeBreakdown;
@@ -151,12 +156,17 @@ class ChargeAccountingService {
         summary.charges.fees.due +
         summary.charges.security.due;
 
-      summary.totals.total_paid =
-        summary.charges.rent.paid +
-        summary.charges.transport.paid +
-        summary.charges.penalties.paid +
-        summary.charges.fees.paid +
-        summary.charges.security.paid;
+      // total_paid = total actually received from customer (from payment ledger).
+      // Using payment_transactions as the source of truth ensures correctness even when
+      // money is applied to now-cancelled product charges (which are excluded from the
+      // product_charges loop above but are still real customer payments).
+      const paidResult = await client.query(
+        `SELECT COALESCE(SUM(amount), 0)::NUMERIC as total_paid
+         FROM payment_transactions
+         WHERE booking_id = $1 AND type = 'payment'`,
+        [bookingId]
+      );
+      summary.totals.total_paid = parseFloat(paidResult.rows[0].total_paid) || 0;
 
       // Get actual total refunded from payment_transactions
       // This is the only source of truth for money returned to customer
@@ -170,8 +180,8 @@ class ChargeAccountingService {
       );
       summary.totals.total_refunded = refundResult.rows[0].total_refunded || 0;
 
-      // Balance = what's owed (after discount) minus what's been paid
-      summary.totals.balance = summary.totals.total_due - summary.totals.total_paid;
+      // Balance = total charges owed minus net customer payments (payments − refunds)
+      summary.totals.balance = summary.totals.total_due - summary.totals.total_paid + summary.totals.total_refunded;
 
       return summary;
     } finally {
@@ -213,7 +223,7 @@ class ChargeAccountingService {
    * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation
    * @returns {Promise<Object>} - Payment application breakdown
    */
-  async _applyPaymentInternal(bookingId, paymentAmount, client, securityProductIds = null) {
+  async _applyPaymentInternal(bookingId, paymentAmount, client, securityProductIds = null, excludeProductIds = []) {
     const breakdown = {
       total_applied: paymentAmount,
       applications: []
@@ -222,7 +232,7 @@ class ChargeAccountingService {
     let remaining = paymentAmount;
 
     // Priority 1: Rent
-    remaining = await this._applyToRent(bookingId, remaining, breakdown, client);
+    remaining = await this._applyToRent(bookingId, remaining, breakdown, client, excludeProductIds);
     if (remaining <= 0) return breakdown;
 
     // Priority 2: Transport
@@ -230,15 +240,15 @@ class ChargeAccountingService {
     if (remaining <= 0) return breakdown;
 
     // Priority 3: Penalties (exchange, downgrade, cancellation)
-    remaining = await this._applyToPenalties(bookingId, remaining, breakdown, client);
+    remaining = await this._applyToPenalties(bookingId, remaining, breakdown, client, excludeProductIds);
     if (remaining <= 0) return breakdown;
 
     // Priority 4: Fees (late, damage)
-    remaining = await this._applyToFees(bookingId, remaining, breakdown, client);
+    remaining = await this._applyToFees(bookingId, remaining, breakdown, client, excludeProductIds);
     if (remaining <= 0) return breakdown;
 
     // Priority 5: Security
-    remaining = await this._applyToSecurity(bookingId, remaining, breakdown, client, securityProductIds);
+    remaining = await this._applyToSecurity(bookingId, remaining, breakdown, client, securityProductIds, excludeProductIds);
     if (remaining <= 0) return breakdown;
 
     return breakdown;
@@ -247,7 +257,7 @@ class ChargeAccountingService {
   /**
    * Apply payment to rent charges
    */
-  async _applyToRent(bookingId, amount, breakdown, client) {
+  async _applyToRent(bookingId, amount, breakdown, client, excludeProductIds = []) {
     const result = await client.query(
       `SELECT bp.id as booking_product_id, bp.rent,
               pc.id as charge_id, pc.due_amount, pc.paid_amount
@@ -255,10 +265,11 @@ class ChargeAccountingService {
        JOIN product_charges pc ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1
          AND bp.status NOT IN ('exchanged', 'cancelled')
+         AND NOT (bp.id = ANY($2::int[]))
          AND pc.charge_type = 'rent'
          AND pc.due_amount > pc.paid_amount
        ORDER BY bp.rent DESC`,
-      [bookingId]
+      [bookingId, excludeProductIds]
     );
 
     if (result.rows.length === 0) return amount;
@@ -351,12 +362,14 @@ class ChargeAccountingService {
   /**
    * Apply payment to penalty charges
    */
-  async _applyToPenalties(bookingId, amount, breakdown, client) {
+  async _applyToPenalties(bookingId, amount, breakdown, client, excludeProductIds = []) {
     const charges = await client.query(
       `SELECT pc.*, bp.id as booking_product_id
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
-       WHERE bp.booking_id = $1 
+       WHERE bp.booking_id = $1
+       AND bp.status NOT IN ('exchanged', 'cancelled')
+       AND NOT (bp.id = ANY($2::int[]))
        AND pc.charge_type IN ('exchange_penalty', 'downgrade_penalty', 'cancellation_penalty')
        AND pc.paid_amount < pc.due_amount
        ORDER BY bp.id, CASE pc.charge_type
@@ -364,7 +377,7 @@ class ChargeAccountingService {
          WHEN 'downgrade_penalty' THEN 2
          WHEN 'cancellation_penalty' THEN 3
        END`,
-      [bookingId]
+      [bookingId, excludeProductIds]
     );
 
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'penalties');
@@ -373,16 +386,18 @@ class ChargeAccountingService {
   /**
    * Apply payment to fee charges
    */
-  async _applyToFees(bookingId, amount, breakdown, client) {
+  async _applyToFees(bookingId, amount, breakdown, client, excludeProductIds = []) {
     const charges = await client.query(
       `SELECT pc.*, bp.id as booking_product_id
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
-       WHERE bp.booking_id = $1 
+       WHERE bp.booking_id = $1
+       AND bp.status NOT IN ('exchanged', 'cancelled')
+       AND NOT (bp.id = ANY($2::int[]))
        AND pc.charge_type IN ('late_fee', 'damage_fee')
        AND pc.paid_amount < pc.due_amount
        ORDER BY bp.id, pc.charge_type`,
-      [bookingId]
+      [bookingId, excludeProductIds]
     );
 
     return await this._applyToCharges(charges.rows, amount, breakdown, client, 'fees');
@@ -393,7 +408,7 @@ class ChargeAccountingService {
    * @param {number[]|null} [productIds] - When provided, restrict allocation to these booking_product IDs
    *   and use partial-paid-first sort order. When null/empty, use existing pickup-date waterfall.
    */
-  async _applyToSecurity(bookingId, amount, breakdown, client, productIds = null) {
+  async _applyToSecurity(bookingId, amount, breakdown, client, productIds = null, excludeProductIds = []) {
     const hasProductFilter = productIds && productIds.length > 0;
     let query;
     let queryParams;
@@ -419,10 +434,11 @@ class ChargeAccountingService {
                JOIN booking_products bp ON pc.booking_product_id = bp.id
                WHERE bp.booking_id = $1
                  AND bp.status NOT IN ('exchanged', 'cancelled')
+                 AND NOT (bp.id = ANY($2::int[]))
                  AND pc.charge_type = 'security'
                  AND pc.paid_amount < pc.due_amount
                ORDER BY bp.booked_from ASC, bp.id ASC`;
-      queryParams = [bookingId];
+      queryParams = [bookingId, excludeProductIds];
     }
 
     const charges = await client.query(query, queryParams);
@@ -859,6 +875,29 @@ class ChargeAccountingService {
   }
 
   /**
+   * Returns the sum of global_discount_share for active products in a booking,
+   * excluding any products in the excludeProductIds list.
+   * Used by the cancellation preview/summary and by revokeGlobalDiscountForCancellation
+   * to determine how much discount will actually be reverted for active charges.
+   * @param {number} bookingId
+   * @param {number[]} excludeProductIds - product IDs to exclude (e.g. the one being cancelled)
+   * @param {Object} [client] - optional pg client; falls back to pool
+   * @returns {Promise<number>}
+   */
+  async getActiveGlobalDiscountShare(bookingId, excludeProductIds = [], client = null) {
+    const db = client || pool;
+    const result = await db.query(
+      `SELECT COALESCE(SUM(global_discount_share), 0)::INTEGER AS active_share
+       FROM booking_products
+       WHERE booking_id = $1
+         AND status NOT IN ('exchanged', 'cancelled')
+         AND NOT (id = ANY($2::int[]))`,
+      [bookingId, excludeProductIds]
+    );
+    return result.rows[0].active_share || 0;
+  }
+
+  /**
    * Revoke entire global discount for a cancellation.
    * Returns the discount_reverted amount and adjusts remaining products.
    * - Sets final_discount to 0
@@ -868,7 +907,7 @@ class ChargeAccountingService {
    * @param {Object} client
    * @returns {{ discountReverted: number }} The total global discount that was revoked
    */
-  async revokeGlobalDiscountForCancellation(bookingId, client) {
+  async revokeGlobalDiscountForCancellation(bookingId, client, cancellingProductId = null) {
     const booking = await client.query(
       'SELECT final_discount FROM bookings WHERE id = $1',
       [bookingId]
@@ -879,13 +918,25 @@ class ChargeAccountingService {
       return { discountReverted: 0 };
     }
 
-    // Get remaining active products (NOT the one being cancelled — caller sets that status first)
-    const activeProducts = await client.query(
-      `SELECT id, rent, discount_amount, global_discount_share
-       FROM booking_products
-       WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
-       ORDER BY id`,
-      [bookingId]
+    // Get remaining active products, explicitly excluding the one being cancelled.
+    // The cancelling product's status may still be 'confirmed' at this point, so we
+    // exclude by id rather than relying on a status check.
+    const activeProductsQuery = cancellingProductId
+      ? `SELECT id, rent, discount_amount, global_discount_share
+         FROM booking_products
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled') AND id != $2
+         ORDER BY id`
+      : `SELECT id, rent, discount_amount, global_discount_share
+         FROM booking_products
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+         ORDER BY id`;
+    const activeProductsParams = cancellingProductId ? [bookingId, cancellingProductId] : [bookingId];
+    const activeProducts = await client.query(activeProductsQuery, activeProductsParams);
+
+    // Total discount that will be reverted (active products' shares, cancelling product excluded).
+    // Must be computed BEFORE the loop, which zeros global_discount_share for each product.
+    const totalAdjustment = await this.getActiveGlobalDiscountShare(
+      bookingId, cancellingProductId ? [cancellingProductId] : [], client
     );
 
     // For each remaining active product: remove global share, restore effective_rent, add adjustment
@@ -922,25 +973,15 @@ class ChargeAccountingService {
       adjustmentDetails.push({ booking_product_id: product.id, amount: share });
     }
 
-    // Log adjustment in payment_transactions (total amount across all remaining products)
-    const totalAdjustment = adjustmentDetails.reduce((sum, d) => sum + d.amount, 0);
-    if (totalAdjustment > 0) {
-      await client.query(
-        `INSERT INTO payment_transactions
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, 'adjustment', 'Adjustment', $3, 'system', CURRENT_TIMESTAMP)`,
-        [bookingId, totalAdjustment,
-          `Discount revocation adjustment: global discount ₹${globalDiscount} revoked, ₹${totalAdjustment} applied as adjustment to remaining products`]
-      );
-    }
 
-    // Set final_discount to 0
+    // Set final_discount to 0. The cancelling product's own booking_products row is left
+    // untouched — it is being cancelled and its discount data is no longer relevant.
     await client.query(
       'UPDATE bookings SET final_discount = 0 WHERE id = $1',
       [bookingId]
     );
 
-    // Activity log
+    // Activity log — full audit trail for the discount revocation
     await client.query(
       `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
        VALUES ($1, 'global_discount_revoked_cancellation', $2, 'system')`,
@@ -952,7 +993,7 @@ class ChargeAccountingService {
       })]
     );
 
-    return { discountReverted: globalDiscount };
+    return { discountReverted: totalAdjustment };
   }
 
   /**

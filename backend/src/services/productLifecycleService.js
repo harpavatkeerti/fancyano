@@ -300,7 +300,7 @@ class ProductLifecycleService {
 
       // Revoke global discount (sets final_discount to 0, adjusts remaining products)
       const { discountReverted } = await chargeAccountingService.revokeGlobalDiscountForCancellation(
-        bookingProduct.booking_id, client
+        bookingProduct.booking_id, client, bookingProductId
       );
 
       // diffAmount: positive = refund to customer, negative = collect from customer
@@ -324,7 +324,8 @@ class ProductLifecycleService {
       if (settlementAction !== 'none' && settlementAmount > 0) {
         settlementResult = await this.processCancellationSettlement(
           bookingProduct.booking_id, settlementAmount, settlementAction,
-          settlementMethod, userId, settlementNotes, client
+          settlementMethod, userId, settlementNotes, client,
+          [bookingProductId]
         );
       }
 
@@ -417,7 +418,7 @@ class ProductLifecycleService {
    * @param {Object} [existingClient] - Optional DB client to share transaction
    * @returns {Promise<Object>} - Settlement details
    */
-  async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient) {
+  async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient, excludeProductIds = []) {
     if (!['refund', 'adjust', 'collect', 'none'].includes(action)) {
       throw new Error('settlement_action must be "refund", "adjust", "collect", or "none"');
     }
@@ -457,14 +458,16 @@ class ProductLifecycleService {
           }), recordedBy]
         );
       } else if (action === 'adjust') {
-        // Get current outstanding balance
+        // Get current outstanding balance, excluding the product(s) being cancelled
         const balanceResult = await client.query(
           `SELECT 
              (COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0))::INTEGER as remaining_balance
            FROM product_charges pc
            JOIN booking_products bp ON pc.booking_product_id = bp.id
-           WHERE bp.booking_id = $1 AND bp.status != 'cancelled'`,
-          [bookingId]
+           WHERE bp.booking_id = $1
+             AND bp.status != 'cancelled'
+             AND NOT (bp.id = ANY($2::int[]))`,
+          [bookingId, excludeProductIds]
         );
         const remainingDues = Math.max(0, balanceResult.rows[0].remaining_balance || 0);
 
@@ -474,7 +477,7 @@ class ProductLifecycleService {
 
         // Apply adjustment against dues
         if (adjustAmount > 0) {
-          await chargeAccountingService._applyPaymentInternal(bookingId, adjustAmount, client);
+          await chargeAccountingService._applyPaymentInternal(bookingId, adjustAmount, client, null, excludeProductIds);
 
           await client.query(
             `INSERT INTO payment_transactions 
@@ -1303,7 +1306,12 @@ class ProductLifecycleService {
       }
 
       const totalPaidForSelected = totalSelectedRentPaid + totalSelectedSecurityPaid;
-      const discountReverted = preview.discount_reverted || 0;
+
+      // Only the global_discount_share of products that will REMAIN active is actually reverted
+      // (matches what revokeGlobalDiscountForCancellation does after Step 8 fix).
+      const discountReverted = await chargeAccountingService.getActiveGlobalDiscountShare(
+        bookingId, selectedProductIds
+      );
       const refundBeforeDiscount = Math.floor(totalPaidForSelected - totalPenalty + extraRefund);
       const refundAmount = Math.max(0, refundBeforeDiscount - discountReverted);
       const refundBlocked = (refundBeforeDiscount - discountReverted) < 0;
@@ -1322,6 +1330,20 @@ class ProductLifecycleService {
         paymentDifference = Math.ceil(totalPenalty + discountReverted - totalPaidForSelected);
       }
 
+      // Dues on products that will remain active after this cancellation
+      const otherDuesResult = await pool.query(
+        `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER as remaining_dues
+         FROM product_charges pc
+         JOIN booking_products bp ON pc.booking_product_id = bp.id
+         WHERE bp.booking_id = $1
+           AND bp.status NOT IN ('cancelled', 'exchanged')
+           AND NOT (bp.id = ANY($2::int[]))`,
+        [bookingId, selectedProductIds]
+      );
+      const remainingDuesOnOtherProducts = Math.max(
+        0, otherDuesResult.rows[0].remaining_dues || 0
+      );
+
       return {
         selected_count: selectedProducts.length,
         total_count: preview.all_products.length,
@@ -1336,6 +1358,7 @@ class ProductLifecycleService {
         refund_blocked: refundBlocked,
         payment_action: paymentAction,
         payment_difference: paymentDifference,
+        remaining_dues_on_other_products: remainingDuesOnOtherProducts,
       };
     } catch (error) {
       console.error('Error calculating cancellation summary:', error);

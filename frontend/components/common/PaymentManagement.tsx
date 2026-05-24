@@ -406,8 +406,12 @@ export function PaymentManagement({
             const totalPaid = summary.totals?.total_paid || 0;
             const totalRefunded = summary.totals?.total_refunded || 0;
             const discountAmount = summary.final_discount || 0;
-            // Display balance accounts for refunds: what's owed - (paid - refunded)
-            const balanceDue = totalRequired - totalPaid + totalRefunded;
+            // Use the backend's pre-computed balance (total_due - total_paid).
+            // Do NOT add totalRefunded back here: total_paid is derived from product_charges.paid_amount
+            // (never reduced by refunds), and total_due already excludes cancelled products' charges.
+            // The old formula (totalRequired - totalPaid + totalRefunded) created a phantom liability
+            // equal to the refund amount after every cancellation refund.
+            const balanceDue = summary.totals?.balance ?? 0;
             const isFullyPaid = balanceDue <= 0;
             // Check for refunds in transactions
             const hasAnyRefund = totalRefunded > 0;
@@ -444,107 +448,67 @@ export function PaymentManagement({
                   )}
                 </div>
 
-                {/* Balance Due - prominent display */}
-                <div className={`p-4 rounded-lg mb-4 ${balanceDue > 0 ? 'bg-red-50 border border-red-200' : 'bg-green-50 border border-green-200'}`}>
-                  <div className="flex items-center justify-between">
-                    <p className={`text-sm font-medium ${balanceDue > 0 ? 'text-red-800' : 'text-green-800'}`}>Balance Due</p>
-                    <p className={`text-2xl font-bold ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                      {balanceDue <= 0 ? '✅ ' : ''}{formatCurrency(balanceDue)}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Financial Summary - itemized breakdown */}
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-4">
-                  <h4 className="text-sm font-bold text-gray-900 mb-3">💰 Financial Summary</h4>
-
-                  {/* Charge Breakdown */}
-                  <div className="mb-3">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm font-semibold text-gray-700">Total Charges</span>
-                      <span className="text-sm font-bold text-gray-900">{formatCurrency(totalRequired)}</span>
-                    </div>
-
-                    {/* Itemized charges - ordered by priority, only show non-zero */}
-                    <div className="ml-4 space-y-1">
-                      {(() => {
-                        const breakdown = (summary as any).charge_breakdown || {};
-                        const orderedItems: [string, string][] = [
-                          ['rent', 'Rent'],
-                          ['security', 'Security Deposit'],
-                          ['transport', 'Transportation Charge'],
-                          ['damage_fee', 'Damage Fee'],
-                          ['late_fee', 'Late Fee'],
-                          ['exchange_penalty', 'Exchange Penalty'],
-                          ['downgrade_penalty', 'Downgrade Penalty'],
-                          ['cancellation_penalty', 'Cancellation Penalty'],
-                        ];
-                        return orderedItems
-                          .filter(([key]) => breakdown[key] > 0)
-                          .map(([key, label]) => (
-                            <div key={key} className="flex justify-between text-xs text-gray-600">
-                              <span>{label}</span>
-                              <span>{formatCurrency(breakdown[key])}</span>
-                            </div>
-                          ));
-                      })()}
-                      {discountAmount > 0 && (
-                        <div className="flex justify-between text-xs text-green-700 bg-green-50 px-2 py-1 rounded mt-1">
-                          <span>💚 Discount Included</span>
-                          <span className="font-medium">₹{discountAmount.toLocaleString('en-IN')}</span>
-                        </div>
-                      )}
-                    </div>
+                {/* Financial Summary — tabular breakdown */}
+                <div className="mb-4">
+                  {/* Column headers */}
+                  <div className="grid grid-cols-4 text-xs font-semibold text-gray-400 uppercase tracking-wide pb-2 border-b border-gray-200">
+                    <span>Charge</span>
+                    <span className="text-right">Total Due</span>
+                    <span className="text-right">Paid</span>
+                    <span className="text-right">Pending</span>
                   </div>
 
-                  <hr className="border-gray-300 my-2" />
+                  {/* Category rows — only render if due > 0 */}
+                  {(([
+                    { label: 'Rent', charges: (summary as any).charges?.rent },
+                    { label: 'Security Deposit', charges: (summary as any).charges?.security },
+                    { label: 'Transport', charges: (summary as any).charges?.transport },
+                    { label: 'Penalties', charges: (summary as any).charges?.penalties },
+                    { label: 'Fees', charges: (summary as any).charges?.fees },
+                  ] as { label: string; charges: { due: number; paid: number } | undefined }[])
+                    .filter(r => (r.charges?.due || 0) > 0)
+                    .map(({ label, charges }) => {
+                      const due = charges?.due || 0;
+                      const paid = Math.min(charges?.paid || 0, due);
+                      const pending = Math.max(0, due - paid);
+                      return (
+                        <div key={label} className="grid grid-cols-4 py-2 border-b border-gray-100 text-sm">
+                          <span className="text-gray-700">{label}</span>
+                          <span className="text-right text-gray-900">{formatCurrency(due)}</span>
+                          <span className={`text-right font-medium ${paid > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                            {paid > 0 ? formatCurrency(paid) : '—'}
+                          </span>
+                          <span className={`text-right font-medium ${pending > 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                            {pending > 0 ? formatCurrency(pending) : '✅'}
+                          </span>
+                        </div>
+                      );
+                    })
+                  )}
 
-                  {/* Total Paid & Refunded */}
-                  <div className="space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-semibold text-gray-700">Total Paid by Customer</span>
-                      <span className="text-sm font-bold text-green-600">{formatCurrency(totalPaid)}</span>
-                    </div>
-                    {totalRefunded > 0 && (
-                      <div className="flex justify-between items-center">
-                        <span className="text-sm font-semibold text-gray-700">Total Refunded to Customer</span>
-                        <span className="text-sm font-bold text-orange-600">{formatCurrency(totalRefunded)}</span>
-                      </div>
-                    )}
+                  {/* Totals row */}
+                  <div className="grid grid-cols-4 pt-3 mt-1 border-t-2 border-gray-300 text-base font-bold">
+                    <span className="text-gray-900">Total</span>
+                    <span className="text-right text-gray-900">{formatCurrency(totalRequired)}</span>
+                    <span className="text-right text-green-600">{formatCurrency(totalPaid)}</span>
+                    <span className={`text-right ${balanceDue > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {balanceDue <= 0 ? '✅ Paid' : formatCurrency(balanceDue)}
+                    </span>
                   </div>
-                </div>
 
-                {/* Payment Status - uses backend summary values */}
-                <div className="bg-white border border-gray-200 rounded-lg p-4 mb-4">
-                  {balanceDue > 0 ? (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-red-800 mb-1">Payment Due</p>
-                          <p className="text-red-700">
-                            Amount due: <span className="font-bold text-lg">{formatCurrency(balanceDue)}</span>
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm text-gray-600">Total Required</p>
-                          <p className="text-lg font-bold">{formatCurrency(totalRequired)}</p>
-                        </div>
-                      </div>
+                  {/* Discount note */}
+                  {discountAmount > 0 && (
+                    <div className="mt-2 flex justify-between text-xs text-green-700 px-0.5">
+                      <span>💚 Discount applied (embedded in amounts above)</span>
+                      <span className="font-medium">₹{discountAmount.toLocaleString('en-IN')}</span>
                     </div>
-                  ) : (
-                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="font-bold text-green-800 mb-1">✅ Fully Paid</p>
-                          <p className="text-green-700">
-                            All payments received. Total: {formatCurrency(totalRequired)}
-                          </p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-sm text-gray-600">Amount Paid</p>
-                          <p className="text-lg font-bold text-green-600">{formatCurrency(totalPaid)}</p>
-                        </div>
-                      </div>
+                  )}
+
+                  {/* Refunded — shown separately, does not affect balance */}
+                  {totalRefunded > 0 && (
+                    <div className="mt-3 flex justify-between items-center px-3 py-2 rounded-lg bg-orange-50 border border-orange-200">
+                      <span className="text-sm text-orange-700 font-medium">↩ Refunded to Customer</span>
+                      <span className="text-sm font-bold text-orange-600">{formatCurrency(totalRefunded)}</span>
                     </div>
                   )}
                 </div>
@@ -591,56 +555,65 @@ export function PaymentManagement({
                       );
                       return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
                     })
-                    .map((transaction) => (
-                      <div
-                        key={transaction.id}
-                        className="border border-gray-200 rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${getTransactionColor(transaction.type)}`}>
-                                {transaction.type}
-                              </span>
-                              <span className="text-sm text-gray-600">
-                                {formatDate(transaction.created_at)}
-                              </span>
-                            </div>
-                            {/* Transaction Type */}
-                            <div className="flex items-center gap-4 mb-2">
-                              <span className="text-sm text-gray-600">
-                                <span className="font-medium">Type:</span> {
-                                  transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
-                                    transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
-                                      transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
-                                        transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
-                                          transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
-                                            transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
-                                              transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
-                                                'Booking'
-                                }
-                              </span>
-                              {transaction.method && (
-                                <span className="text-sm text-gray-600">
-                                  <span className="font-medium">Method:</span> {transaction.method}
+                    .map((transaction) => {
+                      const isAdjustment = transaction.type === 'adjustment';
+                      return (
+                        <div
+                          key={transaction.id}
+                          className={`rounded-lg p-4 transition-colors ${isAdjustment
+                              ? 'border border-dashed border-gray-300 bg-gray-50 opacity-75'
+                              : 'border border-gray-200 hover:bg-gray-50'
+                            }`}
+                        >
+                          <div className="flex items-start justify-between">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`px-2 py-0.5 rounded text-xs font-semibold uppercase ${getTransactionColor(transaction.type)}`}>
+                                  {transaction.type}
                                 </span>
+                                {isAdjustment && (
+                                  <span className="text-xs text-gray-400 italic">ℹ info only – not a customer payment</span>
+                                )}
+                                <span className={`${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-600'}`}>
+                                  {formatDate(transaction.created_at)}
+                                </span>
+                              </div>
+                              {/* Transaction Type */}
+                              <div className="flex items-center gap-4 mb-1">
+                                <span className={`${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-600'}`}>
+                                  <span className="font-medium">Type:</span> {
+                                    transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
+                                      transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
+                                        transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
+                                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
+                                            transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
+                                              transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
+                                                transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
+                                                  'Booking'
+                                  }
+                                </span>
+                                {transaction.method && (
+                                  <span className={`${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-600'}`}>
+                                    <span className="font-medium">Method:</span> {transaction.method}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className={`font-bold ${isAdjustment ? 'text-sm text-gray-400' : 'text-lg text-gray-900'}`}>
+                                  {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
+                                </span>
+                              </div>
+                              {transaction.notes && (
+                                <p className={`mb-1 ${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-700'}`}>{transaction.notes}</p>
                               )}
+                              <p className="text-xs text-gray-400">
+                                Recorded by: {getRecordedByName(transaction.recorded_by)}
+                              </p>
                             </div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="text-lg font-bold text-gray-900">
-                                {transaction.type === 'refund' ? '-' : '+'}{formatCurrency(transaction.amount)}
-                              </span>
-                            </div>
-                            {transaction.notes && (
-                              <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
-                            )}
-                            <p className="text-xs text-gray-500">
-                              Recorded by: {getRecordedByName(transaction.recorded_by)}
-                            </p>
                           </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                 </div>
               )}
 

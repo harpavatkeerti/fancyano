@@ -2378,8 +2378,8 @@ export default function OrderDetailsPage() {
 
       {/* Record Payment Modal */}
       {showRecordPayment && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-2xl w-full p-8">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start justify-center overflow-y-auto z-50 p-4">
+          <div className="bg-white rounded-lg max-w-2xl w-full p-8 my-auto">
             <div className="flex items-center mb-8">
               <button
                 onClick={() => {

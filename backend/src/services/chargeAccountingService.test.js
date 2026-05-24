@@ -1225,4 +1225,214 @@ describe('ChargeAccountingService', () => {
       expect(result.total_applied).toBe(500);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // getActiveGlobalDiscountShare
+  // ---------------------------------------------------------------------------
+  describe('getActiveGlobalDiscountShare', () => {
+    // The function sums global_discount_share on booking_products for non-cancelled,
+    // non-excluded products. The test beforeEach sets global_discount_share = 0 by default.
+    // We set it explicitly for each test case.
+
+    test('returns 0 when no products have a discount share', async () => {
+      // global_discount_share defaults to 0 — no update needed
+      const share = await chargeAccountingService.getActiveGlobalDiscountShare(
+        testBookingId,
+        []  // no exclusions
+      );
+      expect(share).toBe(0);
+    });
+
+    test('returns sum of all product shares when no products are excluded', async () => {
+      // Give product[0] a share of 600 and product[1] a share of 400
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 600 WHERE id = $1',
+        [testProductIds[0]]
+      );
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 400 WHERE id = $1',
+        [testProductIds[1]]
+      );
+
+      const share = await chargeAccountingService.getActiveGlobalDiscountShare(
+        testBookingId,
+        []  // no exclusions → both counted
+      );
+      expect(share).toBe(1000);  // 600 + 400
+    });
+
+    test('excludes the specified product and returns only remaining shares', async () => {
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 600 WHERE id = $1',
+        [testProductIds[0]]
+      );
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 400 WHERE id = $1',
+        [testProductIds[1]]
+      );
+
+      // Exclude product[0] (the "cancelling" product) → only product[1]'s share returned
+      const share = await chargeAccountingService.getActiveGlobalDiscountShare(
+        testBookingId,
+        [testProductIds[0]]
+      );
+      expect(share).toBe(400);
+    });
+
+    test('returns 0 when all products are in excludeProductIds', async () => {
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 600 WHERE id = $1',
+        [testProductIds[0]]
+      );
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 400 WHERE id = $1',
+        [testProductIds[1]]
+      );
+
+      const share = await chargeAccountingService.getActiveGlobalDiscountShare(
+        testBookingId,
+        testProductIds  // exclude both → 0
+      );
+      expect(share).toBe(0);
+    });
+
+    test('already-cancelled products are excluded by status, not by excludeProductIds', async () => {
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 500 WHERE id = $1',
+        [testProductIds[0]]
+      );
+      await pool.query(
+        'UPDATE booking_products SET global_discount_share = 300, status = $1 WHERE id = $2',
+        ['cancelled', testProductIds[1]]
+      );
+
+      // product[1] is 'cancelled' so the WHERE clause ignores it automatically.
+      // Pass empty excludeProductIds — only product[0] (500) should be counted.
+      const share = await chargeAccountingService.getActiveGlobalDiscountShare(
+        testBookingId,
+        []
+      );
+      expect(share).toBe(500);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // _applyPaymentInternal with excludeProductIds
+  // (tests the Issue 2 fix: the cancelling product's charges must NOT be touched)
+  // ---------------------------------------------------------------------------
+  describe('_applyPaymentInternal — excludeProductIds', () => {
+    // The test setup already has two products:
+    //   product[0]: rent=2500, security=1000  (will be the "cancelling" product)
+    //   product[1]: rent=1500, security=1000  (will remain active)
+    // Total active-only rent outstanding = 1500.
+
+    test('excluded product charges are untouched when adjustment is < active rent', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Apply 600 excluding product[0] — should only go to product[1]'s rent.
+        await chargeAccountingService._applyPaymentInternal(
+          testBookingId,
+          600,
+          client,
+          null,                  // securityProductIds
+          [testProductIds[0]]    // excludeProductIds — product[0] is being cancelled
+        );
+
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      // product[0] rent paid_amount must remain 0
+      const excl = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'rent']
+      );
+      expect(parseFloat(excl.rows[0].paid_amount)).toBe(0);
+
+      // product[1] rent paid_amount must be 600 (the full amount, not a proportional slice)
+      const active = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      expect(parseFloat(active.rows[0].paid_amount)).toBe(600);
+    });
+
+    test('empty excludeProductIds distributes proportionally across all products', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // No exclusions → proportional: 2500/4000*2000=1250 to product[0], 750 to product[1]
+        await chargeAccountingService._applyPaymentInternal(
+          testBookingId,
+          2000,
+          client,
+          null,  // securityProductIds
+          []     // no exclusions
+        );
+
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      const c0 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'rent']
+      );
+      const c1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'rent']
+      );
+      expect(parseFloat(c0.rows[0].paid_amount)).toBe(1250);
+      expect(parseFloat(c1.rows[0].paid_amount)).toBe(750);
+    });
+
+    test('excluded product security charge is also untouched', async () => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Pay enough to cover active product[1] rent (1500) + active transport (100) +
+        // then some security — but product[0] security must stay 0.
+        await chargeAccountingService._applyPaymentInternal(
+          testBookingId,
+          1700,   // 1500 rent + 100 transport + 100 into security
+          client,
+          null,
+          [testProductIds[0]]  // exclude product[0]
+        );
+
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+
+      // product[0] security must remain 0
+      const sec0 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[0], 'security']
+      );
+      expect(parseFloat(sec0.rows[0].paid_amount)).toBe(0);
+
+      // product[1] security received the 100 overflow
+      const sec1 = await pool.query(
+        'SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = $2',
+        [testProductIds[1], 'security']
+      );
+      expect(parseFloat(sec1.rows[0].paid_amount)).toBe(100);
+    });
+  });
 });
