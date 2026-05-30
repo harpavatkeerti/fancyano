@@ -453,38 +453,56 @@ export function PaymentManagement({
                   {/* Column headers */}
                   <div className="grid grid-cols-4 text-xs font-semibold text-gray-400 uppercase tracking-wide pb-2 border-b border-gray-200">
                     <span>Charge</span>
-                    <span className="text-right">Total Due</span>
+                    <span className="text-right">Due</span>
                     <span className="text-right">Paid</span>
                     <span className="text-right">Pending</span>
                   </div>
 
-                  {/* Category rows — only render if due > 0 */}
-                  {(([
-                    { label: 'Rent', charges: (summary as any).charges?.rent },
-                    { label: 'Security Deposit', charges: (summary as any).charges?.security },
-                    { label: 'Transport', charges: (summary as any).charges?.transport },
-                    { label: 'Penalties', charges: (summary as any).charges?.penalties },
-                    { label: 'Fees', charges: (summary as any).charges?.fees },
-                  ] as { label: string; charges: { due: number; paid: number } | undefined }[])
-                    .filter(r => (r.charges?.due || 0) > 0)
-                    .map(({ label, charges }) => {
-                      const due = charges?.due || 0;
-                      const paid = Math.min(charges?.paid || 0, due);
-                      const pending = Math.max(0, due - paid);
-                      return (
-                        <div key={label} className="grid grid-cols-4 py-2 border-b border-gray-100 text-sm">
-                          <span className="text-gray-700">{label}</span>
-                          <span className="text-right text-gray-900">{formatCurrency(due)}</span>
-                          <span className={`text-right font-medium ${paid > 0 ? 'text-green-600' : 'text-gray-400'}`}>
-                            {paid > 0 ? formatCurrency(paid) : '—'}
-                          </span>
-                          <span className={`text-right font-medium ${pending > 0 ? 'text-red-600' : 'text-gray-400'}`}>
-                            {pending > 0 ? formatCurrency(pending) : '✅'}
-                          </span>
-                        </div>
-                      );
-                    })
-                  )}
+                  {/* Individual charge-type rows from charge_breakdown */}
+                  {(() => {
+                    const cb = (summary as any).charge_breakdown || {};
+                    const labelMap: Record<string, string> = {
+                      rent:                 'Rent',
+                      transport:            'Transport',
+                      exchange_penalty:     'Exchange Penalty',
+                      downgrade_penalty:    'Downgrade Penalty',
+                      cancellation_penalty: 'Cancellation Penalty',
+                      damage_fee:           'Damage Fee',
+                      late_fee:             'Late Fee',
+                      security:             'Security Deposit',
+                    };
+                    const orderedKeys = [
+                      'rent', 'transport',
+                      'exchange_penalty', 'downgrade_penalty', 'cancellation_penalty',
+                      'damage_fee', 'late_fee',
+                      'security',
+                    ];
+                    return orderedKeys
+                      .filter(key => {
+                        const entry = cb[key];
+                        // charge_breakdown values are now {due, paid} objects
+                        const due = (typeof entry === 'object' && entry !== null) ? (entry.due || 0) : (entry || 0);
+                        return due > 0;
+                      })
+                      .map(key => {
+                        const entry = cb[key];
+                        const due = (typeof entry === 'object' && entry !== null) ? (entry.due || 0) : (entry || 0);
+                        const paid = (typeof entry === 'object' && entry !== null) ? Math.min(entry.paid || 0, due) : 0;
+                        const pending = Math.max(0, due - paid);
+                        return (
+                          <div key={key} className="grid grid-cols-4 py-2 border-b border-gray-100 text-sm">
+                            <span className="text-gray-700">{labelMap[key] ?? key}</span>
+                            <span className="text-right text-gray-900">{formatCurrency(due)}</span>
+                            <span className={`text-right font-medium ${paid > 0 ? 'text-green-600' : 'text-gray-400'}`}>
+                              {paid > 0 ? formatCurrency(paid) : '—'}
+                            </span>
+                            <span className={`text-right font-medium ${pending > 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                              {pending > 0 ? formatCurrency(pending) : '✅'}
+                            </span>
+                          </div>
+                        );
+                      });
+                  })()}
 
                   {/* Totals row */}
                   <div className="grid grid-cols-4 pt-3 mt-1 border-t-2 border-gray-300 text-base font-bold">

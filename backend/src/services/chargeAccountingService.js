@@ -741,6 +741,15 @@ class ChargeAccountingService {
           `Deduction: ${deduction.type}`,
           client
         );
+
+        // Mark the deduction charge as paid — the customer already "paid" it
+        // by having the amount retained from their security deposit refund.
+        await client.query(
+          `UPDATE product_charges
+           SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
+           WHERE booking_product_id = $1 AND charge_type = $2`,
+          [deduction.bookingProductId, deduction.type]
+        );
       }
 
       // Record refund transaction (money going OUT to customer)
