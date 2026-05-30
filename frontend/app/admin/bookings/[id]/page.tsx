@@ -7,7 +7,7 @@ import { creditNotesApi } from '@/lib/creditNotesApi';
 import { settingsApi } from '@/lib/settingsApi';
 import { productTrackingApi } from '@/lib/productTrackingApi';
 import { Booking } from '@/types';
-import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary } from '@/components/common';
+import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary, MeasurementModal } from '@/components/common';
 import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -24,6 +24,7 @@ export default function OrderDetailsPage() {
   const [measurements, setMeasurements] = useState<{ [key: string]: any }>({});
   const [specialRequirements, setSpecialRequirements] = useState<{ [key: string]: string }>({});
   const [showMeasurements, setShowMeasurements] = useState<{ [key: string]: boolean }>({});
+  const [showMeasurementModal, setShowMeasurementModal] = useState(false);
   const [showEstimate, setShowEstimate] = useState(false);
   const [showInvoice, setShowInvoice] = useState(false);
   const [showTaxInvoice, setShowTaxInvoice] = useState(false);
@@ -521,7 +522,7 @@ export default function OrderDetailsPage() {
                 return (
                   <div className="mt-3 p-2 bg-teal-50 border border-teal-200 rounded">
                     <p className="text-xs text-teal-700 font-semibold">🚚 Local Transportation: Opted</p>
-                    <p className="text-xs text-teal-600">Charge: ₹{Math.floor(parseFloat(booking.transport_charge || '0')).toLocaleString('en-IN')}</p>
+                    <p className="text-xs text-teal-600">Charge: ₹{Math.floor(booking.transport_charge || 0).toLocaleString('en-IN')}</p>
                   </div>
                 );
               }
@@ -567,7 +568,7 @@ export default function OrderDetailsPage() {
               </div>
               {/* Booking Discount (read-only) */}
               {(() => {
-                const currentDiscount = parseFloat(booking.final_discount || '0') || 0;
+                const currentDiscount = (booking.final_discount || 0);
                 if (currentDiscount > 0) {
                   return (
                     <div className="flex justify-between items-center">
@@ -1083,6 +1084,7 @@ export default function OrderDetailsPage() {
                   fetchBooking(); // Refresh booking and transactions
                 }}
                 onStatusUpdate={handleStatusUpdate}
+                onFirstPayment={() => setShowMeasurementModal(true)}
               />
             );
           })()}
@@ -1297,6 +1299,22 @@ export default function OrderDetailsPage() {
             </div>
           </div>
         </div>
+      )}
+      {showMeasurementModal && booking && (
+        <MeasurementModal
+          mode="confirm"
+          bookingId={booking.id}
+          booking={booking}
+          products={Array.isArray(booking.products)
+            ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged')
+            : []}
+          measurements={measurements}
+          specialRequirements={specialRequirements}
+          onMeasurementsChange={setMeasurements}
+          onSpecialRequirementsChange={setSpecialRequirements}
+          onClose={() => setShowMeasurementModal(false)}
+          onSaved={fetchBooking}
+        />
       )}
     </div>
   );

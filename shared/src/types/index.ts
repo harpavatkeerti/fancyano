@@ -21,6 +21,10 @@ export interface BookingProduct {
   id: number;
   booking_id: number;
   product_id: number;
+  // Fields joined from the products table in API responses
+  code?: string;
+  name?: string;
+  image?: string;
   status: 'pending' | 'confirmed' | 'in_progress' | 'completed' | 'exchanged' | 'cancelled';
   booked_from: string;
   booked_to: string;

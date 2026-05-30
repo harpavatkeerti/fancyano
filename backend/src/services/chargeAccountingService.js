@@ -200,7 +200,7 @@ class ChargeAccountingService {
    * @param {number[]|null} [securityProductIds] - Optional list of booking_product IDs to restrict security allocation
    * @returns {Promise<Object>} - Payment details with breakdown
    */
-  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient, securityProductIds = null) {
+  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient, securityProductIds = null, transactionTypeLabel = 'booking') {
     return await this._applyPaymentOrAdjustment(
       bookingId,
       paymentAmount,
@@ -210,7 +210,8 @@ class ChargeAccountingService {
       'payment',
       'payment_applied',
       existingClient,
-      securityProductIds
+      securityProductIds,
+      transactionTypeLabel
     );
   }
 
@@ -562,7 +563,7 @@ class ChargeAccountingService {
    * @private
    * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation (payments only)
    */
-  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient, securityProductIds = null) {
+  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient, securityProductIds = null, transactionTypeLabel = null) {
     const ownClient = !existingClient;
     const client = existingClient || await pool.connect();
     try {
@@ -655,9 +656,9 @@ class ChargeAccountingService {
 
       await client.query(
         `INSERT INTO payment_transactions 
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)`,
-        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, transaction_type)
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7)`,
+        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy, transactionTypeLabel || null]
       );
 
       // Log in activity log

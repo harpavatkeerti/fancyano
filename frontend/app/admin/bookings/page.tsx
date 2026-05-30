@@ -299,7 +299,7 @@ export default function BookingsPage() {
       // If today is past the return date
       if (today > returnDate) {
         // Check if security deposit has been refunded for this product
-        const hasRefund = hasSecurityDepositRefund(booking.id, product.code);
+        const hasRefund = hasSecurityDepositRefund(booking.id, product.code ?? '');
 
         // If no refund found, product is delayed
         if (!hasRefund) {
@@ -326,7 +326,7 @@ export default function BookingsPage() {
       returnDate.setHours(0, 0, 0, 0);
 
       if (today > returnDate) {
-        const hasRefund = hasSecurityDepositRefund(booking.id, product.code);
+        const hasRefund = hasSecurityDepositRefund(booking.id, product.code ?? '');
 
         if (!hasRefund) {
           const daysDelayed = Math.floor((today.getTime() - returnDate.getTime()) / (1000 * 60 * 60 * 24));
@@ -374,7 +374,7 @@ export default function BookingsPage() {
       customer_address: booking.customer_address || '',
       booked_from: booking.booked_from.split('T')[0],
       booked_to: booking.booked_to.split('T')[0],
-      status: booking.status,
+      status: booking.status as any,
     });
 
     // Reset date change states
@@ -478,7 +478,7 @@ export default function BookingsPage() {
         await productTrackingApi.create({
           product_id: product.id,
           booking_id: booking.id,
-          product_code: product.code,
+          product_code: product.code ?? '',
           tracking_type: 'picked_by_customer',
           notes: `Automatically tracked: Product picked up by ${booking.customer_name}`,
         });

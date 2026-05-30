@@ -9,6 +9,7 @@ export { default as QRScanner } from './QRScanner';
 export { ProductTrackingModal } from './ProductTrackingModal';
 export { BookingProductTrackingModal } from './BookingProductTrackingModal';
 export { PaymentManagement } from './PaymentManagement';
+export { MeasurementModal, isFemaleClothing, isMaleClothing } from './MeasurementModal';
 export { PaymentMethodInput } from './PaymentMethodInput';
 export { ToastContainer, showToast } from './ToastContainer';
 export { ConfirmDialog } from './ConfirmDialog';

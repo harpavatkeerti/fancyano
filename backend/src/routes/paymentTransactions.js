@@ -54,6 +54,7 @@ router.post('/', async (req, res) => {
       recorded_by,
       notes,
       type,
+      transaction_type,
       booking_product_id,
       deduction_amount,
       deduction_type,
@@ -101,7 +102,8 @@ router.post('/', async (req, res) => {
       null,
       (Array.isArray(security_product_ids) && security_product_ids.length > 0)
         ? security_product_ids
-        : null
+        : null,
+      transaction_type || 'booking'
     );
 
     res.status(201).json({
@@ -119,6 +121,9 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: error.message });
     }
     if (error.message.startsWith('Security allocation insufficient')) {
+      return res.status(400).json({ error: error.message });
+    }
+    if (error.message.startsWith('First payment must be at least 50%')) {
       return res.status(400).json({ error: error.message });
     }
     console.error('Error recording transaction:', error);

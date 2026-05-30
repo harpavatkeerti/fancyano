@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { paymentTransactionsApi, bookingsApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
+import { paymentTransactionsApi, bookingsApi, lifecycleApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
@@ -15,6 +15,7 @@ interface PaymentManagementProps {
   securityDeposit: number;
   onPaymentUpdate: () => void;
   onStatusUpdate?: (status: string) => void; // Optional callback to update booking status
+  onFirstPayment?: () => void; // Optional callback fired after the first successful payment (and auto-confirm)
   userRole?: 'admin' | 'salesman'; // Role-based button visibility
   isFullyCancelled?: boolean; // Show only transaction history for fully cancelled bookings
   refreshTrigger?: number; // Increment to trigger re-fetch from parent
@@ -36,6 +37,7 @@ export function PaymentManagement({
   securityDeposit,
   onPaymentUpdate,
   onStatusUpdate,
+  onFirstPayment,
   userRole = 'admin', // Default to admin if not specified
   isFullyCancelled = false,
   refreshTrigger = 0
@@ -127,9 +129,9 @@ export function PaymentManagement({
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
       setBookingStatus(booking.status || '');
-      // Filter out cancelled products
+      // Filter out cancelled, exchanged and confirmed products — none of these should appear in refund or payment flows
       const productsList = Array.isArray(booking.products)
-        ? booking.products.filter((p: any) => p.status !== 'cancelled')
+        ? booking.products.filter((p: any) => !['cancelled', 'exchanged', 'confirmed'].includes(p.status))
         : [];
       setProducts(productsList);
     } catch (error) {
@@ -200,8 +202,11 @@ export function PaymentManagement({
         booking_id: bookingId,
         amount: amount,
         type: transactionType,
+        // For payments through this component, the business context is always 'booking'.
+        // Exchange-related sub-types (exchange_upgrade, etc.) are recorded by separate flows.
+        transaction_type: transactionType === 'payment' ? 'booking' : undefined,
         method: formData.method,
-        recorded_by: 'Admin', // TODO: Get from auth context
+        recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
         notes: formData.notes || undefined,
       };
 
@@ -210,6 +215,12 @@ export function PaymentManagement({
       }
 
       await paymentTransactionsApi.create(payload);
+
+      // Auto-confirm booking on first payment if still pending
+      if (transactionType === 'payment' && bookingStatus === 'pending') {
+        await bookingsApi.confirm(bookingId, { confirmed_by: userRole === 'admin' ? 'Admin' : 'Salesman' });
+        if (onFirstPayment) onFirstPayment();
+      }
 
       toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
       setShowRecordModal(false);
@@ -263,17 +274,10 @@ export function PaymentManagement({
     }
   }
 
-  // Helper function to check if a product already has a refund
-  function hasProductRefund(productId: number): boolean {
-    return transactions.some((t: any) => {
-      if (t.type !== 'refund') return false;
-      const method = String(t.method || '').toLowerCase().trim();
-      if (method === 'lapsed_refund') return false; // Exclude lapsed refunds
-      const notes = t.notes || '';
-      const product = products.find(p => p.id === productId);
-      if (!product) return false;
-      return notes.includes(`(${product.code})`);
-    });
+  // Helper function to check if a product already has a refund.
+  // A product's status is set to 'completed' by the backend when its security is refunded.
+  function hasProductRefund(product: any): boolean {
+    return product?.status === 'completed';
   }
 
   // Handle product-wise refund submission
@@ -320,11 +324,50 @@ export function PaymentManagement({
         }
       }
 
-      // Process refunds for each selected product
-      for (const [productIdStr, refundData] of selectedItems) {
+      // Step 1: Transition product statuses through proper lifecycle before refunding
+      const confirmedProducts = selectedItems
+        .map(([id]) => products.find((p: any) => p.id === parseInt(id)))
+        .filter((p: any) => p?.status === 'confirmed');
+      const inProgressProducts = selectedItems
+        .map(([id]) => products.find((p: any) => p.id === parseInt(id)))
+        .filter((p: any) => p?.status === 'in_progress');
+
+      // Pickup confirmed products (confirmed → in_progress)
+      if (confirmedProducts.length > 0) {
+        try {
+          await lifecycleApi.pickupProducts(bookingId, {
+            booking_product_ids: confirmedProducts.map((p: any) => p.id),
+            picked_up_by: userRole === 'admin' ? 'Admin' : 'Salesman',
+          });
+        } catch (pickupError: any) {
+          toast.error(`Pickup failed: ${pickupError.response?.data?.details || pickupError.response?.data?.error || pickupError.message}`);
+          return;
+        }
+      }
+
+      // Return products (in_progress → completed)
+      // Include both originally in_progress AND just-picked-up (were confirmed) products
+      const productsToReturn = [...confirmedProducts, ...inProgressProducts];
+      if (productsToReturn.length > 0) {
+        try {
+          await lifecycleApi.returnProducts(bookingId, {
+            returns: productsToReturn.map((p: any) => ({
+              booking_product_id: p.id,
+              damage_fee: 0,
+            })),
+            returned_by: userRole === 'admin' ? 'Admin' : 'Salesman',
+          });
+        } catch (returnError: any) {
+          toast.error(`Return failed: ${returnError.response?.data?.details || returnError.response?.data?.error || returnError.message}`);
+          return;
+        }
+      }
+
+      // Step 2: Record refund transactions for each selected item (in parallel)
+      const refundPromises = selectedItems.map(async ([productIdStr, refundData]) => {
         const productId = parseInt(productIdStr);
-        const product = products.find(p => p.id === productId);
-        if (!product) continue;
+        const product = products.find((p: any) => p.id === productId);
+        if (!product) return;
 
         const refundAmount = parseFloat(refundData.amount);
         const productSecurity = typeof product.security_deposit === 'number'
@@ -340,27 +383,26 @@ export function PaymentManagement({
         if (refundData.notes.trim()) {
           notes += `: ${refundData.notes.trim()}`;
         }
-
-        // Append general narration if provided
         if (refundNarration.trim()) {
           notes += ` | ${refundNarration.trim()}`;
         }
 
-        await paymentTransactionsApi.create({
+        return paymentTransactionsApi.create({
           booking_id: bookingId,
           amount: refundAmount,
           type: 'refund',
           method: formData.method,
-          recorded_by: 'Admin',
+          recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
           notes: notes,
-          // When there's a deduction, track it as a damage fee charge
           ...(deduction > 0 ? {
             booking_product_id: productId,
             deduction_amount: deduction,
             deduction_type: 'damage_fee',
           } : {}),
         });
-      }
+      });
+
+      await Promise.all(refundPromises);
 
       toast.success(`Refund recorded successfully for ${selectedItems.length} item(s)!`);
       setShowRecordModal(false);
@@ -462,14 +504,14 @@ export function PaymentManagement({
                   {(() => {
                     const cb = (summary as any).charge_breakdown || {};
                     const labelMap: Record<string, string> = {
-                      rent:                 'Rent',
-                      transport:            'Transport',
-                      exchange_penalty:     'Exchange Penalty',
-                      downgrade_penalty:    'Downgrade Penalty',
+                      rent: 'Rent',
+                      transport: 'Transport',
+                      exchange_penalty: 'Exchange Penalty',
+                      downgrade_penalty: 'Downgrade Penalty',
                       cancellation_penalty: 'Cancellation Penalty',
-                      damage_fee:           'Damage Fee',
-                      late_fee:             'Late Fee',
-                      security:             'Security Deposit',
+                      damage_fee: 'Damage Fee',
+                      late_fee: 'Late Fee',
+                      security: 'Security Deposit',
                     };
                     const orderedKeys = [
                       'rent', 'transport',
@@ -579,8 +621,8 @@ export function PaymentManagement({
                         <div
                           key={transaction.id}
                           className={`rounded-lg p-4 transition-colors ${isAdjustment
-                              ? 'border border-dashed border-gray-300 bg-gray-50 opacity-75'
-                              : 'border border-gray-200 hover:bg-gray-50'
+                            ? 'border border-dashed border-gray-300 bg-gray-50 opacity-75'
+                            : 'border border-gray-200 hover:bg-gray-50'
                             }`}
                         >
                           <div className="flex items-start justify-between">
@@ -769,7 +811,7 @@ export function PaymentManagement({
                       ? product.security_deposit
                       : parseFloat(product.security_deposit || '0') || 0;
 
-                    const productHasRefund = hasProductRefund(product.id);
+                    const productHasRefund = hasProductRefund(product);
                     const refundData = itemRefunds[product.id] || { selected: false, amount: '', notes: '' };
                     const refundAmountNum = parseFloat(refundData.amount) || 0;
                     const requiresNotes = refundData.selected && refundAmountNum > 0 && refundAmountNum < productSecurityDeposit;
@@ -1020,6 +1062,51 @@ export function PaymentManagement({
               />
             </div>
 
+            {/* Payment breakdown — outstanding rent/security shown live; overpayment blocked */}
+            {transactionType === 'payment' && summary && (() => {
+              const rentOut = Math.max(0,
+                (summary.charges.rent.due - summary.charges.rent.paid) +
+                (summary.charges.transport.due - summary.charges.transport.paid) +
+                (summary.charges.penalties.due - summary.charges.penalties.paid) +
+                (summary.charges.fees.due - summary.charges.fees.paid)
+              );
+              const secOut = Math.max(0, summary.charges.security.due - summary.charges.security.paid);
+              const totalBalance = Math.max(0, summary.totals.balance);
+              const entered = Number(formData.amount) || 0;
+              const hasTransport = (summary.charges.transport.due - summary.charges.transport.paid) > 0;
+              const overpayment = entered > 0 && totalBalance > 0 ? Math.max(0, entered - totalBalance) : 0;
+              return (
+                <div className="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <h4 className="text-sm font-bold text-gray-900 mb-3">Payment Breakdown</h4>
+                  <div className="flex justify-between items-center py-2 border-b border-gray-200">
+                    <span className="text-gray-700 font-medium text-sm">
+                      {hasTransport ? 'Rent + Transport Due:' : 'Rent Due:'}
+                    </span>
+                    <span className={`font-bold ${rentOut <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {rentOut <= 0 ? '✓ Fully Paid' : `₹${Math.floor(rentOut).toLocaleString('en-IN')}`}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center py-2">
+                    <span className="text-gray-700 font-medium text-sm">Security Deposit Due:</span>
+                    <span className={`font-bold ${secOut <= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {secOut <= 0 ? '✓ Fully Paid' : `₹${Math.floor(secOut).toLocaleString('en-IN')}`}
+                    </span>
+                  </div>
+                  {overpayment > 0 && (
+                    <div className="mt-3 bg-red-50 border-2 border-red-400 rounded-lg p-3 flex items-start gap-2">
+                      <span className="text-lg flex-shrink-0">❌</span>
+                      <div>
+                        <p className="font-bold text-red-800 text-sm">Cannot Accept Extra Payment</p>
+                        <p className="text-red-700 text-sm mt-0.5">
+                          Amount exceeds outstanding balance by ₹{Math.floor(overpayment).toLocaleString('en-IN')}. Please reduce the payment amount.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Boundary warning — only when payment crosses rent/security line */}
             {transactionType === 'payment' && securityPortion > 0 && rentPortion > 0 && (
               <div className="mt-4 bg-amber-50 border border-amber-300 rounded-lg p-4">
@@ -1079,7 +1166,10 @@ export function PaymentManagement({
               </Button>
               <Button
                 onClick={handleSubmit}
-                disabled={transactionType === 'payment' && !canConfirmSecurity}
+                disabled={transactionType === 'payment' && (
+                  !canConfirmSecurity ||
+                  (!!summary && (Number(formData.amount) || 0) > 0 && (Number(formData.amount) || 0) > Math.max(0, summary.totals.balance))
+                )}
                 className={`flex-1 text-white ${transactionType === 'payment'
                   ? 'bg-green-600 hover:bg-green-700 disabled:bg-green-300 disabled:cursor-not-allowed'
                   : transactionType === 'refund'
