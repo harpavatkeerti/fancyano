@@ -349,74 +349,52 @@ export default function OrderDetailsPage() {
       // Backend handles product and booking status through lifecycle APIs (pickup, return, etc.)
       // No frontend status derivation needed
 
-      // Load measurements from booking if they exist
-      if (bookingResponse.data.measurements) {
-        try {
-          const measurementsData = typeof bookingResponse.data.measurements === 'string'
-            ? JSON.parse(bookingResponse.data.measurements)
-            : bookingResponse.data.measurements;
+      // Load measurements from each product (stored in booking_products.measurements)
+      // The bookings table does NOT have a measurements column; data lives per-product.
+      const bProducts = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+      const convertedMeasurements: { [key: string]: any } = {};
+      const convertedSpecialReqs: { [key: string]: string } = {};
 
-          // Convert old format (keyed by product.id) to new format (keyed by product.id + dates)
-          const convertedMeasurements: { [key: string]: any } = {};
-          const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
+      bProducts.forEach((product: any) => {
+        const productId = product.id;
+        const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
+        const bookedTo = product.booked_to || bookingResponse.data.booked_to;
+        const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
 
-          if (typeof measurementsData === 'object' && measurementsData !== null) {
-            products.forEach((product: any) => {
-              const productId = product.id;
-              const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
-              const bookedTo = product.booked_to || bookingResponse.data.booked_to;
-              const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-
-              // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
-              // This ensures each product instance with different dates gets independent measurements
-              const productMeas = measurementsData[uniqueKey] || measurementsData[productId] || {};
-              if (Object.keys(productMeas).length > 0) {
-                // Only store with unique key - don't create backward compatibility entries
-                // to prevent overwriting when same product has multiple instances
-                convertedMeasurements[uniqueKey] = productMeas;
-              }
-            });
+        // Load measurements from this product
+        if (product.measurements) {
+          try {
+            const meas = typeof product.measurements === 'string'
+              ? JSON.parse(product.measurements)
+              : product.measurements;
+            if (meas && typeof meas === 'object' && Object.keys(meas).length > 0) {
+              convertedMeasurements[uniqueKey] = meas;
+            }
+          } catch (error) {
+            console.error('Error parsing product measurements:', error);
           }
-
-          setMeasurements(convertedMeasurements);
-        } catch (error) {
-          console.error('Error parsing measurements:', error);
         }
+
+        // Load special requirements from this product
+        if (product.special_requirements) {
+          try {
+            const req = typeof product.special_requirements === 'string'
+              ? product.special_requirements
+              : JSON.stringify(product.special_requirements);
+            if (req && req.trim()) {
+              convertedSpecialReqs[uniqueKey] = req;
+            }
+          } catch (error) {
+            console.error('Error parsing product special requirements:', error);
+          }
+        }
+      });
+
+      if (Object.keys(convertedMeasurements).length > 0) {
+        setMeasurements(convertedMeasurements);
       }
-
-      // Load special requirements from booking if they exist
-      if (bookingResponse.data.special_requirements) {
-        try {
-          const specialReqsData = typeof bookingResponse.data.special_requirements === 'string'
-            ? JSON.parse(bookingResponse.data.special_requirements)
-            : bookingResponse.data.special_requirements;
-          if (typeof specialReqsData === 'object' && specialReqsData !== null) {
-            // Convert old format to new format (keyed by product.id + dates)
-            const convertedSpecialReqs: { [key: string]: string } = {};
-            const products = Array.isArray(bookingResponse.data.products) ? bookingResponse.data.products : [];
-
-            products.forEach((product: any) => {
-              const productId = product.id;
-              const bookedFrom = product.booked_from || bookingResponse.data.booked_from;
-              const bookedTo = product.booked_to || bookingResponse.data.booked_to;
-              const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-
-              // Prioritize unique key first, then fall back to product ID only if unique key doesn't exist
-              // This ensures each product instance with different dates gets independent special requirements
-              const productReq = specialReqsData[uniqueKey] || specialReqsData[productId] || '';
-              if (productReq && typeof productReq === 'string') {
-                // Only store with unique key - don't create backward compatibility entries
-                // to prevent overwriting when same product has multiple instances
-                convertedSpecialReqs[uniqueKey] = productReq;
-              }
-            });
-
-            setSpecialRequirements(convertedSpecialReqs);
-          }
-        } catch (error) {
-          // If it's not JSON, it might be plain text (old format)
-          console.log('Special requirements is plain text, not JSON');
-        }
+      if (Object.keys(convertedSpecialReqs).length > 0) {
+        setSpecialRequirements(convertedSpecialReqs);
       }
     } catch (error) {
       console.error('Error fetching booking:', error);
