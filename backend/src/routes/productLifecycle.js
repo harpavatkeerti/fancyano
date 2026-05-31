@@ -98,38 +98,43 @@ router.post('/:bookingId/products/return', async (req, res) => {
     res.status(500).json({ error: 'Failed to return products', details: error.message });
   }
 });
-
-// GET calculate security refund amounts (read-only)
+// GET calculate security return amounts (read-only).
+// ?deduction_amount=<number> — pass the intended deduction so the backend computes
+// the full split (auto_adjust, remainder, eligible_security_products) server-side.
+// The frontend MUST NOT compute any of these values itself.
 router.get('/:bookingId/products/:productId/security-refund/calculate', async (req, res) => {
   try {
     const { productId } = req.params;
+    const deductionAmount = Number(req.query.deduction_amount) || 0;
 
-    const result = await productLifecycleService.calculateSecurityReturn(parseInt(productId));
+    const result = await productLifecycleService.calculateSecurityReturn(
+      parseInt(productId),
+      deductionAmount
+    );
 
-    res.json({
-      success: true,
-      security_calculation: result
-    });
+    res.json({ success: true, security_calculation: result });
   } catch (error) {
-    if (error.message.includes('not found') || error.message.includes('status:')) {
-      return res.status(400).json({ error: error.message });
-    }
+    const isClientError = error.message.includes('not found');
+    if (isClientError) return res.status(400).json({ error: error.message });
     console.error('Error calculating security return:', error);
     res.status(500).json({ error: 'Failed to calculate security return', details: error.message });
   }
 });
 
-// POST process security refund/adjustment (executes the transaction)
+// POST process security return (validates and executes atomically)
 router.post('/:bookingId/products/:productId/security-refund/process', async (req, res) => {
   try {
     const { productId } = req.params;
-    const { action, recorded_by } = req.body;
-
-    if (!action || !['refund', 'adjust'].includes(action)) {
-      return res.status(400).json({
-        error: 'action is required and must be "refund" or "adjust"'
-      });
-    }
+    const {
+      deduction_amount = 0,
+      deduction_type = null,
+      adjust_non_security = 0,
+      adjust_security_amount = 0,
+      security_product_ids = [],
+      refund_amount = 0,
+      payment_method = 'Cash',
+      recorded_by
+    } = req.body;
 
     if (!recorded_by) {
       return res.status(400).json({ error: 'recorded_by is required' });
@@ -137,16 +142,26 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
 
     const result = await productLifecycleService.processSecurityReturn(
       parseInt(productId),
-      action,
-      recorded_by
+      {
+        deduction_amount: Number(deduction_amount),
+        deduction_type,
+        adjust_non_security: Number(adjust_non_security),
+        adjust_security_amount: Number(adjust_security_amount),
+        security_product_ids: Array.isArray(security_product_ids) ? security_product_ids : [],
+        refund_amount: Number(refund_amount),
+        payment_method,
+        recorded_by
+      }
     );
 
-    res.json({
-      success: true,
-      security_return: result
-    });
+    res.json({ success: true, security_return: result });
   } catch (error) {
-    if (error.message.includes('not found') || error.message.includes('status:') || error.message.includes('action must be')) {
+    const isClientError = [
+      'not found', 'completed', 'sum to security', 'non-negative',
+      'deduction_type', 'security_product_ids'
+    ].some(s => error.message.includes(s));
+
+    if (isClientError) {
       return res.status(400).json({ error: error.message });
     }
     console.error('Error processing security return:', error);

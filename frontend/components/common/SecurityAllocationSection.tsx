@@ -1,5 +1,6 @@
 'use client';
 
+
 /**
  * Converts a `PaymentSummary.products` entry into `EligibleSecProduct[]`,
  * filtering out products that have no outstanding security.
@@ -132,6 +133,7 @@ export function SecurityAllocationSection({
   projectedAllocation,
   error,
 }: SecurityAllocationSectionProps) {
+
   return (
     <div className="mt-4 border border-gray-200 rounded-lg p-4">
       <h4 className="text-sm font-semibold text-gray-900 mb-3">
@@ -141,16 +143,7 @@ export function SecurityAllocationSection({
         </span>
       </h4>
 
-      {eligibleProducts.length === 1 ? (
-        <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-700">
-          <p>Will be credited to <strong>{eligibleProducts[0].name}</strong> ({eligibleProducts[0].code})</p>
-          <p className="text-xs text-gray-500 mt-1">
-            Security: ₹{eligibleProducts[0].due.toLocaleString('en-IN')} due /
-            ₹{eligibleProducts[0].paid.toLocaleString('en-IN')} paid /
-            ₹{eligibleProducts[0].remaining.toLocaleString('en-IN')} remaining
-          </p>
-        </div>
-      ) : eligibleProducts.length === 0 ? (
+      {eligibleProducts.length === 0 ? (
         <p className="text-sm text-gray-500">No products with outstanding security.</p>
       ) : (
         <div className="space-y-2">

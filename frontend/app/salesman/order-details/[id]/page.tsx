@@ -3,10 +3,10 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { bookingsApi, paymentTransactionsApi, lifecycleApi, PaymentSummary } from '@/lib/api';
+import { bookingsApi, paymentTransactionsApi, PaymentSummary } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { settingsApi } from '@/lib/settingsApi';
 import { toast } from '@/lib/toast';
@@ -748,6 +748,7 @@ export default function OrderDetailsPage() {
     );
   }
 
+  // In salesman page, exchanged / cancelled products are not required
   const products = Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'exchanged' && p.status !== 'cancelled') : [];
 
   // Use backend-provided status — no frontend status derivation
@@ -988,11 +989,7 @@ export default function OrderDetailsPage() {
                     <h3 className="text-xl font-semibold text-gray-900">
                       {product.name}
                     </h3>
-                    {isCancelled && (
-                      <span className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-semibold">
-                        ❌ Cancelled
-                      </span>
-                    )}
+                    <ProductStatusBadge status={product.status} size="md" />
                   </div>
                   {product.code && (
                     <div className="flex items-center gap-2 mb-1">
@@ -1102,6 +1099,15 @@ export default function OrderDetailsPage() {
                       </button>
                     )}
                   </div>
+                  {/* Mark Picked Up — shown for all confirmed products; backend enforces security-paid rule */}
+                  {!isCancelled && product.status === 'confirmed' && (
+                    <MarkPickedUpButton
+                      product={product}
+                      bookingId={booking!.id}
+                      pickedUpBy="Salesman"
+                      onSuccess={fetchBooking}
+                    />
+                  )}
                 </div>
               </div>
             );

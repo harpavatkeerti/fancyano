@@ -81,9 +81,10 @@ router.post('/', async (req, res) => {
       cancellation_penalties, // Array of { booking_product_id, penalty_amount }
       cancellation_reason,
       cancelled_by,
-      settlement_action, // 'refund' | 'adjust' | 'none' (optional, default 'none')
+      settlement_action, // 'adjust' | 'adjust_security' | 'collect' | 'none' (default 'none')
       payment_method,    // Payment method (e.g. 'Cash', 'UPI')
-      settlement_notes   // Optional notes for settlement
+      settlement_notes,  // Optional notes for settlement
+      security_product_ids  // Required when settlement_action === 'adjust_security'
     } = req.body;
 
     if (!booking_product_ids || !Array.isArray(booking_product_ids) || booking_product_ids.length === 0) {
@@ -92,7 +93,7 @@ router.post('/', async (req, res) => {
         example: {
           booking_product_ids: [1, 2],
           cancellation_penalties: [{ booking_product_id: 1, penalty_amount: 300 }],
-          settlement_action: 'refund',
+          settlement_action: 'adjust',
           payment_method: 'Cash'
         }
       });
@@ -128,7 +129,8 @@ router.post('/', async (req, res) => {
         {
           action: settlement_action || 'none',
           method: payment_method || 'Cash',
-          notes: settlement_notes
+          notes: settlement_notes,
+          security_product_ids: security_product_ids || []
         }
       );
       

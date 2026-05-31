@@ -8,6 +8,7 @@ import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
 import { SecurityAllocationSection } from './SecurityAllocationSection';
 import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
+import { RefundSettlementSection } from './RefundSettlementSection';
 
 interface PaymentManagementProps {
   bookingId: number;
@@ -54,9 +55,9 @@ export function PaymentManagement({
     method: 'Cash',
     notes: '',
   });
-  // Product-wise refund state (for enhanced refund modal)
-  const [itemRefunds, setItemRefunds] = useState<{ [key: number]: { selected: boolean; amount: string; notes: string } }>({});
-  const [refundNarration, setRefundNarration] = useState(''); // General narration for the entire refund
+  // Refund modal: which product the user chose to refund (one at a time via RefundSettlementSection)
+  const [refundProductId, setRefundProductId] = useState<number | null>(null);
+  const [refundMethod, setRefundMethod] = useState('Cash');
 
   // Boundary warning + security allocation state
   const {
@@ -173,6 +174,13 @@ export function PaymentManagement({
 
 
 
+  // Outstanding balance from backend — charge-based (product_charges.due - paid),
+  // matching the backend's own overpayment check. No frontend computation.
+  function getOutstandingBalance(): number {
+    if (!summary) return 0;
+    return Math.max(0, (summary.totals as any)?.outstanding_balance ?? 0);
+  }
+
   async function handleSubmit() {
     try {
       const amount = parseFloat(formData.amount);
@@ -187,10 +195,9 @@ export function PaymentManagement({
       }
 
       // Hard cap: reject payment exceeding outstanding balance
+      // Uses charge-based outstanding (matches category breakdown display and backend check)
       if (transactionType === 'payment' && summary) {
-        const totalRequired = summary.totals?.total_due || 0;
-        const currentPaid = summary.totals?.total_paid || 0;
-        const remainingBalance = Math.max(0, totalRequired - currentPaid);
+        const remainingBalance = getOutstandingBalance();
 
         if (amount > remainingBalance) {
           toast.error(`Payment exceeds outstanding balance. Maximum allowed: ₹${Math.floor(remainingBalance).toLocaleString('en-IN')}`);
@@ -274,155 +281,48 @@ export function PaymentManagement({
     }
   }
 
-  // Helper function to check if a product already has a refund.
-  // A product's status is set to 'completed' by the backend when its security is refunded.
+  // Helper function to check if a product already has its security returned.
+  // Status is 'completed' after return; further security return is blocked by the backend.
   function hasProductRefund(product: any): boolean {
     return product?.status === 'completed';
   }
 
-  // Handle product-wise refund submission
-  async function handleProductRefundSubmit() {
+  // Handle security return for a single product via the new backend endpoint.
+  // 1. If the product is still in_progress, transition it to completed first.
+  // 2. Then call processSecurityRefund with the user's explicit settlement amounts.
+  async function handleSecurityReturn(settlement: import('./RefundSettlementSection').SecuritySettlement) {
+    if (refundProductId === null) return;
+    const product = products.find((p: any) => p.id === refundProductId);
+    if (!product) return;
+
     try {
-      // Validate selections
-      const selectedItems = Object.entries(itemRefunds).filter(([_, data]) => data.selected);
-
-      if (selectedItems.length === 0) {
-        toast.warning('Please select at least one product to refund');
-        return;
-      }
-
-      if (!formData.method) {
-        toast.warning('Please select a payment method');
-        return;
-      }
-
-      // Validate each selected item
-      for (const [productIdStr, refundData] of selectedItems) {
-        const productId = parseInt(productIdStr);
-        const product = products.find(p => p.id === productId);
-        if (!product) continue;
-
-        const refundAmount = parseFloat(refundData.amount);
-        const productSecurity = typeof product.security_deposit === 'number'
-          ? product.security_deposit
-          : parseFloat(String(product.security_deposit || '0')) || 0;
-
-        if (isNaN(refundAmount) || refundAmount < 0) {
-          toast.warning(`Please enter a valid refund amount for ${product.name}`);
-          return;
-        }
-
-        if (refundAmount > productSecurity) {
-          toast.warning(`Refund amount for ${product.name} cannot exceed security deposit of ${formatCurrency(productSecurity)}`);
-          return;
-        }
-
-        // Require notes if refund is less than security
-        if (refundAmount < productSecurity && !refundData.notes.trim()) {
-          toast.warning(`Please provide narration for ${product.name} - refund is less than security deposit`);
-          return;
-        }
-      }
-
-      // Step 1: Transition product statuses through proper lifecycle before refunding
-      const confirmedProducts = selectedItems
-        .map(([id]) => products.find((p: any) => p.id === parseInt(id)))
-        .filter((p: any) => p?.status === 'confirmed');
-      const inProgressProducts = selectedItems
-        .map(([id]) => products.find((p: any) => p.id === parseInt(id)))
-        .filter((p: any) => p?.status === 'in_progress');
-
-      // Pickup confirmed products (confirmed → in_progress)
-      if (confirmedProducts.length > 0) {
-        try {
-          await lifecycleApi.pickupProducts(bookingId, {
-            booking_product_ids: confirmedProducts.map((p: any) => p.id),
-            picked_up_by: userRole === 'admin' ? 'Admin' : 'Salesman',
-          });
-        } catch (pickupError: any) {
-          toast.error(`Pickup failed: ${pickupError.response?.data?.details || pickupError.response?.data?.error || pickupError.message}`);
-          return;
-        }
-      }
-
-      // Return products (in_progress → completed)
-      // Include both originally in_progress AND just-picked-up (were confirmed) products
-      const productsToReturn = [...confirmedProducts, ...inProgressProducts];
-      if (productsToReturn.length > 0) {
-        try {
-          await lifecycleApi.returnProducts(bookingId, {
-            returns: productsToReturn.map((p: any) => ({
-              booking_product_id: p.id,
-              damage_fee: 0,
-            })),
-            returned_by: userRole === 'admin' ? 'Admin' : 'Salesman',
-          });
-        } catch (returnError: any) {
-          toast.error(`Return failed: ${returnError.response?.data?.details || returnError.response?.data?.error || returnError.message}`);
-          return;
-        }
-      }
-
-      // Step 2: Record refund transactions for each selected item (in parallel)
-      const refundPromises = selectedItems.map(async ([productIdStr, refundData]) => {
-        const productId = parseInt(productIdStr);
-        const product = products.find((p: any) => p.id === productId);
-        if (!product) return;
-
-        const refundAmount = parseFloat(refundData.amount);
-        const productSecurity = typeof product.security_deposit === 'number'
-          ? product.security_deposit
-          : parseFloat(String(product.security_deposit || '0')) || 0;
-        const deduction = productSecurity - refundAmount;
-
-        // Build detailed notes
-        let notes = `Refund for ${product.name} (${product.code})`;
-        if (deduction > 0) {
-          notes += ` - ${formatCurrency(deduction)} deducted`;
-        }
-        if (refundData.notes.trim()) {
-          notes += `: ${refundData.notes.trim()}`;
-        }
-        if (refundNarration.trim()) {
-          notes += ` | ${refundNarration.trim()}`;
-        }
-
-        return paymentTransactionsApi.create({
-          booking_id: bookingId,
-          amount: refundAmount,
-          type: 'refund',
-          method: formData.method,
-          recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
-          notes: notes,
-          ...(deduction > 0 ? {
-            booking_product_id: productId,
-            deduction_amount: deduction,
-            deduction_type: 'damage_fee',
-          } : {}),
+      // Step 1: transition in_progress → completed if needed
+      if (product.status === 'in_progress') {
+        await lifecycleApi.returnProducts(bookingId, {
+          returns: [{ booking_product_id: refundProductId, damage_fee: 0 }],
+          returned_by: userRole === 'admin' ? 'Admin' : 'Salesman',
         });
+      }
+
+      // Step 2: process the security return atomically
+      await lifecycleApi.processSecurityRefund(bookingId, refundProductId, {
+        ...settlement,
+        deduction_type: settlement.deduction_type ?? undefined,
+        recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
       });
 
-      await Promise.all(refundPromises);
-
-      toast.success(`Refund recorded successfully for ${selectedItems.length} item(s)!`);
+      toast.success('Security return processed successfully!');
       setShowRecordModal(false);
-      setFormData({ amount: '', method: 'Cash', notes: '' });
-      setItemRefunds({});
-      setRefundNarration('');
+      setRefundProductId(null);
 
-      // Refresh transactions and summary
       await fetchTransactions();
       await fetchSummary();
-
-      // Update booking status
+      await fetchBookingData();
       await calculateAndUpdateBookingStatus();
-
-      // Notify parent
       onPaymentUpdate();
-    } catch (error) {
-      console.error('Error recording refund:', error);
-      const message = (error as any).response?.data?.details || (error as any).response?.data?.error || 'Error recording refund';
-      toast.error(message);
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.response?.data?.details || error?.message || 'Error processing refund';
+      throw new Error(message); // Let RefundSettlementSection display it
     }
   }
 
@@ -448,12 +348,9 @@ export function PaymentManagement({
             const totalPaid = summary.totals?.total_paid || 0;
             const totalRefunded = summary.totals?.total_refunded || 0;
             const discountAmount = summary.final_discount || 0;
-            // Use the backend's pre-computed balance (total_due - total_paid).
-            // Do NOT add totalRefunded back here: total_paid is derived from product_charges.paid_amount
-            // (never reduced by refunds), and total_due already excludes cancelled products' charges.
-            // The old formula (totalRequired - totalPaid + totalRefunded) created a phantom liability
-            // equal to the refund amount after every cancellation refund.
-            const balanceDue = summary.totals?.balance ?? 0;
+            // Use the backend's charge-based outstanding_balance (sum of due - paid per charge).
+            // This matches the category breakdown rows above and the backend's overpayment check.
+            const balanceDue = (summary.totals as any)?.outstanding_balance ?? 0;
             const isFullyPaid = balanceDue <= 0;
             // Check for refunds in transactions
             const hasAnyRefund = totalRefunded > 0;
@@ -479,7 +376,7 @@ export function PaymentManagement({
                         onClick={() => {
                           setTransactionType('refund');
                           setFormData({ amount: '', method: 'Cash', notes: '' });
-                          setItemRefunds({}); // Reset product selections
+                          setRefundProductId(null); // Reset product selection
                           setShowRecordModal(true);
                         }}
                         className="bg-red-600 hover:bg-red-700 text-white font-semibold px-6"
@@ -732,301 +629,96 @@ export function PaymentManagement({
         )}
       </div>
 
-      {/* Record Transaction Modal */}
+      {/* Refund Modal — product selection + RefundSettlementSection */}
       {showRecordModal && transactionType === 'refund' ? (
-        // Enhanced Refund Modal (Product-wise)
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-4xl w-full max-h-[90vh] overflow-y-auto p-8">
-            <div className="flex items-center justify-between mb-8 sticky top-0 bg-white pb-4 border-b">
-              <div className="flex items-center">
-                <button
-                  onClick={() => {
-                    setShowRecordModal(false);
-                    setItemRefunds({});
-                    setFormData({ amount: '', method: 'Cash', notes: '' });
-                    setRefundNarration('');
-                  }}
-                  className="mr-4 text-gray-600 hover:text-gray-900"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                  </svg>
-                </button>
-                <h2 className="text-3xl font-bold text-gray-900">Record Refund</h2>
+          <div className="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto p-8">
+
+            {/* Header */}
+            <div className="flex items-center justify-between mb-6 sticky top-0 bg-white pb-4 border-b">
+              <div className="flex items-center gap-3">
+                {refundProductId !== null && (
+                  <button
+                    onClick={() => setRefundProductId(null)}
+                    className="text-gray-500 hover:text-gray-900"
+                    aria-label="Back to product list"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                )}
+                <h2 className="text-2xl font-bold text-gray-900">
+                  {refundProductId !== null
+                    ? `Refund — ${products.find((p: any) => p.id === refundProductId)?.name ?? ''}`
+                    : 'Record Refund'}
+                </h2>
               </div>
+              <button
+                onClick={() => { setShowRecordModal(false); setRefundProductId(null); }}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+              >
+                ×
+              </button>
             </div>
 
-            <PaymentMethodInput
-              method={formData.method}
-              onMethodChange={(m) => setFormData({ ...formData, method: m })}
-              notes={refundNarration}
-              onNotesChange={setRefundNarration}
-              notesLabel="Narration / Notes (Optional)"
-              notesPlaceholder="Enter transaction details, UPI ID, reference number, etc."
-              colorScheme="red"
-              showQR={false}
-            />
-
-            <div className="mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Items for Refund</h3>
-              {products.length === 0 ? (
-                // Fallback: Simple refund form when no products exist (already refunded/deleted)
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
-                  <p className="text-sm text-yellow-800 mb-3">
-                    ℹ️ No products found. This may occur if products were already freed. You can still record a manual refund below.
-                  </p>
-                  <div className="space-y-4">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Refund Amount (₹) *
-                      </label>
-                      <input
-                        type="number"
-                        placeholder="Enter refund amount"
-                        value={formData.amount}
-                        onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
-                        step="0.01"
-                        min="0"
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Notes (Optional)
-                      </label>
-                      <textarea
-                        placeholder="Add notes about this refund..."
-                        value={formData.notes}
-                        onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                        rows={3}
-                        className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {products.map((product: any) => {
-                    const productSecurityDeposit = typeof product.security_deposit === 'number'
-                      ? product.security_deposit
-                      : parseFloat(product.security_deposit || '0') || 0;
-
-                    const productHasRefund = hasProductRefund(product);
-                    const refundData = itemRefunds[product.id] || { selected: false, amount: '', notes: '' };
-                    const refundAmountNum = parseFloat(refundData.amount) || 0;
-                    const requiresNotes = refundData.selected && refundAmountNum > 0 && refundAmountNum < productSecurityDeposit;
-                    const hasError = refundData.selected && refundAmountNum > productSecurityDeposit;
-
+            {/* Product list — shown when no product is selected yet */}
+            {refundProductId === null ? (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600 mb-4">Select the product to refund security for:</p>
+                {products.length === 0 ? (
+                  <p className="text-sm text-gray-500">No eligible products found.</p>
+                ) : (
+                  products.map((product: any) => {
+                    const alreadyRefunded = hasProductRefund(product);
                     return (
                       <div
                         key={product.id}
-                        className={`border-2 rounded-lg p-4 ${productHasRefund
-                          ? 'border-gray-300 bg-gray-100 opacity-60'
-                          : refundData.selected
-                            ? 'border-red-500 bg-red-50'
-                            : 'border-gray-200 bg-white'
-                          }`}
+                        className={`flex items-center justify-between border rounded-lg p-4 ${
+                          alreadyRefunded ? 'border-gray-200 bg-gray-50 opacity-60' : 'border-gray-200 bg-white'
+                        }`}
                       >
-                        <div className="flex items-start gap-4">
-                          {/* Checkbox */}
-                          <div className="flex items-center pt-1">
-                            <input
-                              type="checkbox"
-                              checked={refundData.selected}
-                              disabled={productHasRefund}
-                              onChange={(e) => {
-                                if (!productHasRefund) {
-                                  setItemRefunds({
-                                    ...itemRefunds,
-                                    [product.id]: {
-                                      selected: e.target.checked,
-                                      amount: e.target.checked ? String(productSecurityDeposit) : '',
-                                      notes: e.target.checked ? refundData.notes : '',
-                                    },
-                                  });
-                                }
-                              }}
-                              className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                            />
-                          </div>
-
-                          {/* Product Info */}
-                          <div className="flex-1">
-                            <div className="flex items-center justify-between mb-2">
-                              <div>
-                                <h4 className={`font-semibold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
-                                  {product.name}
-                                  {productHasRefund && <span className="ml-2 text-xs text-green-600 font-normal">(Refund Completed)</span>}
-                                </h4>
-                                <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Code: {product.code}</p>
-                              </div>
-                              <div className="text-right">
-                                <p className={`text-sm ${productHasRefund ? 'text-gray-400' : 'text-gray-600'}`}>Security Deposit</p>
-                                <p className={`font-bold ${productHasRefund ? 'text-gray-500' : 'text-gray-900'}`}>
-                                  ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
-                                </p>
-                              </div>
-                            </div>
-
-                            {productHasRefund && (
-                              <div className="mt-4 pt-4 border-t border-gray-200">
-                                <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                                  <p className="text-sm text-green-800 font-medium">
-                                    ✓ Refund already completed for this item
-                                  </p>
-                                </div>
-                              </div>
-                            )}
-
-                            {!productHasRefund && refundData.selected && (
-                              <div className="mt-4 space-y-4 pt-4 border-t border-gray-200">
-                                {/* Refund Amount Input */}
-                                <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                                    Refund Amount (₹) *
-                                  </label>
-                                  <input
-                                    type="number"
-                                    placeholder="Enter refund amount"
-                                    value={refundData.amount}
-                                    onChange={(e) => {
-                                      setItemRefunds({
-                                        ...itemRefunds,
-                                        [product.id]: {
-                                          ...refundData,
-                                          amount: e.target.value,
-                                        },
-                                      });
-                                    }}
-                                    max={productSecurityDeposit}
-                                    step="0.01"
-                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${hasError ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                                      }`}
-                                  />
-                                  {hasError && (
-                                    <p className="text-red-600 text-sm mt-1">
-                                      Amount cannot exceed security deposit of ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
-                                    </p>
-                                  )}
-                                  {refundData.selected && refundAmountNum > 0 && refundAmountNum <= productSecurityDeposit && (
-                                    <div className="flex justify-between text-xs mt-1">
-                                      <p className="text-gray-500">
-                                        Maximum: ₹{Math.floor(productSecurityDeposit).toLocaleString('en-IN')}
-                                      </p>
-                                      {refundAmountNum < productSecurityDeposit && (
-                                        <p className="text-orange-600 font-semibold">
-                                          Deduction: ₹{Math.floor(productSecurityDeposit - refundAmountNum).toLocaleString('en-IN')}
-                                        </p>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-
-                                {/* Notes Input */}
-                                <div>
-                                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                                    Narration / Notes {requiresNotes && <span className="text-red-600">*</span>}
-                                  </label>
-                                  {requiresNotes && (
-                                    <p className="text-sm text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-lg p-2 mb-2">
-                                      ⚠️ Refund amount is less than security deposit. Please provide narration explaining the reason.
-                                    </p>
-                                  )}
-                                  <textarea
-                                    value={refundData.notes}
-                                    onChange={(e) => {
-                                      setItemRefunds({
-                                        ...itemRefunds,
-                                        [product.id]: {
-                                          ...refundData,
-                                          notes: e.target.value,
-                                        },
-                                      });
-                                    }}
-                                    rows={3}
-                                    placeholder={requiresNotes ? "Required: Explain deduction reason (e.g., 'Stain on sleeve', 'Missing button')..." : "Optional: Add notes about this refund..."}
-                                    className={`w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 ${requiresNotes && !refundData.notes.trim() ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                                      }`}
-                                  />
-                                  {requiresNotes && !refundData.notes.trim() && (
-                                    <p className="text-red-600 text-sm mt-1">
-                                      Narration is required when refund is less than security deposit
-                                    </p>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-                          </div>
+                        <div>
+                          <p className={`font-semibold ${alreadyRefunded ? 'text-gray-500' : 'text-gray-900'}`}>
+                            {product.name}
+                            {alreadyRefunded && <span className="ml-2 text-xs text-green-600 font-normal">(Refund Completed)</span>}
+                          </p>
+                          <p className="text-xs text-gray-500">{product.code}</p>
                         </div>
+                        <Button
+                          onClick={() => setRefundProductId(product.id)}
+                          disabled={alreadyRefunded}
+                          className="bg-red-600 hover:bg-red-700 text-white text-sm disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          Refund
+                        </Button>
                       </div>
                     );
-                  })}
-                </div>
-              )}
-            </div>
-
-
-
-            {/* Summary of selected refunds */}
-            {products.length > 0 && Object.values(itemRefunds).some(r => r.selected) && (
-              <div className="mt-6 bg-blue-50 border border-blue-300 rounded-lg p-4">
-                <h4 className="font-semibold text-blue-900 mb-2">Refund Summary</h4>
-                <div className="space-y-1 text-sm">
-                  {Object.entries(itemRefunds)
-                    .filter(([_, data]) => data.selected)
-                    .map(([productIdStr, data]) => {
-                      const product = products.find(p => p.id === parseInt(productIdStr));
-                      if (!product) return null;
-                      const amount = parseFloat(data.amount) || 0;
-                      const security = typeof product.security_deposit === 'number'
-                        ? product.security_deposit
-                        : parseFloat(product.security_deposit || '0') || 0;
-                      const deduction = security - amount;
-                      return (
-                        <div key={productIdStr} className="flex justify-between text-blue-800">
-                          <span>{product.name} ({product.code})</span>
-                          <span className="font-semibold">
-                            ₹{Math.floor(amount).toLocaleString('en-IN')}
-                            {deduction > 0 && <span className="text-orange-600 ml-2">(-₹{Math.floor(deduction).toLocaleString('en-IN')})</span>}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  <div className="border-t border-blue-300 pt-2 mt-2 flex justify-between font-bold text-blue-900">
-                    <span>Total Refund:</span>
-                    <span>
-                      ₹{Math.floor(
-                        Object.entries(itemRefunds)
-                          .filter(([_, data]) => data.selected)
-                          .reduce((sum, [_, data]) => sum + (parseFloat(data.amount) || 0), 0)
-                      ).toLocaleString('en-IN')}
-                    </span>
-                  </div>
+                  })
+                )}
+                <div className="pt-4 border-t border-gray-200">
+                  <Button
+                    onClick={() => { setShowRecordModal(false); setRefundProductId(null); }}
+                    className="w-full bg-gray-200 hover:bg-gray-300 text-gray-800"
+                  >
+                    Cancel
+                  </Button>
                 </div>
               </div>
+            ) : (
+              /* Settlement section for the selected product */
+              <RefundSettlementSection
+                bookingId={bookingId}
+                bookingProductId={refundProductId}
+                paymentMethod={refundMethod}
+                onPaymentMethodChange={setRefundMethod}
+                onConfirm={handleSecurityReturn}
+                onCancel={() => setRefundProductId(null)}
+              />
             )}
-
-            <div className="flex gap-3 mt-6 pt-6 border-t border-gray-200">
-              <Button
-                onClick={() => {
-                  setShowRecordModal(false);
-                  setItemRefunds({});
-                  setFormData({ amount: '', method: 'Cash', notes: '' });
-                  setRefundNarration('');
-                }}
-                className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800"
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={products.length === 0 ? handleSubmit : handleProductRefundSubmit}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white"
-              >
-                Confirm Refund
-              </Button>
-            </div>
           </div>
         </div>
+
       ) : showRecordModal ? (
         // Simple Modal for Payment/Adjustment
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -1168,7 +860,7 @@ export function PaymentManagement({
                 onClick={handleSubmit}
                 disabled={transactionType === 'payment' && (
                   !canConfirmSecurity ||
-                  (!!summary && (Number(formData.amount) || 0) > 0 && (Number(formData.amount) || 0) > Math.max(0, summary.totals.balance))
+                  (!!summary && (Number(formData.amount) || 0) > 0 && (Number(formData.amount) || 0) > getOutstandingBalance())
                 )}
                 className={`flex-1 text-white ${transactionType === 'payment'
                   ? 'bg-green-600 hover:bg-green-700 disabled:bg-green-300 disabled:cursor-not-allowed'

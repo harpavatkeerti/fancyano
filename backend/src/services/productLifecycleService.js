@@ -318,14 +318,14 @@ class ProductLifecycleService {
       }
 
       // MONEY FIRST — process settlement before status change, in same transaction
-      const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes } = settlement;
+      const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes, security_product_ids: settlementSecProductIds = [] } = settlement;
       let settlementResult = null;
       const settlementAmount = Math.abs(diffAmount);
       if (settlementAction !== 'none' && settlementAmount > 0) {
         settlementResult = await this.processCancellationSettlement(
           bookingProduct.booking_id, settlementAmount, settlementAction,
           settlementMethod, userId, settlementNotes, client,
-          [bookingProductId]
+          [bookingProductId], settlementSecProductIds
         );
       }
 
@@ -418,9 +418,9 @@ class ProductLifecycleService {
    * @param {Object} [existingClient] - Optional DB client to share transaction
    * @returns {Promise<Object>} - Settlement details
    */
-  async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient, excludeProductIds = []) {
-    if (!['refund', 'adjust', 'collect', 'none'].includes(action)) {
-      throw new Error('settlement_action must be "refund", "adjust", "collect", or "none"');
+  async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient, excludeProductIds = [], securityProductIds = []) {
+    if (!['refund', 'adjust', 'adjust_security', 'collect', 'none'].includes(action)) {
+      throw new Error('settlement_action must be "refund", "adjust", "adjust_security", "collect", or "none"');
     }
 
     if (action === 'none' || amount <= 0) {
@@ -458,7 +458,8 @@ class ProductLifecycleService {
           }), recordedBy]
         );
       } else if (action === 'adjust') {
-        // Get current outstanding balance, excluding the product(s) being cancelled
+        // Get current outstanding non-security balance, excluding the product(s) being cancelled.
+        // Security is excluded here — security credits are handled explicitly via adjust_security.
         const balanceResult = await client.query(
           `SELECT 
              (COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0))::INTEGER as remaining_balance
@@ -466,7 +467,8 @@ class ProductLifecycleService {
            JOIN booking_products bp ON pc.booking_product_id = bp.id
            WHERE bp.booking_id = $1
              AND bp.status != 'cancelled'
-             AND NOT (bp.id = ANY($2::int[]))`,
+             AND NOT (bp.id = ANY($2::int[]))
+             AND pc.charge_type NOT IN ('security')`,
           [bookingId, excludeProductIds]
         );
         const remainingDues = Math.max(0, balanceResult.rows[0].remaining_balance || 0);
@@ -520,6 +522,91 @@ class ProductLifecycleService {
               notes
             }), recordedBy]
           );
+        }
+      } else if (action === 'adjust_security') {
+        // Credit the cancellation refund toward pending security of specific other products.
+        // Step 1 (mandatory): auto-adjust non-security dues first, same as 'adjust' action.
+        // Step 2: credit the remainder to selected security products.
+        if (!securityProductIds || securityProductIds.length === 0) {
+          throw new Error('security_product_ids is required for adjust_security settlement');
+        }
+
+        // ── Step 1: auto-adjust non-security dues ──────────────────────────────
+        const nonSecDuesResult = await client.query(
+          `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER AS remaining
+           FROM product_charges pc
+           JOIN booking_products bp ON pc.booking_product_id = bp.id
+           WHERE bp.booking_id = $1
+             AND bp.status NOT IN ('cancelled', 'exchanged')
+             AND NOT (bp.id = ANY($2::int[]))
+             AND pc.charge_type NOT IN ('security')`,
+          [bookingId, excludeProductIds]
+        );
+        const nonSecDues = Math.max(0, nonSecDuesResult.rows[0].remaining || 0);
+        const autoAdjust = Math.min(amount, nonSecDues);
+
+        if (autoAdjust > 0) {
+          await chargeAccountingService._applyPaymentInternal(bookingId, autoAdjust, client, null, excludeProductIds);
+          await client.query(
+            `INSERT INTO payment_transactions
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+             VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+            [bookingId, autoAdjust,
+              `Cancellation refund of ₹${autoAdjust} auto-adjusted against outstanding dues`,
+              recordedBy]
+          );
+          await client.query(
+            `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+             VALUES ($1, 'adjustment_applied', $2, $3)`,
+            [bookingId, JSON.stringify({ amount: autoAdjust, reason: 'auto-adjust non-security dues', notes }), recordedBy]
+          );
+        }
+
+        // ── Step 2: credit remainder to selected security products ─────────────
+        const afterAutoAdjust = amount - autoAdjust;
+
+        if (afterAutoAdjust > 0) {
+          const secCapResult = await client.query(
+            `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER AS capacity
+             FROM product_charges pc
+             JOIN booking_products bp ON pc.booking_product_id = bp.id
+             WHERE bp.id = ANY($1::int[])
+               AND pc.charge_type = 'security'`,
+            [securityProductIds]
+          );
+          const secCapacity = Math.max(0, secCapResult.rows[0].capacity || 0);
+          const adjustAmount = Math.min(afterAutoAdjust, secCapacity);
+          const refundRemainder = afterAutoAdjust - adjustAmount;
+
+          if (adjustAmount > 0) {
+            await chargeAccountingService._applyPaymentInternal(
+              bookingId, adjustAmount, client, securityProductIds, excludeProductIds
+            );
+            await client.query(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+               VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+              [bookingId, adjustAmount,
+                notes || `Cancellation refund of ₹${adjustAmount} credited to security of other product(s)`,
+                recordedBy]
+            );
+            await client.query(
+              `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+               VALUES ($1, 'adjustment_applied', $2, $3)`,
+              [bookingId, JSON.stringify({ amount: adjustAmount, security_product_ids: securityProductIds, notes }), recordedBy]
+            );
+          }
+
+          if (refundRemainder > 0) {
+            await client.query(
+              `INSERT INTO payment_transactions
+               (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+               VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+              [bookingId, refundRemainder, paymentMethod || 'Cash',
+                `Cancellation refund remainder (₹${refundRemainder}) after crediting security`,
+                recordedBy]
+            );
+          }
         }
       } else if (action === 'collect') {
         // Collect penalty from customer — record incoming payment
@@ -840,172 +927,303 @@ class ProductLifecycleService {
   }
 
   /**
-   * Calculate security deposit refund/adjustment amounts (read-only, no transactions)
+   * Calculate security deposit settlement amounts (read-only, no transactions).
+   *
+   * Accepts an optional deduction_amount so the frontend never needs to compute
+   * any split itself — all business logic lives here.
+   *
+   * No status gate — calculate is called before the user confirms, so the product
+   * may still be 'in_progress'. The actual status enforcement is in processSecurityReturn.
+   *
    * @param {number} bookingProductId - Booking product ID
-   * @returns {Promise<Object>} - Calculated amounts {adjusted_amount, refund_amount, total_security, balance_due}
+   * @param {number} [deductionAmount=0] - Damage/late fee the user intends to retain
+   * @returns {Promise<Object>} {
+   *   total_security, deduction_amount, net_security,
+   *   non_security_pending, auto_adjust_amount, remainder_amount,
+   *   eligible_security_products
+   * }
    */
-  async calculateSecurityReturn(bookingProductId) {
+  async calculateSecurityReturn(bookingProductId, deductionAmount = 0) {
+    const bpResult = await pool.query(
+      'SELECT booking_id, status FROM booking_products WHERE id = $1',
+      [bookingProductId]
+    );
+    if (bpResult.rows.length === 0) throw new Error('Booking product not found');
+    const { booking_id } = bpResult.rows[0];
+
+    // Authoritative security paid (from product_charges, not booking_products face value)
+    const secResult = await pool.query(
+      `SELECT paid_amount FROM product_charges
+       WHERE booking_product_id = $1 AND charge_type = 'security'`,
+      [bookingProductId]
+    );
+    if (secResult.rows.length === 0) throw new Error('No security charge found for this product');
+    const totalSecurity = secResult.rows[0].paid_amount;
+
+    const deduction = Math.max(0, Math.min(deductionAmount, totalSecurity));
+    const netSecurity = totalSecurity - deduction;
+
+    // Non-security pending on OTHER active products (rent, transport, penalties, fees)
+    const nonSecResult = await pool.query(
+      `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER AS pending
+       FROM product_charges pc
+       JOIN booking_products bp ON pc.booking_product_id = bp.id
+       WHERE bp.booking_id = $1
+         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+         AND bp.id != $2
+         AND pc.charge_type != 'security'`,
+      [booking_id, bookingProductId]
+    );
+    const nonSecurityPending = Math.max(0, nonSecResult.rows[0].pending);
+
+    // auto_adjust: applied automatically against non-security dues (no user choice needed)
+    const autoAdjust = Math.min(netSecurity, nonSecurityPending);
+    // remainder: user decides — refund cash or credit to other products' security
+    const remainder = netSecurity - autoAdjust;
+
+    // Products with outstanding security the user can credit toward
+    const eligibleResult = await pool.query(
+      `SELECT bp.id                                           AS "bpId",
+              p.name                                         AS name,
+              p.code                                         AS code,
+              pc.due_amount                                  AS due,
+              pc.paid_amount                                 AS paid,
+              (pc.due_amount - pc.paid_amount)::INTEGER      AS remaining,
+              bp.booked_from                                 AS "bookedFrom"
+       FROM product_charges pc
+       JOIN booking_products bp ON pc.booking_product_id = bp.id
+       JOIN products p ON bp.product_id = p.id
+       WHERE bp.booking_id = $1
+         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+         AND bp.id != $2
+         AND pc.charge_type = 'security'
+         AND (pc.due_amount - pc.paid_amount) > 0
+       ORDER BY bp.booked_from ASC, bp.id ASC`,
+      [booking_id, bookingProductId]
+    );
+
+    return {
+      booking_id,
+      booking_product_id: bookingProductId,
+      total_security: totalSecurity,
+      deduction_amount: deduction,
+      net_security: netSecurity,
+      non_security_pending: nonSecurityPending,
+      auto_adjust_amount: autoAdjust,
+      remainder_amount: remainder,
+      eligible_security_products: eligibleResult.rows
+    };
+  }
+
+  /**
+   * Process security deposit return — explicit amounts, full validation, atomic execution.
+   *
+   * The frontend calls calculateSecurityReturn to get the computed split, then
+   * sends the user's explicit choices here. This function validates everything
+   * server-side and raises descriptive errors on any issue.
+   *
+   * @param {number} bookingProductId - Booking product ID (must be 'completed')
+   * @param {Object} opts
+   * @param {number}   opts.deduction_amount       - ≥ 0: damage/late fee retained from security
+   * @param {string}   opts.deduction_type         - 'damage_fee'|'late_fee' (required if deduction_amount > 0)
+   * @param {number}   opts.adjust_non_security    - ≥ 0: applied against rent/transport/fees on other products
+   * @param {number}   opts.adjust_security_amount - ≥ 0: applied against pending security on other products
+   * @param {number[]} opts.security_product_ids   - required (non-empty) if adjust_security_amount > 0
+   * @param {number}   opts.refund_amount          - ≥ 0: cash refunded to customer
+   * @param {string}   opts.payment_method         - 'Cash'|'UPI'|etc.
+   * @param {string}   opts.recorded_by
+   * @returns {Promise<Object>}
+   */
+  async processSecurityReturn(bookingProductId, {
+    deduction_amount = 0,
+    deduction_type = null,
+    adjust_non_security = 0,
+    adjust_security_amount = 0,
+    security_product_ids = [],
+    refund_amount = 0,
+    payment_method = 'Cash',
+    recorded_by
+  } = {}) {
+    const client = await pool.connect();
     try {
-      // Get booking product
-      const bpResult = await pool.query(
+      await client.query('BEGIN');
+
+      // ── 1. Fetch product and security charge ────────────────────────────────
+      const bpResult = await client.query(
         'SELECT booking_id, status FROM booking_products WHERE id = $1',
         [bookingProductId]
       );
-
-      if (bpResult.rows.length === 0) {
-        throw new Error('Booking product not found');
-      }
+      if (bpResult.rows.length === 0) throw new Error('Booking product not found');
 
       const { booking_id, status } = bpResult.rows[0];
-
-      // Only allow security return after product is completed
       if (status !== 'completed') {
-        throw new Error(`Cannot calculate security return for product with status: ${status}`);
+        throw new Error(`Security return requires product status 'completed', got '${status}'`);
       }
 
-      // Get security charge
-      const securityResult = await pool.query(
-        `SELECT due_amount, paid_amount FROM product_charges 
+      const secResult = await client.query(
+        `SELECT paid_amount FROM product_charges
          WHERE booking_product_id = $1 AND charge_type = 'security'`,
         [bookingProductId]
       );
+      if (secResult.rows.length === 0) throw new Error('No security charge found for this product');
 
-      if (securityResult.rows.length === 0) {
-        throw new Error('No security charge found for this product');
+      const totalSecurity = secResult.rows[0].paid_amount;
+
+      // ── 2. Validate amounts ─────────────────────────────────────────────────
+      const amounts = [deduction_amount, adjust_non_security, adjust_security_amount, refund_amount];
+      if (amounts.some(a => typeof a !== 'number' || a < 0)) {
+        throw new Error('All amounts must be non-negative numbers');
+      }
+      const submittedTotal = amounts.reduce((s, a) => s + a, 0);
+      if (submittedTotal !== totalSecurity) {
+        throw new Error(
+          `Amounts do not sum to security paid: ` +
+          `deduction(${deduction_amount}) + adjust_non_security(${adjust_non_security}) + ` +
+          `adjust_security(${adjust_security_amount}) + refund(${refund_amount}) = ${submittedTotal}, ` +
+          `expected ${totalSecurity}`
+        );
+      }
+      if (deduction_amount > 0 && !deduction_type) {
+        throw new Error('deduction_type is required when deduction_amount > 0');
+      }
+      if (adjust_security_amount > 0 && (!security_product_ids || security_product_ids.length === 0)) {
+        throw new Error('security_product_ids is required when adjust_security_amount > 0');
       }
 
-      const security = securityResult.rows[0];
-      const securityPaid = security.paid_amount;
+      // ── 3. Deduction: create charge and mark paid ───────────────────────────
+      if (deduction_amount > 0) {
+        await chargeAccountingService.addCharge(
+          bookingProductId,
+          deduction_type,
+          deduction_amount,
+          null,
+          `Deduction: ${deduction_type}`,
+          client
+        );
+        await client.query(
+          `UPDATE product_charges
+           SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
+           WHERE booking_product_id = $1 AND charge_type = $2`,
+          [bookingProductId, deduction_type]
+        );
+        // Info-only transaction — no cash movement, just auditable record
+        const deductionLabel = deduction_type === 'damage_fee' ? 'Damage fee' : 'Late fee';
+        await client.query(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+          [
+            booking_id,
+            deduction_amount,
+            `${deductionLabel} of ₹${deduction_amount} retained from security deposit (product #${bookingProductId})`,
+            recorded_by
+          ]
+        );
+      }
 
-      if (securityPaid === 0) {
-        return {
+      // ── 4. Auto-adjust against non-security dues on other products ──────────
+      if (adjust_non_security > 0) {
+        await chargeAccountingService._applyPaymentInternal(
           booking_id,
-          booking_product_id: bookingProductId,
-          total_security: 0,
-          adjusted_amount: 0,
-          refund_amount: 0,
-          balance_due: 0,
-          message: 'No security was paid for this product'
-        };
+          adjust_non_security,
+          client,
+          null,                  // no security_product_ids filter
+          [bookingProductId]     // exclude the product being returned
+        );
+        await client.query(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+          [
+            booking_id,
+            adjust_non_security,
+            `₹${adjust_non_security} from security deposit auto-adjusted against outstanding dues (product #${bookingProductId})`,
+            recorded_by
+          ]
+        );
       }
 
-      // Get booking balance
-      const summaryResult = await chargeAccountingService.getPaymentSummary(booking_id);
-      const balanceDue = summaryResult.totals.balance;
+      // ── 5. Adjust against security on specific other products ───────────────
+      if (adjust_security_amount > 0) {
+        await chargeAccountingService._applyPaymentInternal(
+          booking_id,
+          adjust_security_amount,
+          client,
+          security_product_ids,
+          [bookingProductId]
+        );
+        await client.query(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+          [
+            booking_id,
+            adjust_security_amount,
+            `₹${adjust_security_amount} from security deposit credited to security of product(s) [${security_product_ids.join(', ')}] (returned product #${bookingProductId})`,
+            recorded_by
+          ]
+        );
+      }
 
-      // Calculate amounts: if balance exists, adjust first then refund remainder
-      const adjustedAmount = Math.min(securityPaid, Math.max(0, balanceDue));
-      const refundAmount = securityPaid - adjustedAmount;
+      // ── 6. Cash refund to customer ──────────────────────────────────────────
+      if (refund_amount > 0) {
+        await client.query(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+          [
+            booking_id,
+            refund_amount,
+            payment_method,
+            `Security deposit refund for product #${bookingProductId}` +
+              (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : ''),
+            recorded_by
+          ]
+        );
+      }
+
+      // ── 7. Activity log ─────────────────────────────────────────────────────
+      await client.query(
+        `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+         VALUES ($1, 'security_return_processed', $2, $3)`,
+        [
+          booking_id,
+          JSON.stringify({
+            booking_product_id: bookingProductId,
+            total_security: totalSecurity,
+            deduction_amount,
+            deduction_type,
+            adjust_non_security,
+            adjust_security_amount,
+            security_product_ids,
+            refund_amount,
+            payment_method
+          }),
+          recorded_by
+        ]
+      );
+
+      await client.query('COMMIT');
 
       return {
         booking_id,
         booking_product_id: bookingProductId,
-        total_security: securityPaid,
-        adjusted_amount: adjustedAmount,
-        refund_amount: refundAmount,
-        balance_due: balanceDue
+        total_security: totalSecurity,
+        deduction_amount,
+        adjust_non_security,
+        adjust_security_amount,
+        refund_amount,
+        transaction_recorded: true
       };
     } catch (error) {
-      console.error('Error calculating security return:', error);
+      await client.query('ROLLBACK');
+      console.error('Error processing security return:', error);
       throw error;
+    } finally {
+      client.release();
     }
   }
 
-  /**
-   * Process security deposit return (execute refund or adjustment transaction)
-   * @param {number} bookingProductId - Booking product ID
-   * @param {'refund' | 'adjust'} action - 'refund' returns cash, 'adjust' applies against dues
-   * @param {string} recordedBy - User performing the action
-   * @returns {Promise<Object>} - Transaction details
-   */
-  async processSecurityReturn(bookingProductId, action, recordedBy) {
-    if (!['refund', 'adjust'].includes(action)) {
-      throw new Error('action must be "refund" or "adjust"');
-    }
-
-    // First calculate what should happen
-    const calculation = await this.calculateSecurityReturn(bookingProductId);
-
-    if (calculation.total_security === 0) {
-      return {
-        ...calculation,
-        action,
-        transaction_recorded: false,
-        message: 'No security was paid for this product — nothing to process'
-      };
-    }
-
-    const { booking_id, total_security, adjusted_amount, refund_amount } = calculation;
-
-    if (action === 'adjust') {
-      // Apply the full security amount against outstanding dues via chargeAccountingService
-      if (total_security > 0) {
-        const adjustResult = await chargeAccountingService.applyAdjustment(
-          booking_id,
-          total_security,
-          'Adjustment',
-          recordedBy,
-          `Security deposit adjustment for booking product #${bookingProductId}`
-        );
-
-        return {
-          booking_id,
-          booking_product_id: bookingProductId,
-          action: 'adjust',
-          total_security,
-          adjusted_amount: total_security,
-          refund_amount: 0,
-          transaction_recorded: true,
-          adjustment_details: adjustResult
-        };
-      }
-    }
-
-    if (action === 'refund') {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-
-        // Refund the full security amount back to customer
-        await client.query(
-          `INSERT INTO payment_transactions 
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'refund', 'Cash', $3, $4, CURRENT_TIMESTAMP)`,
-          [booking_id, total_security,
-            `Security deposit refund for product #${bookingProductId}`,
-            recordedBy]
-        );
-
-        // Log refund activity
-        await client.query(
-          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
-           VALUES ($1, 'refund_issued', $2, $3)`,
-          [booking_id, JSON.stringify({
-            amount: total_security,
-            reason: 'Security deposit refund',
-            booking_product_id: bookingProductId
-          }), recordedBy]
-        );
-
-        await client.query('COMMIT');
-
-        return {
-          booking_id,
-          booking_product_id: bookingProductId,
-          action: 'refund',
-          total_security,
-          adjusted_amount: 0,
-          refund_amount: total_security,
-          transaction_recorded: true
-        };
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-      } finally {
-        client.release();
-      }
-    }
-  }
 
   /**
    * Validate if a product is eligible for exchange
@@ -1330,18 +1548,41 @@ class ProductLifecycleService {
         paymentDifference = Math.ceil(totalPenalty + discountReverted - totalPaidForSelected);
       }
 
-      // Dues on products that will remain active after this cancellation
+      // Dues on products that will remain active after this cancellation (non-security only —
+      // security is tracked separately via eligible_security_products)
       const otherDuesResult = await pool.query(
         `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER as remaining_dues
          FROM product_charges pc
          JOIN booking_products bp ON pc.booking_product_id = bp.id
          WHERE bp.booking_id = $1
            AND bp.status NOT IN ('cancelled', 'exchanged')
-           AND NOT (bp.id = ANY($2::int[]))`,
+           AND NOT (bp.id = ANY($2::int[]))
+           AND pc.charge_type NOT IN ('security')`,
         [bookingId, selectedProductIds]
       );
       const remainingDuesOnOtherProducts = Math.max(
         0, otherDuesResult.rows[0].remaining_dues || 0
+      );
+
+      // Products with outstanding security the refund could be credited toward
+      const eligibleSecResult = await pool.query(
+        `SELECT bp.id                                           AS "bpId",
+                p.name                                         AS name,
+                p.code                                         AS code,
+                pc.due_amount                                  AS due,
+                pc.paid_amount                                 AS paid,
+                (pc.due_amount - pc.paid_amount)::INTEGER      AS remaining,
+                bp.booked_from                                 AS "bookedFrom"
+         FROM product_charges pc
+         JOIN booking_products bp ON pc.booking_product_id = bp.id
+         JOIN products p ON bp.product_id = p.id
+         WHERE bp.booking_id = $1
+           AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+           AND NOT (bp.id = ANY($2::int[]))
+           AND pc.charge_type = 'security'
+           AND (pc.due_amount - pc.paid_amount) > 0
+         ORDER BY bp.booked_from ASC, bp.id ASC`,
+        [bookingId, selectedProductIds]
       );
 
       return {
@@ -1359,6 +1600,7 @@ class ProductLifecycleService {
         payment_action: paymentAction,
         payment_difference: paymentDifference,
         remaining_dues_on_other_products: remainingDuesOnOtherProducts,
+        eligible_security_products: eligibleSecResult.rows,
       };
     } catch (error) {
       console.error('Error calculating cancellation summary:', error);

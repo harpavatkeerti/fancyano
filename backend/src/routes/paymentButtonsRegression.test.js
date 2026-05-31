@@ -377,6 +377,34 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
     });
   });
 
+  describe('Lifecycle: pickup rejected when security not fully paid', () => {
+    it('returns 400 when no payment has been made (security = 0 paid)', async () => {
+      const { bookingId, bookingProductId } = await makeConfirmedBooking(testProductId);
+      // No payment at all — security (20000) is entirely unpaid
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/pickup`)
+        .send({ booking_product_ids: [bookingProductId], picked_up_by: 'Salesman' });
+
+      expect(res.status).toBe(400);
+      // The error wraps the reason: "Product X: Full security deposit must be paid before pickup"
+      expect(res.body.error).toMatch(/security deposit.*paid/i);
+    });
+
+    it('returns 400 when rent + transport are paid but security is still outstanding', async () => {
+      const { bookingId, bookingProductId } = await makeConfirmedBooking(testProductId);
+      // rent=50000 + transport=5000 = 55000; security=20000 is unpaid
+      await chargeAccountingService.applyPayment(bookingId, 55000, 'Cash', 'Salesman', 'Rent and transport only');
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/pickup`)
+        .send({ booking_product_ids: [bookingProductId], picked_up_by: 'Salesman' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/security deposit.*paid/i);
+    });
+  });
+
   describe('Lifecycle: return in_progress → completed', () => {
     it('transitions an in_progress product to completed on return', async () => {
       const { bookingId, bookingProductId } = await makeConfirmedBooking(testProductId);
@@ -695,6 +723,229 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       expect(res.body.totals).toHaveProperty('total_due');
       expect(res.body.totals).toHaveProperty('total_paid');
       expect(res.body.totals).toHaveProperty('balance');
+      expect(res.body.totals).toHaveProperty('outstanding_balance');
+      expect(typeof res.body.totals.outstanding_balance).toBe('number');
     });
   });
+
+  // ══════════════════════════════════════════════════════════════════════════════
+  // processSecurityReturn — all settlement variants
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Shared helper: create booking, pay in full, pickup, return → status = 'completed'
+   * Security paid = 20000.
+   */
+  async function makeCompletedProduct() {
+    const { bookingId, bookingProductId } = await makeConfirmedBooking(testProductId);
+    // Pay full amount
+    await chargeAccountingService.applyPayment(bookingId, 75000, 'Cash', 'Salesman', 'Full payment');
+    // Force pickup (bypass date check)
+    await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', bookingProductId]);
+    // Return
+    await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['completed', bookingProductId]);
+    return { bookingId, bookingProductId };
+  }
+
+  describe('processSecurityReturn: pure cash refund', () => {
+    it('records a refund transaction for the full security amount', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 0,
+          deduction_type: null,
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 20000,
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const tx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(tx.rows).toHaveLength(1);
+      expect(parseInt(tx.rows[0].amount)).toBe(20000);
+      expect(tx.rows[0].method).toBe('Cash');
+    });
+  });
+
+  describe('processSecurityReturn: pure deduction (damage fee)', () => {
+    it('creates a damage_fee charge and marks it paid, no refund transaction', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 20000,
+          deduction_type: 'damage_fee',
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 0,
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(200);
+
+      // Damage fee charge must exist and be fully paid
+      const charge = await pool.query(
+        `SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
+        [bookingProductId]
+      );
+      expect(charge.rows).toHaveLength(1);
+      expect(parseInt(charge.rows[0].due_amount)).toBe(20000);
+      expect(parseInt(charge.rows[0].paid_amount)).toBe(20000);
+
+      // No cash refund transaction
+      const refundTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(refundTx.rows).toHaveLength(0);
+
+      // Info-only adjustment transaction recorded
+      const adjTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'`,
+        [bookingId]
+      );
+      expect(adjTx.rows.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('processSecurityReturn: deduction + refund remainder', () => {
+    it('retains deduction and refunds the remainder in cash', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+      // Deduction = 3000, refund = 17000
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 3000,
+          deduction_type: 'damage_fee',
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 17000,
+          payment_method: 'UPI',
+          recorded_by: 'Admin',
+        });
+
+      expect(res.status).toBe(200);
+
+      const refundTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(refundTx.rows).toHaveLength(1);
+      expect(parseInt(refundTx.rows[0].amount)).toBe(17000);
+      expect(refundTx.rows[0].method).toBe('UPI');
+
+      const charge = await pool.query(
+        `SELECT paid_amount FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
+        [bookingProductId]
+      );
+      expect(parseInt(charge.rows[0].paid_amount)).toBe(3000);
+    });
+  });
+
+  describe('processSecurityReturn: auto-adjust against non-security dues + refund remainder', () => {
+    it('applies adjustment to pending dues and refunds excess', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+      // Only pay 70000 of 75000 — leaving 5000 non-security (transport) pending
+      // Reset payments to partial
+      await pool.query(
+        `UPDATE product_charges SET paid_amount = 0 WHERE booking_product_id = $1`,
+        [bookingProductId]
+      );
+      // Apply a partial payment (covers rent 50000 + security 20000, leaves transport 5000 unpaid)
+      await chargeAccountingService.applyPayment(bookingId, 70000, 'Cash', 'Salesman', 'Partial');
+
+      // adjust_non_security=5000 covers transport, refund=15000 returned to customer
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 0,
+          deduction_type: null,
+          adjust_non_security: 5000,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 15000,
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(200);
+
+      // One refund (15000) + one adjustment (5000)
+      const refundTx = await pool.query(
+        `SELECT amount FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(refundTx.rows).toHaveLength(1);
+      expect(parseInt(refundTx.rows[0].amount)).toBe(15000);
+
+      const adjTx = await pool.query(
+        `SELECT amount FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'`,
+        [bookingId]
+      );
+      expect(adjTx.rows.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('processSecurityReturn: validation — amounts must sum to total_security', () => {
+    it('returns 400 when deduction + adjust + refund does not equal security paid', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 5000,
+          deduction_type: 'damage_fee',
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 5000, // sum = 10000, but security paid = 20000 → mismatch
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/do not sum|total_security|expected 20000/i);
+    });
+  });
+
+  describe('processSecurityReturn: validation — product must be completed', () => {
+    it('returns 400 when product is still in_progress', async () => {
+      const { bookingId, bookingProductId } = await makeConfirmedBooking(testProductId);
+      await chargeAccountingService.applyPayment(bookingId, 75000, 'Cash', 'Salesman', 'Full payment');
+      // Force to in_progress (not completed)
+      await pool.query('UPDATE booking_products SET status = $1 WHERE id = $2', ['in_progress', bookingProductId]);
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 0,
+          deduction_type: null,
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 20000,
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/completed/i);
+    });
+  });
+
 });

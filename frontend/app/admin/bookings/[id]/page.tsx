@@ -7,7 +7,7 @@ import { creditNotesApi } from '@/lib/creditNotesApi';
 import { settingsApi } from '@/lib/settingsApi';
 import { productTrackingApi } from '@/lib/productTrackingApi';
 import { Booking } from '@/types';
-import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary, MeasurementModal } from '@/components/common';
+import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton } from '@/components/common';
 import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -639,16 +639,7 @@ export default function OrderDetailsPage() {
                     <div>
                       <div className="flex items-center gap-2">
                         <p className="font-semibold text-lg">{product.name}</p>
-                        {isCancelled && (
-                          <span className="px-2 py-1 bg-red-100 text-red-800 rounded-full text-xs font-semibold">
-                            ❌ Cancelled
-                          </span>
-                        )}
-                        {isExchanged && (
-                          <span className="px-2 py-1 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">
-                            🔄 Exchanged
-                          </span>
-                        )}
+                        <ProductStatusBadge status={product.status} />
                       </div>
                       {product.code && (
                         <div className="flex items-center gap-2 mt-1">
@@ -682,6 +673,16 @@ export default function OrderDetailsPage() {
                 <div className="text-sm text-gray-700">
                   <p><strong>Dates:</strong> {new Date(product.booked_from || booking.booked_from).toLocaleDateString('en-GB')} To {new Date(product.booked_to || booking.booked_to).toLocaleDateString('en-GB')}</p>
                 </div>
+
+                {/* Mark Picked Up — shown for all confirmed products; backend enforces security-paid rule */}
+                {!isInactive && product.status === 'confirmed' && (
+                  <MarkPickedUpButton
+                    product={product}
+                    bookingId={booking!.id}
+                    pickedUpBy="Admin"
+                    onSuccess={fetchBooking}
+                  />
+                )}
 
                 {/* Customer Measurements - Collapsible */}
                 {hasMeasurements && (

@@ -183,6 +183,19 @@ class ChargeAccountingService {
       // Balance = total charges owed minus net customer payments (payments − refunds)
       summary.totals.balance = summary.totals.total_due - summary.totals.total_paid + summary.totals.total_refunded;
 
+      // outstanding_balance = charge-based outstanding, computed from charge_breakdown
+      // (the same data the frontend per-category rows display).
+      // Uses Math.max(0, due - paid) per charge type, matching the frontend's per-row
+      // "Pending" calculation — guarantees the total always equals the visible row sum.
+      summary.totals.outstanding_balance = Object.values(chargeBreakdown).reduce(
+        (sum, entry) => {
+          const due = entry.due || 0;
+          const paid = Math.min(entry.paid || 0, due);
+          return sum + Math.max(0, due - paid);
+        },
+        0
+      );
+
       return summary;
     } finally {
       client.release();

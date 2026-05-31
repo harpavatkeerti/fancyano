@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { bookingCancellationApi, bookingsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { PaymentMethodInput } from './PaymentMethodInput';
+import { SecurityAllocationSection, computeSecAllocationPreview } from './SecurityAllocationSection';
+import type { EligibleSecProduct, SecAllocationEntry } from './SecurityAllocationSection';
 
 interface Product {
   product_id: number;
@@ -55,6 +57,7 @@ interface CancellationSummary {
   payment_action: 'collect' | 'refund' | 'blocked' | 'none';
   payment_difference: number;
   remaining_dues_on_other_products: number;
+  eligible_security_products: EligibleSecProduct[];
 }
 
 interface BookingCancellationProps {
@@ -95,8 +98,33 @@ export function BookingCancellation({
   const [extraRefundNote, setExtraRefundNote] = useState('');
 
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [settlementAction, setSettlementAction] = useState<'refund' | 'adjust' | 'collect'>('refund');
+  const [settlementAction, setSettlementAction] = useState<'adjust' | 'adjust_security' | 'collect'>('adjust');
   const [refundMethod, setRefundMethod] = useState('Cash');
+  const [selectedSecProductIds, setSelectedSecProductIds] = useState<number[]>([]);
+
+  // ── Settlement derived values (must be at top level — hooks rules) ───────────
+  const settlementEligibleSecProducts: EligibleSecProduct[] = summary?.eligible_security_products ?? [];
+  const settlementDues = Math.min(summary?.refund_amount ?? 0, summary?.remaining_dues_on_other_products ?? 0);
+  const settlementRemainder = (summary?.refund_amount ?? 0) - settlementDues;
+  const settlementTotalSelectedCap = settlementEligibleSecProducts
+    .filter(p => selectedSecProductIds.includes(p.bpId))
+    .reduce((sum, p) => sum + p.remaining, 0);
+  const settlementSecCredit = Math.min(settlementRemainder, settlementTotalSelectedCap);
+  const settlementSecExcess = Math.max(0, settlementRemainder - settlementSecCredit);
+  const { allocation: settlementSecAlloc, error: settlementSecAllocError } = computeSecAllocationPreview(
+    settlementEligibleSecProducts, selectedSecProductIds, settlementSecCredit
+  );
+
+  // Auto-select sole eligible security product when in adjust_security mode
+  useEffect(() => {
+    if (
+      settlementAction === 'adjust_security' &&
+      settlementEligibleSecProducts.length === 1 &&
+      selectedSecProductIds.length === 0
+    ) {
+      setSelectedSecProductIds([settlementEligibleSecProducts[0].bpId]);
+    }
+  }, [settlementAction, settlementEligibleSecProducts.length]);
 
   // Booking discount state
   const [bookingDiscount, setBookingDiscount] = useState(0);
@@ -261,11 +289,13 @@ export function BookingCancellation({
     // Set default settlement action based on payment scenario
     if (summary?.payment_action === 'collect') {
       setSettlementAction('collect');
-    } else if ((summary?.remaining_dues_on_other_products ?? 0) > 0) {
+    } else {
+      // For all refund scenarios, always use 'adjust' — it auto-adjusts dues first,
+      // then refunds the remainder. This is the single correct default.
       setSettlementAction('adjust');
-    } else if (summary?.refund_amount && summary.refund_amount > 0) {
-      setSettlementAction('refund');
     }
+    // Reset security product selection when opening confirmation
+    setSelectedSecProductIds([]);
 
     setShowConfirmation(true);
   }
@@ -289,12 +319,13 @@ export function BookingCancellation({
         cancellation_reason: cancellationReason,
         cancelled_by: userName || 'system',
         settlement_action: settlementAction,
-        payment_method: (settlementAction === 'refund' || settlementAction === 'collect') ? refundMethod : undefined,
+        payment_method: (settlementAction === 'adjust' || settlementAction === 'collect') ? refundMethod : undefined,
         settlement_notes: extraRefundNote || undefined,
+        security_product_ids: settlementAction === 'adjust_security' ? selectedSecProductIds : undefined,
       });
 
       const isPartial = preview && selectedProducts.length < preview.all_products.length;
-      const actionLabel = settlementAction === 'refund' ? 'Refund' : settlementAction === 'collect' ? 'Payment' : 'Adjustment';
+      const actionLabel = settlementAction === 'collect' ? 'Payment' : 'Settlement';
       const diffAmount = result.data?.total_diff_amount || 0;
       const settlementMsg = result.data?.settlement?.transaction_recorded
         ? ` (${actionLabel} of ₹${Math.floor(Math.abs(diffAmount)).toLocaleString('en-IN')} recorded)`
@@ -739,63 +770,136 @@ export function BookingCancellation({
                 </div>
               )}
 
-              {/* Settlement Options — context-aware based on remaining dues */}
-              {summary && summary.refund_amount > 0 && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
-                  <h4 className="font-semibold text-green-900 mb-3">
-                    How would you like to handle the ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund?
-                  </h4>
+              {/* Settlement — non-security auto-adjustment is mandatory; choice is for remainder only */}
+              {summary && summary.refund_amount > 0 && (() => {
+                const eligibleSecProducts = settlementEligibleSecProducts;
+                const dues = settlementDues;
+                const remainder = settlementRemainder;
+                const hasEligibleSec = eligibleSecProducts.length > 0 && remainder > 0;
+                const secCredit = settlementSecCredit;
+                const secExcess = settlementSecExcess;
+                const secAlloc = settlementSecAlloc;
+                const secAllocError = settlementSecAllocError;
 
-                  {(summary.remaining_dues_on_other_products ?? 0) <= 0 ? (
-                    // No dues — single option, just pick refund method
-                    <div className="p-3 rounded-lg border border-green-300 bg-green-100">
-                      <p className="font-medium text-green-900">Refund to Customer</p>
-                      <p className="text-xs text-green-700 mb-3">
-                        ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} will be returned to the customer (no outstanding dues)
-                      </p>
-                      <PaymentMethodInput
-                        method={refundMethod}
-                        onMethodChange={setRefundMethod}
-                        notes={extraRefundNote}
-                        onNotesChange={setExtraRefundNote}
-                        amount={summary.refund_amount}
-                        colorScheme="green"
-                        showQR={false}
-                      />
-                    </div>
-                  ) : (
-                    // Has dues — only adjust option (refund is not offered)
-                    <div className="p-3 rounded-lg border border-green-300 bg-green-100">
-                      <p className="font-medium text-green-900">
-                        Adjust ₹{Math.floor(Math.min(summary.refund_amount, summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} against outstanding dues
-                        {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0) && (
-                          <span className="ml-1">+ Refund ₹{Math.floor(summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} to customer</span>
-                        )}
-                      </p>
-                      <p className="text-xs text-green-700 mt-1">
-                        Clears ₹{Math.floor(Math.min(summary.refund_amount, summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} of outstanding dues
-                        {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0)
-                          ? `, remaining ₹${Math.floor(summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)).toLocaleString('en-IN')} refunded`
-                          : ''}
-                      </p>
-                      {/* Show refund method only when a portion is actually refunded to customer */}
-                      {summary.refund_amount > (summary.remaining_dues_on_other_products ?? 0) && (
-                        <div className="mt-3 pt-3 border-t border-green-200">
-                          <PaymentMethodInput
-                            method={refundMethod}
-                            onMethodChange={setRefundMethod}
-                            notes={extraRefundNote}
-                            onNotesChange={setExtraRefundNote}
-                            amount={summary.refund_amount - (summary.remaining_dues_on_other_products ?? 0)}
-                            colorScheme="green"
-                            showQR={false}
-                          />
+                return (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+                    <h4 className="font-semibold text-green-900 mb-3">
+                      Settle ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund
+                    </h4>
+
+                    {/* Mandatory auto-adjustment banner */}
+                    {dues > 0 && (
+                      <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3 text-sm">
+                        <span className="text-blue-600 mt-0.5">⚡</span>
+                        <div>
+                          <p className="font-medium text-blue-800">
+                            ₹{Math.floor(dues).toLocaleString('en-IN')} auto-adjusted against outstanding dues
+                          </p>
+                          <p className="text-xs text-blue-600 mt-0.5">
+                            Applied automatically to pending charges on other products. No cash moves.
+                          </p>
                         </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                      </div>
+                    )}
+
+                    {remainder <= 0 ? (
+                      /* Full refund absorbed by dues — nothing left to decide */
+                      <p className="text-sm text-green-700">
+                        ✅ Entire refund applied against outstanding dues. No cash refund needed.
+                      </p>
+                    ) : (
+                      /* User chooses what to do with the remainder */
+                      <div className="space-y-3">
+                        {dues > 0 && (
+                          <p className="text-xs font-semibold text-green-800">
+                            Remainder ₹{Math.floor(remainder).toLocaleString('en-IN')} — how would you like to settle this?
+                          </p>
+                        )}
+
+                        {/* Option A — Refund remainder */}
+                        <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${settlementAction === 'adjust' ? 'border-green-400 bg-green-100' : 'border-green-200 bg-white hover:bg-green-50'}`}>
+                          <input
+                            type="radio"
+                            name="cancel-settlement"
+                            checked={settlementAction === 'adjust'}
+                            onChange={() => setSettlementAction('adjust')}
+                            className="mt-0.5 text-green-600"
+                          />
+                          <div className="flex-1">
+                            <p className="font-medium text-green-900 text-sm">
+                              Refund ₹{Math.floor(remainder).toLocaleString('en-IN')} to customer
+                            </p>
+                            <p className="text-xs text-green-700 mt-0.5">Cash returned directly to the customer</p>
+                            {settlementAction === 'adjust' && (
+                              <div className="mt-3">
+                                <PaymentMethodInput
+                                  method={refundMethod}
+                                  onMethodChange={setRefundMethod}
+                                  notes={extraRefundNote}
+                                  onNotesChange={setExtraRefundNote}
+                                  amount={remainder}
+                                  colorScheme="green"
+                                  showQR={false}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        </label>
+
+                        {/* Option B — Credit toward pending security */}
+                        {hasEligibleSec && (
+                          <label className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${settlementAction === 'adjust_security' ? 'border-green-400 bg-green-100' : 'border-green-200 bg-white hover:bg-green-50'}`}>
+                            <input
+                              type="radio"
+                              name="cancel-settlement"
+                              checked={settlementAction === 'adjust_security'}
+                              onChange={() => setSettlementAction('adjust_security')}
+                              className="mt-0.5 text-green-600"
+                            />
+                            <div className="flex-1">
+                              <p className="font-medium text-green-900 text-sm">Credit toward pending security</p>
+                              <p className="text-xs text-green-700 mt-0.5">
+                                Apply ₹{Math.floor(remainder).toLocaleString('en-IN')} toward security due on other active products
+                                {selectedSecProductIds.length > 0 && secExcess > 0
+                                  ? ` — ₹${Math.floor(secExcess).toLocaleString('en-IN')} excess will be refunded`
+                                  : ''}
+                              </p>
+                              {settlementAction === 'adjust_security' && (
+                                <div className="mt-3 space-y-3">
+                                  <SecurityAllocationSection
+                                    securityAmount={secCredit || remainder}
+                                    eligibleProducts={eligibleSecProducts}
+                                    selectedIds={selectedSecProductIds}
+                                    onSelectionChange={setSelectedSecProductIds}
+                                    projectedAllocation={secAlloc}
+                                    error={secAllocError}
+                                  />
+                                  {secExcess > 0 && (
+                                    <div className="border border-amber-300 bg-amber-50 rounded-lg p-3">
+                                      <p className="text-xs font-semibold text-amber-800 mb-2">
+                                        ₹{Math.floor(secExcess).toLocaleString('en-IN')} exceeds security capacity — refund this to customer
+                                      </p>
+                                      <PaymentMethodInput
+                                        method={refundMethod}
+                                        onMethodChange={setRefundMethod}
+                                        notes={extraRefundNote}
+                                        onNotesChange={setExtraRefundNote}
+                                        amount={secExcess}
+                                        colorScheme="green"
+                                        showQR={false}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Collection — when penalty exceeds per-product paid */}
               {summary && summary.payment_action === 'collect' && summary.payment_difference > 0 && (
