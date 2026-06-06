@@ -1021,6 +1021,9 @@ export default function OrderDetailsPage() {
                     {product.effective_rent && product.effective_rent < product.rent && (
                       <span className="text-xs text-gray-400 line-through ml-1">₹{Math.floor(product.rent)}</span>
                     )}
+                    {product.security_deposit > 0 && (
+                      <span className="text-xs text-gray-500 block mt-0.5">Security: ₹{Math.floor(product.security_deposit).toLocaleString('en-IN')}</span>
+                    )}
                   </p>
                   <div className="flex items-center gap-2">
                     <div>

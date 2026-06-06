@@ -648,11 +648,21 @@ export default function CartPage() {
                             ) : (
                               <span>₹{Math.floor(previewProduct.rent)}</span>
                             )}
+                            {previewProduct.security_deposit > 0 && (
+                              <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor(previewProduct.security_deposit).toLocaleString('en-IN')}</p>
+                            )}
                           </div>
                         );
                       }
                       // Fallback display (before preview loads)
-                      return <span>₹{Math.floor(item.product.rent || 0)}</span>;
+                      return (
+                        <div>
+                          <span>₹{Math.floor(item.product.rent || 0)}</span>
+                          {item.product.security_deposit > 0 && (
+                            <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor(item.product.security_deposit).toLocaleString('en-IN')}</p>
+                          )}
+                        </div>
+                      );
                     })()}
                   </div>
                   <p className="text-sm text-red-600 mt-2">

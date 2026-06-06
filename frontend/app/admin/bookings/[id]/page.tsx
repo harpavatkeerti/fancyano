@@ -666,6 +666,9 @@ export default function OrderDetailsPage() {
                         {product.effective_rent && product.effective_rent < product.rent && (
                           <span className="text-xs text-gray-400 line-through ml-1">₹{Math.floor(product.rent)?.toLocaleString()}</span>
                         )}
+                        {(product as any).security_deposit > 0 && (
+                          <span className="text-xs text-gray-500 block mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</span>
+                        )}
                       </p>
                     </div>
                   </div>

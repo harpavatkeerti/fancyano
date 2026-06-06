@@ -887,7 +887,7 @@ export function ProductExchange({
                           const isDisabled = activeProductIds.has(product.id);
                           return (
                             <option key={product.id} value={product.id} disabled={isDisabled}>
-                              {product.name} ({product.code}) - ₹{product.rent}/day
+                              {product.name} ({product.code}) - ₹{product.rent}/day{product.security_deposit > 0 ? ` | Security: ₹${parseFloat(String(product.security_deposit)).toLocaleString('en-IN')}` : ''}
                               {isDisabled ? ' (already in this booking)' : ''}
                             </option>
                           );
@@ -1022,6 +1022,11 @@ export function ProductExchange({
                                         ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}
                                       </p>
                                       <p className="text-xs text-gray-500">per day</p>
+                                      {parseFloat(String(product.security_deposit || '0')) > 0 && (
+                                        <p className="text-xs text-gray-400 mt-0.5">
+                                          Security: ₹{parseFloat(String(product.security_deposit || '0')).toLocaleString('en-IN')}
+                                        </p>
+                                      )}
                                     </div>
                                   </div>
                                 </div>
@@ -1048,9 +1053,16 @@ export function ProductExchange({
                                 <p className="text-xs text-gray-500">{product.code}</p>
                               </div>
                               <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold text-gray-900">
-                                  ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
-                                </span>
+                                <div className="text-right">
+                                  <span className="text-sm font-semibold text-gray-900">
+                                    ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
+                                  </span>
+                                  {parseFloat(String(product.security_deposit || '0')) > 0 && (
+                                    <p className="text-xs text-gray-400">
+                                      Security: ₹{parseFloat(String(product.security_deposit || '0')).toLocaleString('en-IN')}
+                                    </p>
+                                  )}
+                                </div>
                                 <button
                                   type="button"
                                   onClick={() => {

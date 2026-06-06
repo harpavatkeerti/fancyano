@@ -463,8 +463,13 @@ export default function ProductDetailPage() {
         <div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">{product.name}</h1>
           <p className="text-2xl font-bold text-gray-900 mb-1">
-            ₹{Math.floor(product.rent)} / Day & ₹2000 (Deposit)
+            ₹{Math.floor(product.rent)} / Day
           </p>
+          {(product as any).security_deposit > 0 && (
+            <p className="text-gray-600 text-base mb-1">
+              Security Deposit: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}
+            </p>
+          )}
           <p className="text-gray-600 mb-6">
             Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
             incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam

@@ -2061,6 +2061,9 @@ export default function BookingsPage() {
                                     <div className="text-right ml-3">
                                       <p className="font-bold text-green-600">₹{Math.floor(product.rent)}</p>
                                       <p className="text-xs text-gray-500">/day</p>
+                                      {(product as any).security_deposit > 0 && (
+                                        <p className="text-xs text-gray-400 mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                                      )}
                                     </div>
                                   </div>
                                 </button>
@@ -2135,6 +2138,9 @@ export default function BookingsPage() {
                                     <p className="font-semibold text-gray-900">{product.name}</p>
                                     <p className="text-sm text-gray-500 font-mono">{product.code}</p>
                                     <p className="text-xs text-gray-400">₹{Math.floor(product.rent)}/day</p>
+                                    {(product as any).security_deposit > 0 && (
+                                      <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                                    )}
                                   </div>
                                 </td>
                                 <td className="px-4 py-4 text-center">
@@ -2250,12 +2256,22 @@ export default function BookingsPage() {
                                           ) : (
                                             <p className="font-bold text-gray-900">₹{Math.floor(previewProduct.rent)}</p>
                                           )}
+                                          {previewProduct.security_deposit > 0 && (
+                                            <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor(previewProduct.security_deposit).toLocaleString('en-IN')}</p>
+                                          )}
                                         </div>
                                       );
                                     }
 
                                     // Fallback display (before preview loads)
-                                    return <p className="font-bold text-gray-900">₹{Math.floor(product.rent)}</p>;
+                                    return (
+                                      <div>
+                                        <p className="font-bold text-gray-900">₹{Math.floor(product.rent)}</p>
+                                        {(product as any).security_deposit > 0 && (
+                                          <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                                        )}
+                                      </div>
+                                    );
                                   })()}
                                 </td>
                                 <td className="px-4 py-4 text-center">

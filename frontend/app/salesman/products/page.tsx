@@ -301,6 +301,9 @@ export default function ProductsPage() {
                     {(product as any).gender ? `For ${(product as any).gender}` : ''}
                   </p>
                   <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
+                  {(product as any).security_deposit > 0 && (
+                    <p className="text-gray-500 text-xs mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                  )}
                 </div>
               </Link>
             ))}

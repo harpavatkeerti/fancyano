@@ -174,6 +174,9 @@ export default function SalesmanHome() {
               <div className="p-4">
                 <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
                 <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
+                {(product as any).security_deposit > 0 && (
+                  <p className="text-gray-500 text-xs mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                )}
               </div>
             </Link>
           ))}
@@ -206,6 +209,9 @@ export default function SalesmanHome() {
               <div className="p-4">
                 <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
                 <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
+                {(product as any).security_deposit > 0 && (
+                  <p className="text-gray-500 text-xs mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
+                )}
               </div>
             </Link>
           ))}
