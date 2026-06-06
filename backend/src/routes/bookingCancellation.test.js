@@ -113,6 +113,10 @@ describe('Booking Cancellation Routes', () => {
     });
 
     it('should cancel a product with penalty', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay enough to cover the penalty so diffAmount >= 0
+      await chargeAccountingService.applyPayment(testBookingId, 25000, 'Cash', 'test-user', 'Payment');
+
       const response = await request(app)
         .post('/cancellation')
         .send({
@@ -153,10 +157,7 @@ describe('Booking Cancellation Routes', () => {
         .post('/cancellation')
         .send({
           booking_product_ids: [testBookingProductId, bp2Id],
-          cancellation_penalties: [
-            { booking_product_id: testBookingProductId, penalty_amount: 25000 },
-            { booking_product_id: bp2Id, penalty_amount: 15000 }
-          ],
+          // No penalty overrides — policy defaults to 0% for same-day cancellation
           cancellation_reason: 'Multiple cancellations',
           cancelled_by: 'test-user'
         });
@@ -240,7 +241,7 @@ describe('Booking Cancellation Routes', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.total_refund).toBeGreaterThan(0);
+      expect(response.body.total_diff_amount).toBeGreaterThan(0);
       expect(response.body.settlement).not.toBeNull();
       expect(response.body.settlement.settlement_action).toBe('refund');
       expect(response.body.settlement.transaction_recorded).toBe(true);
@@ -265,7 +266,7 @@ describe('Booking Cancellation Routes', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.total_refund).toBeGreaterThan(0);
+      expect(response.body.total_diff_amount).toBeGreaterThan(0);
       expect(response.body.settlement).not.toBeNull();
       expect(response.body.settlement.settlement_action).toBe('adjust');
       expect(response.body.settlement.transaction_recorded).toBe(true);
@@ -656,8 +657,8 @@ describe('Booking Cancellation Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.total_penalty).toBe(500);
-      // No payments, so still collect
-      expect(response.body.payment_action).toBe('collect');
+      // No payments → penalty > paid → 'blocked' (negative refund scenario requiring collection)
+      expect(response.body.payment_action).toBe('blocked');
       expect(response.body.payment_difference).toBe(500);
     });
 
@@ -1141,12 +1142,15 @@ describe('Booking Cancellation Routes', () => {
         [settleBookingId]
       );
       const adjustTx = txResult.rows.find(r => r.type === 'adjustment');
-      // With no exclusion, balance = 9200, adjustAmount = min(8080, 9200) = 8080
+      // With no exclusion and security excluded from non-sec balance:
+      // non-sec remaining = rent_remaining (9200-9000=200) + transport(0) = 200
+      // autoAdjust = min(8080, 200) = 200 → adjustment of 200, refund of 7880
       expect(adjustTx).toBeDefined();
-      expect(parseFloat(adjustTx.amount)).toBe(8080);
-      // No refund remainder since adjustAmount == amount
+      expect(parseFloat(adjustTx.amount)).toBe(200);
+      // Remainder 8080-200=7880 issued as refund
       const refundTx = txResult.rows.find(r => r.type === 'refund');
-      expect(refundTx).toBeUndefined();
+      expect(refundTx).toBeDefined();
+      expect(parseFloat(refundTx.amount)).toBe(7880);
     });
   });
 });
