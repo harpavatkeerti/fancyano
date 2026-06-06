@@ -877,11 +877,22 @@ export function ProductExchange({
                       className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"
                     >
                       <option value="">Select replacement product</option>
-                      {availableProducts.map((product) => (
-                        <option key={product.id} value={product.id}>
-                          {product.name} ({product.code}) - ₹{product.rent}/day
-                        </option>
-                      ))}
+                      {(() => {
+                        const activeProductIds = new Set(
+                          currentProducts
+                            .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                            .map(p => p.product_id)
+                        );
+                        return availableProducts.map((product) => {
+                          const isDisabled = activeProductIds.has(product.id);
+                          return (
+                            <option key={product.id} value={product.id} disabled={isDisabled}>
+                              {product.name} ({product.code}) - ₹{product.rent}/day
+                              {isDisabled ? ' (already in this booking)' : ''}
+                            </option>
+                          );
+                        });
+                      })()}
                     </select>
                   )}
                 </div>
@@ -925,6 +936,11 @@ export function ProductExchange({
                   {/* Product List with Checkboxes */}
                   <div className="border-2 border-blue-300 rounded-lg bg-white max-h-[200px] overflow-y-auto">
                     {(() => {
+                      const activeProductIds = new Set(
+                        currentProducts
+                          .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                          .map(p => p.product_id)
+                      );
                       const filteredProducts = availableProducts
                         .filter(p => p.id !== selectedExchangedProduct)
                         .filter(p => {
@@ -948,16 +964,22 @@ export function ProductExchange({
                         <div className="divide-y divide-gray-200">
                           {filteredProducts.map((product) => {
                             const isSelected = additionalProducts.includes(product.id);
+                            const isActiveInBooking = activeProductIds.has(product.id);
                             return (
                               <label
                                 key={product.id}
-                                className={`flex items-center p-3 hover:bg-gray-50 cursor-pointer transition-colors ${isSelected ? 'bg-blue-50' : ''
-                                  }`}
+                                className={`flex items-center p-3 transition-colors ${
+                                  isActiveInBooking
+                                    ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                    : `hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`
+                                }`}
                               >
                                 <input
                                   type="checkbox"
                                   checked={isSelected}
+                                  disabled={isActiveInBooking}
                                   onChange={async (e) => {
+                                    if (isActiveInBooking) return;
                                     if (e.target.checked) {
                                       setAdditionalProducts([...additionalProducts, product.id]);
                                       // Initialize dates for the new product
@@ -990,6 +1012,9 @@ export function ProductExchange({
                                       </p>
                                       <p className="text-xs text-gray-500 mt-0.5">
                                         Code: {product.code}
+                                        {isActiveInBooking && (
+                                          <span className="ml-2 text-amber-600 font-medium">(already in this booking)</span>
+                                        )}
                                       </p>
                                     </div>
                                     <div className="ml-3 text-right">

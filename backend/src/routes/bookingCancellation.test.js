@@ -204,6 +204,22 @@ describe('Booking Cancellation Routes', () => {
       expect(response.body.error).toContain('Cannot cancel');
     });
 
+    it('should return 400 if security deposit has been partially paid', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay enough to cover rent + some security
+      await chargeAccountingService.applyPayment(testBookingId, 75000, 'Cash', 'test-user', 'Payment');
+
+      const response = await request(app)
+        .post('/cancellation')
+        .send({
+          booking_product_ids: [testBookingProductId],
+          cancelled_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Cannot cancel product: security deposit has been');
+    });
+
     it('should cancel with settlement_action=refund and record refund transaction', async () => {
       // First pay some amount so there's something to refund
       const chargeAccountingService = require('../services/chargeAccountingService');

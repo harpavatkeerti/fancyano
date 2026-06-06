@@ -65,6 +65,21 @@ class ProductLifecycleService {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
       }
 
+      // Guard: new products must not already be active in this booking
+      const activeRows = await client.query(
+        `SELECT DISTINCT product_id FROM booking_products
+         WHERE booking_id = $1
+           AND status NOT IN ('cancelled', 'exchanged', 'completed')`,
+        [oldBookingProduct.booking_id]
+      );
+      const activeProductIds = new Set(activeRows.rows.map(r => r.product_id));
+      const conflicting = newProducts
+        .map(p => p.productId)
+        .filter(id => activeProductIds.has(id));
+      if (conflicting.length > 0) {
+        throw new Error(`Cannot exchange to a product already active in this booking (product_id: ${conflicting.join(', ')})`);
+      }
+
       // Check if any security has been paid — blocks exchange
       const securityPaid = await this._getSecurityPaidAmount(bookingProductId, client);
       if (securityPaid > 0) {

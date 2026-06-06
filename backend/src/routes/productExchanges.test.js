@@ -235,6 +235,71 @@ describe('Product Exchanges Routes', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toContain('Cannot exchange');
     });
+
+    it('should return 400 if security deposit has been partially paid on the original product', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay enough to cover rent (50000) + some security (25000+)
+      await chargeAccountingService.applyPayment(testBookingId, 75000, 'Cash', 'test-user', 'Payment');
+
+      const response = await request(app)
+        .post('/exchanges')
+        .send({
+          old_booking_product_id: testBookingProductId,
+          new_product_ids: [
+            {
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
+              rent: 60000,
+              security_deposit: 25000
+            }
+          ],
+          exchanged_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Cannot exchange product: security deposit has been');
+    });
+
+    it('should return 400 if new product is already active in the same booking', async () => {
+      // Add testProduct1 as a second active product in the same booking
+      const bp2Result = await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, '2024-02-01', '2024-02-05', 'confirmed', 60000, 25000, 60000)
+         RETURNING id`,
+        [testBookingId, testProduct2Id]
+      );
+      const bp2Id = bp2Result.rows[0].id;
+      await pool.query(
+        `INSERT INTO product_charges (booking_product_id, charge_type, due_amount, paid_amount) VALUES
+         ($1, 'rent', 60000, 0), ($1, 'security', 25000, 0)`,
+        [bp2Id]
+      );
+
+      // Try to exchange testProduct1 → testProduct2, but testProduct2 is already active
+      const response = await request(app)
+        .post('/exchanges')
+        .send({
+          old_booking_product_id: testBookingProductId,
+          new_product_ids: [
+            {
+              product_id: testProduct2Id,
+              booked_from: '2024-02-01',
+              booked_to: '2024-02-05',
+              rent: 60000,
+              security_deposit: 25000
+            }
+          ],
+          exchanged_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Cannot exchange to a product already active in this booking');
+
+      // Cleanup
+      await pool.query('DELETE FROM product_charges WHERE booking_product_id = $1', [bp2Id]);
+      await pool.query('DELETE FROM booking_products WHERE id = $1', [bp2Id]);
+    });
   });
 
   describe('GET /exchanges/penalty-suggestion/:booking_product_id', () => {
