@@ -2,6 +2,7 @@ const pool = require('../database/connection');
 const policyService = require('./policyService');
 const chargeAccountingService = require('./chargeAccountingService');
 const bookingService = require('./bookingService');
+const { recalcBookingDateRange, checkProductAvailability } = require('../utils/bookingDateUtils');
 
 /**
  * ProductLifecycleService - Manages booking product lifecycle events
@@ -129,6 +130,11 @@ class ProductLifecycleService {
       // Create new booking products
       const newBookingProductIds = [];
       for (const newProd of newProducts) {
+        // Guard: reject if the replacement product is already booked on these dates
+        await checkProductAvailability(
+          newProd.productId, newProd.bookedFrom, newProd.bookedTo, { client }
+        );
+
         const newBpResult = await client.query(
           `INSERT INTO booking_products 
             (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
@@ -1653,32 +1659,7 @@ class ProductLifecycleService {
    * @param {Object} client - Optional database client for transactions
    */
   async updateBookingDateRange(bookingId, client = null) {
-    const db = client || pool;
-
-    try {
-      // Calculate date range from active products
-      const result = await db.query(
-        `SELECT MIN(booked_from) as min_from, MAX(booked_to) as max_to
-         FROM booking_products
-         WHERE booking_id = $1 AND status NOT IN ('cancelled', 'exchanged')`,
-        [bookingId]
-      );
-
-      const { min_from, max_to } = result.rows[0];
-
-      // Only update if there are active products
-      if (min_from && max_to) {
-        await db.query(
-          `UPDATE bookings 
-           SET booked_from = $1, booked_to = $2, updated_at = CURRENT_TIMESTAMP
-           WHERE id = $3`,
-          [min_from, max_to, bookingId]
-        );
-      }
-    } catch (error) {
-      console.error('Error updating booking date range:', error);
-      throw error;
-    }
+    await recalcBookingDateRange(bookingId, client);
   }
 
   /**

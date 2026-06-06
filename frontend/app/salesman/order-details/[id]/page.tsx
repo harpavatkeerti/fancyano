@@ -629,7 +629,7 @@ export default function OrderDetailsPage() {
     setShowChangeDateModal(true);
 
     // Fetch bookings for this product to show availability
-    fetchProductBookingsForChange(product.id);
+    fetchProductBookingsForChange(product.product_id);
   }
 
   async function fetchProductBookingsForChange(productId: number) {
@@ -779,6 +779,10 @@ export default function OrderDetailsPage() {
 
     return drop < today;
   }
+
+  // Build security-paid map once so it can be used both for the date-edit button
+  // and for the ProductExchange component below.
+  const securityByProduct = securityPaidByProductFromSummary(paymentSummary?.products ?? []);
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
@@ -1031,8 +1035,8 @@ export default function OrderDetailsPage() {
                         ).toLocaleDateString('en-GB')}
                       </p>
                     </div>
-                    {/* Hide edit button if product refund is completed or product is cancelled */}
-                    {!hasProductRefund(product.id) && !isCancelled && (
+                    {/* Hide edit button if product refund is completed, product is cancelled, or security has been paid */}
+                    {!hasProductRefund(product.id) && !isCancelled && !(securityByProduct[product.id] > 0) && (
                       <button
                         onClick={() => handleEditDate(product)}
                         className="ml-2 text-red-600 hover:text-red-700"
@@ -1149,9 +1153,7 @@ export default function OrderDetailsPage() {
                 userRole="salesman"
                 bookingStatus={booking.status}
                 userName={userName}
-                securityPaidByProduct={
-                  securityPaidByProductFromSummary(paymentSummary?.products ?? [])
-                }
+                securityPaidByProduct={securityByProduct}
               />
             </div>
           )}
@@ -1515,20 +1517,25 @@ export default function OrderDetailsPage() {
                   ₹{Math.floor(selectedProduct.effective_rent || selectedProduct.rent || 0)} / Day
                 </p>
                 <div>
-                  <p className="text-sm text-gray-600 mb-1">Dates:</p>
-                  <p className="text-red-600 font-semibold">
-                    {new Date(changeDateFrom).toLocaleDateString('en-GB')} To{' '}
-                    {new Date(changeDateTo).toLocaleDateString('en-GB')}
+                  <p className="text-sm text-gray-500 mb-1">Original dates:</p>
+                  <p className="text-gray-500 font-semibold">
+                    {new Date(selectedProduct.booked_from).toLocaleDateString('en-GB')} →{' '}
+                    {new Date(selectedProduct.booked_to).toLocaleDateString('en-GB')}
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Check Availability */}
+            {/* Calendar — pre-seeded with current dates (shown in blue).
+                Other bookings for this product are shown red, but the
+                current booking is excluded so its own dates don't block. */}
             <div className="mb-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                Check Availability
+              <h3 className="text-lg font-semibold text-gray-900 mb-1">
+                Select New Dates
               </h3>
+              <p className="text-sm text-gray-500 mb-4">
+                Your current booking dates are pre-selected. Click to change them.
+              </p>
               <DateRangePicker
                 label=""
                 startDate={changeDateFrom}
@@ -1539,6 +1546,14 @@ export default function OrderDetailsPage() {
                 productName={selectedProduct.name}
                 minDate={new Date().toISOString().split('T')[0]}
               />
+              {/* Live new-dates summary — only shown once the user has changed the dates */}
+              {changeDateFrom && changeDateTo &&
+                (changeDateFrom !== selectedProduct.booked_from?.split('T')[0] ||
+                 changeDateTo   !== selectedProduct.booked_to?.split('T')[0]) && (
+                <div className="mt-3 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800 font-medium">
+                  New dates: {new Date(changeDateFrom).toLocaleDateString('en-GB')} → {new Date(changeDateTo).toLocaleDateString('en-GB')}
+                </div>
+              )}
             </div>
 
             {/* Reason for change */}

@@ -1,6 +1,7 @@
 const pool = require('../database/connection');
 const chargeAccountingService = require('./chargeAccountingService');
 const DiscountCalculator = require('../utils/discountCalculator');
+const { recalcBookingDateRange, checkProductAvailability } = require('../utils/bookingDateUtils');
 
 class BookingService {
   /**
@@ -106,6 +107,9 @@ class BookingService {
           discountType,
           discountValue
         );
+
+        // Guard: reject if the product is already booked over this date range
+        await checkProductAvailability(productId, bookedFrom, bookedTo, { client });
 
         // Create booking_product entry with discount information
         const bpResult = await client.query(
@@ -306,6 +310,57 @@ class BookingService {
             );
           }
         }
+      }
+
+      // ── Product date updates ──────────────────────────────────────────────────
+      // Accepts: products: [{ id: booking_product_id, booked_from, booked_to }]
+      if (data.products && Array.isArray(data.products) && data.products.length > 0) {
+        for (const p of data.products) {
+          if (!p.id || !p.booked_from || !p.booked_to) continue;
+
+          // Resolve the catalog product_id for this booking_product row
+          const bpRow = await client.query(
+            'SELECT product_id FROM booking_products WHERE id = $1 AND booking_id = $2',
+            [p.id, bookingId]
+          );
+          if (bpRow.rows.length === 0) continue; // not owned by this booking
+
+          // Guard: reject if the new dates clash with another booking (exclude self)
+          await checkProductAvailability(
+            bpRow.rows[0].product_id, p.booked_from, p.booked_to,
+            { excludeBookingId: bookingId, client }
+          );
+
+          await client.query(
+            `UPDATE booking_products
+               SET booked_from = $1, booked_to = $2
+             WHERE id = $3 AND booking_id = $4`,
+            [p.booked_from, p.booked_to, p.id, bookingId]
+          );
+        }
+
+        // Recalculate booking-level date range from the remaining active products
+        await recalcBookingDateRange(bookingId, client);
+
+        // Activity log
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            bookingId,
+            'date_changed',
+            JSON.stringify({
+              products: data.products
+                .filter(p => p.id && p.booked_from && p.booked_to)
+                .map(p => ({
+                  booking_product_id: p.id,
+                  booked_from: p.booked_from,
+                  booked_to: p.booked_to,
+                }))
+            }),
+            performed_by || 'system'
+          ]
+        );
       }
 
       await client.query('COMMIT');

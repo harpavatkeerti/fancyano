@@ -564,6 +564,90 @@ describe('ProductLifecycleService', () => {
         expect(newRent.rows[0].paid_amount).toBe(1000);
       });
     });
+
+    describe('availability check on exchange', () => {
+      // The new product (testProductId2) is already booked elsewhere for the same dates — must reject
+      test('should reject exchange if the new product is already booked for those dates', async () => {
+        const from = new Date().toISOString().slice(0, 10);
+        const to   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+
+        // Create a separate booking that holds testProductId2 on the same dates
+        const blocker = await pool.query(
+          `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+           VALUES ('Blocker', '1111111111', CURRENT_DATE, 'confirmed', 'test')
+           RETURNING id`
+        );
+        const blockerBookingId = blocker.rows[0].id;
+        await pool.query(
+          `INSERT INTO booking_products
+             (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+           VALUES ($1, $2, 1, $3, $4, 'confirmed', 600, 1200, 600)`,
+          [blockerBookingId, testProductId2, from, to]
+        );
+
+        try {
+          await expect(
+            productLifecycleService.exchangeProduct(
+              testBookingProductId,
+              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              'Exchange to booked product',
+              String(testUserId)
+            )
+          ).rejects.toThrow(/not available/);
+        } finally {
+          await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [blockerBookingId]);
+          await pool.query('DELETE FROM bookings WHERE id = $1', [blockerBookingId]);
+        }
+      });
+
+      // No other bookings for the new product — must succeed
+      test('should allow exchange when the new product is free for those dates', async () => {
+        const from = new Date().toISOString().slice(0, 10);
+        const to   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+
+        await expect(
+          productLifecycleService.exchangeProduct(
+            testBookingProductId,
+            [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+            'Exchange to free product',
+            String(testUserId)
+          )
+        ).resolves.toMatchObject({ new_booking_product_ids: expect.any(Array) });
+      });
+
+      // A cancelled booking for the same product + dates must NOT block the exchange
+      test('should allow exchange when the only overlapping booking is cancelled', async () => {
+        const from = new Date().toISOString().slice(0, 10);
+        const to   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+
+        const cancelled = await pool.query(
+          `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+           VALUES ('Cancelled', '2222222222', CURRENT_DATE, 'cancelled', 'test')
+           RETURNING id`
+        );
+        const cancelledId = cancelled.rows[0].id;
+        await pool.query(
+          `INSERT INTO booking_products
+             (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+           VALUES ($1, $2, 1, $3, $4, 'confirmed', 600, 1200, 600)`,
+          [cancelledId, testProductId2, from, to]
+        );
+
+        try {
+          await expect(
+            productLifecycleService.exchangeProduct(
+              testBookingProductId,
+              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              'Exchange past a cancelled overlap',
+              String(testUserId)
+            )
+          ).resolves.toMatchObject({ new_booking_product_ids: expect.any(Array) });
+        } finally {
+          await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [cancelledId]);
+          await pool.query('DELETE FROM bookings WHERE id = $1', [cancelledId]);
+        }
+      });
+    });
   });
 
   describe('cancelProduct', () => {

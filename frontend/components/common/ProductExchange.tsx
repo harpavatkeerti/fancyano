@@ -171,7 +171,7 @@ export function ProductExchange({
 
   async function fetchProductBookings(productId: number) {
     try {
-      const response = await axios.get(`${API_URL}/bookings/product/${productId}`);
+      const response = await axios.get(`${API_URL}/bookings/by-product/${productId}`);
       setProductBookings(prev => ({
         ...prev,
         [productId]: response.data || []
@@ -264,8 +264,8 @@ export function ProductExchange({
         setProductDates(prev => ({
           ...prev,
           [selectedExchangedProduct]: {
-            booked_from: bookingDates?.booked_from?.split('T')[0] || '',
-            booked_to: bookingDates?.booked_to?.split('T')[0] || ''
+            booked_from: '',
+            booked_to: ''
           }
         }));
         // Fetch bookings for main product
@@ -866,8 +866,8 @@ export function ProductExchange({
                           setProductDates(prev => ({
                             ...prev,
                             [productId]: {
-                              booked_from: bookingDates?.booked_from?.split('T')[0] || '',
-                              booked_to: bookingDates?.booked_to?.split('T')[0] || ''
+                              booked_from: '',
+                              booked_to: ''
                             }
                           }));
                           // Fetch bookings for availability checking
@@ -986,8 +986,8 @@ export function ProductExchange({
                                       setProductDates(prev => ({
                                         ...prev,
                                         [product.id]: {
-                                          booked_from: bookingDates?.booked_from?.split('T')[0] || '',
-                                          booked_to: bookingDates?.booked_to?.split('T')[0] || ''
+                                          booked_from: '',
+                                          booked_to: ''
                                         }
                                       }));
                                       // Fetch bookings for availability checking

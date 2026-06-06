@@ -974,4 +974,199 @@ describe('BookingService', () => {
       expect(bookings).toEqual([]);
     });
   });
+
+  describe('updateBooking — product date changes', () => {
+    let testBookingId, testBP1, testBP2;
+
+    beforeEach(async () => {
+      // Clean up test-created bookings (phone '9999999999' is reserved for this suite)
+      const staleIds = await pool.query(
+        `SELECT id FROM bookings WHERE customer_phone = '9999999999'`
+      );
+      const ids = staleIds.rows.map(r => r.id);
+      if (ids.length > 0) {
+        await pool.query('DELETE FROM booking_activity_log WHERE booking_id = ANY($1)', [ids]);
+        await pool.query(
+          `DELETE FROM product_charges
+           WHERE booking_product_id IN (
+             SELECT id FROM booking_products WHERE booking_id = ANY($1)
+           )`,
+          [ids]
+        );
+        await pool.query('DELETE FROM booking_products WHERE booking_id = ANY($1)', [ids]);
+        await pool.query('DELETE FROM bookings WHERE id = ANY($1)', [ids]);
+      }
+
+      // Create a fresh booking with two products on known date ranges
+      const booking = await pool.query(
+        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by,
+                               booked_from, booked_to)
+         VALUES ('Date Change Test', '9999999999', CURRENT_DATE, 'confirmed', 'test',
+                 '2024-09-01', '2024-09-10')
+         RETURNING id`
+      );
+      testBookingId = booking.rows[0].id;
+
+      const bp1 = await pool.query(
+        `INSERT INTO booking_products
+           (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-09-01', '2024-09-05', 'confirmed', 2000, 1000, 2000)
+         RETURNING id`,
+        [testBookingId, testProductId1]
+      );
+      testBP1 = bp1.rows[0].id;
+
+      const bp2 = await pool.query(
+        `INSERT INTO booking_products
+           (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-09-06', '2024-09-10', 'confirmed', 3000, 1200, 3000)
+         RETURNING id`,
+        [testBookingId, testProductId2]
+      );
+      testBP2 = bp2.rows[0].id;
+    });
+
+    // New dates are persisted in booking_products
+    test('should persist new booked_from / booked_to on the booking_product', async () => {
+      await bookingService.updateBooking(testBookingId, {
+        products: [{ id: testBP1, booked_from: '2024-09-03', booked_to: '2024-09-07' }],
+      });
+
+      const bp = await pool.query(
+        'SELECT booked_from, booked_to FROM booking_products WHERE id = $1',
+        [testBP1]
+      );
+      expect(bp.rows[0].booked_from.toISOString().slice(0, 10)).toBe('2024-09-03');
+      expect(bp.rows[0].booked_to.toISOString().slice(0, 10)).toBe('2024-09-07');
+    });
+
+    // booking.booked_from/to must be recalculated from all active products
+    test('should recalculate booking-level booked_from and booked_to', async () => {
+      // Move BP1 to an earlier start — booking.booked_from must shift accordingly
+      await bookingService.updateBooking(testBookingId, {
+        products: [{ id: testBP1, booked_from: '2024-08-28', booked_to: '2024-09-05' }],
+      });
+
+      const booking = await pool.query(
+        'SELECT booked_from, booked_to FROM bookings WHERE id = $1',
+        [testBookingId]
+      );
+      // New MIN across both products: 2024-08-28 (BP1 updated) vs 2024-09-06 (BP2 untouched)
+      expect(booking.rows[0].booked_from.toISOString().slice(0, 10)).toBe('2024-08-28');
+      // MAX remains the BP2 end date
+      expect(booking.rows[0].booked_to.toISOString().slice(0, 10)).toBe('2024-09-10');
+    });
+
+    // Multiple products updated in one atomic call
+    test('should update multiple products and recalculate booking range atomically', async () => {
+      await bookingService.updateBooking(testBookingId, {
+        products: [
+          { id: testBP1, booked_from: '2024-09-02', booked_to: '2024-09-06' },
+          { id: testBP2, booked_from: '2024-09-07', booked_to: '2024-09-12' },
+        ],
+      });
+
+      const bps = await pool.query(
+        'SELECT id, booked_from, booked_to FROM booking_products WHERE id = ANY($1) ORDER BY id',
+        [[testBP1, testBP2]]
+      );
+      expect(bps.rows[0].booked_from.toISOString().slice(0, 10)).toBe('2024-09-02');
+      expect(bps.rows[1].booked_to.toISOString().slice(0, 10)).toBe('2024-09-12');
+
+      const booking = await pool.query(
+        'SELECT booked_from, booked_to FROM bookings WHERE id = $1',
+        [testBookingId]
+      );
+      expect(booking.rows[0].booked_from.toISOString().slice(0, 10)).toBe('2024-09-02');
+      expect(booking.rows[0].booked_to.toISOString().slice(0, 10)).toBe('2024-09-12');
+    });
+
+    // Activity log must record the date_changed event with full detail
+    test('should write a date_changed activity log entry', async () => {
+      await bookingService.updateBooking(testBookingId, {
+        products: [{ id: testBP1, booked_from: '2024-09-03', booked_to: '2024-09-07' }],
+        performed_by: 'salesman_test',
+      });
+
+      const log = await pool.query(
+        `SELECT event_type, details, performed_by
+         FROM booking_activity_log
+         WHERE booking_id = $1 AND event_type = 'date_changed'`,
+        [testBookingId]
+      );
+      expect(log.rows).toHaveLength(1);
+      expect(log.rows[0].performed_by).toBe('salesman_test');
+      expect(log.rows[0].details.products).toHaveLength(1);
+      expect(log.rows[0].details.products[0].booking_product_id).toBe(testBP1);
+      expect(log.rows[0].details.products[0].booked_from).toBe('2024-09-03');
+      expect(log.rows[0].details.products[0].booked_to).toBe('2024-09-07');
+    });
+
+    // Entries missing required fields are silently skipped — no crash, no side-effect
+    test('should skip entries with missing id, booked_from, or booked_to', async () => {
+      const originalFrom = (await pool.query(
+        'SELECT booked_from FROM booking_products WHERE id = $1', [testBP1]
+      )).rows[0].booked_from;
+
+      await bookingService.updateBooking(testBookingId, {
+        products: [
+          { id: testBP1 },                                      // missing dates
+          { booked_from: '2024-09-03', booked_to: '2024-09-07' }, // missing id
+        ],
+      });
+
+      const bp = await pool.query(
+        'SELECT booked_from FROM booking_products WHERE id = $1', [testBP1]
+      );
+      expect(bp.rows[0].booked_from).toEqual(originalFrom);
+    });
+
+    // A booking_product_id from another booking must not be updated (security guard)
+    test('should not update a booking_product that belongs to a different booking', async () => {
+      const other = await pool.query(
+        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
+         VALUES ('Other', '7777777777', CURRENT_DATE, 'confirmed', 'test')
+         RETURNING id`
+      );
+      const otherBookingId = other.rows[0].id;
+
+      const otherBP = await pool.query(
+        `INSERT INTO booking_products
+           (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+         VALUES ($1, $2, 1, '2024-10-01', '2024-10-05', 'confirmed', 1000, 500, 1000)
+         RETURNING id`,
+        [otherBookingId, testProductId1]
+      );
+      const otherBPId = otherBP.rows[0].id;
+
+      // Attempt to update the other booking's product via testBookingId — must be a no-op
+      await bookingService.updateBooking(testBookingId, {
+        products: [{ id: otherBPId, booked_from: '2024-10-10', booked_to: '2024-10-15' }],
+      });
+
+      const bp = await pool.query(
+        'SELECT booked_from FROM booking_products WHERE id = $1', [otherBPId]
+      );
+      expect(bp.rows[0].booked_from.toISOString().slice(0, 10)).toBe('2024-10-01');
+
+      // Cleanup other booking
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [otherBookingId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [otherBookingId]);
+    });
+
+    // Empty products array — must be a pure no-op
+    test('should be a no-op when products array is empty', async () => {
+      const before = (await pool.query(
+        'SELECT booked_from, booked_to FROM bookings WHERE id = $1', [testBookingId]
+      )).rows[0];
+
+      await bookingService.updateBooking(testBookingId, { products: [] });
+
+      const after = (await pool.query(
+        'SELECT booked_from, booked_to FROM bookings WHERE id = $1', [testBookingId]
+      )).rows[0];
+      expect(after.booked_from).toEqual(before.booked_from);
+      expect(after.booked_to).toEqual(before.booked_to);
+    });
+  });
 });
