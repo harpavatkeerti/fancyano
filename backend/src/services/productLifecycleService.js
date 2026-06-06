@@ -458,8 +458,9 @@ class ProductLifecycleService {
           }), recordedBy]
         );
       } else if (action === 'adjust') {
-        // Get current outstanding non-security balance, excluding the product(s) being cancelled.
-        // Security is excluded here — security credits are handled explicitly via adjust_security.
+        // Get current outstanding NON-SECURITY balance on other active products.
+        // Security is excluded — security credits require explicit user confirmation
+        // via the 'adjust_security' action.
         const balanceResult = await client.query(
           `SELECT 
              (COALESCE(SUM(pc.due_amount), 0) - COALESCE(SUM(pc.paid_amount), 0))::INTEGER as remaining_balance
@@ -471,7 +472,14 @@ class ProductLifecycleService {
              AND pc.charge_type NOT IN ('security')`,
           [bookingId, excludeProductIds]
         );
-        const remainingDues = Math.max(0, balanceResult.rows[0].remaining_balance || 0);
+        // Also include unpaid transport (booking-level field, not in product_charges)
+        const transportResult = await client.query(
+          `SELECT GREATEST(0, COALESCE(transport_charge,0) - COALESCE(transport_paid,0))::INTEGER AS transport_remaining
+           FROM bookings WHERE id = $1`,
+          [bookingId]
+        );
+        const transportRemaining = transportResult.rows[0]?.transport_remaining || 0;
+        const remainingDues = Math.max(0, (balanceResult.rows[0].remaining_balance || 0) + transportRemaining);
 
         // Cap adjustment at outstanding dues — remainder becomes an immediate refund
         const adjustAmount = Math.min(amount, remainingDues);
@@ -542,7 +550,14 @@ class ProductLifecycleService {
              AND pc.charge_type NOT IN ('security')`,
           [bookingId, excludeProductIds]
         );
-        const nonSecDues = Math.max(0, nonSecDuesResult.rows[0].remaining || 0);
+        // Also include unpaid transport (booking-level field, not in product_charges)
+        const nonSecTransportResult = await client.query(
+          `SELECT GREATEST(0, COALESCE(transport_charge,0) - COALESCE(transport_paid,0))::INTEGER AS transport_remaining
+           FROM bookings WHERE id = $1`,
+          [bookingId]
+        );
+        const nonSecTransportRemaining = nonSecTransportResult.rows[0]?.transport_remaining || 0;
+        const nonSecDues = Math.max(0, (nonSecDuesResult.rows[0].remaining || 0) + nonSecTransportRemaining);
         const autoAdjust = Math.min(amount, nonSecDues);
 
         if (autoAdjust > 0) {
@@ -1176,7 +1191,7 @@ class ProductLifecycleService {
             refund_amount,
             payment_method,
             `Security deposit refund for product #${bookingProductId}` +
-              (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : ''),
+            (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : ''),
             recorded_by
           ]
         );
@@ -1548,8 +1563,9 @@ class ProductLifecycleService {
         paymentDifference = Math.ceil(totalPenalty + discountReverted - totalPaidForSelected);
       }
 
-      // Dues on products that will remain active after this cancellation (non-security only —
-      // security is tracked separately via eligible_security_products)
+      // Dues on products that will remain active after this cancellation (non-security only).
+      // Security is tracked separately via eligible_security_products and requires
+      // explicit user confirmation to adjust.
       const otherDuesResult = await pool.query(
         `SELECT COALESCE(SUM(pc.due_amount - pc.paid_amount), 0)::INTEGER as remaining_dues
          FROM product_charges pc
@@ -1560,8 +1576,15 @@ class ProductLifecycleService {
            AND pc.charge_type NOT IN ('security')`,
         [bookingId, selectedProductIds]
       );
+      // Also include unpaid transport (booking-level field, not in product_charges)
+      const transportDuesResult = await pool.query(
+        `SELECT GREATEST(0, COALESCE(transport_charge,0) - COALESCE(transport_paid,0))::INTEGER AS transport_remaining
+         FROM bookings WHERE id = $1`,
+        [bookingId]
+      );
+      const transportDuesRemaining = transportDuesResult.rows[0]?.transport_remaining || 0;
       const remainingDuesOnOtherProducts = Math.max(
-        0, otherDuesResult.rows[0].remaining_dues || 0
+        0, (otherDuesResult.rows[0].remaining_dues || 0) + transportDuesRemaining
       );
 
       // Products with outstanding security the refund could be credited toward
