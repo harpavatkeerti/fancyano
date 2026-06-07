@@ -473,6 +473,62 @@ describe('BookingService', () => {
       const countAfter = await pool.query('SELECT COUNT(*)::int AS cnt FROM bookings');
       expect(countAfter.rows[0].cnt).toBe(countBefore.rows[0].cnt);
     });
+
+    test('should reject booking if product is archived', async () => {
+      // Archive the test product
+      await pool.query(`UPDATE products SET status = 'archived' WHERE id = $1`, [testProductId1]);
+
+      const bookingData = {
+        customerName: 'Archived Test',
+        customerPhone: '8888888888',
+        bookingDate: new Date(),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2026-09-01'),
+            bookedTo: new Date('2026-09-05'),
+            rent: 500,
+            securityDeposit: 1000,
+            quantity: 1
+          }
+        ],
+        createdBy: 'admin'
+      };
+
+      try {
+        await expect(bookingService.createBooking(bookingData))
+          .rejects
+          .toThrow('is archived and cannot be booked');
+      } finally {
+        // Always restore status so subsequent tests are unaffected
+        await pool.query(`UPDATE products SET status = 'available' WHERE id = $1`, [testProductId1]);
+      }
+    });
+
+    test('should succeed when product status is available', async () => {
+      // Ensure it is available (explicit guard)
+      await pool.query(`UPDATE products SET status = 'available' WHERE id = $1`, [testProductId1]);
+
+      const bookingData = {
+        customerName: 'Available Test',
+        customerPhone: '8888888888',
+        bookingDate: new Date(),
+        products: [
+          {
+            productId: testProductId1,
+            bookedFrom: new Date('2026-10-01'),
+            bookedTo: new Date('2026-10-05'),
+            rent: 500,
+            securityDeposit: 1000,
+            quantity: 1
+          }
+        ],
+        createdBy: 'admin'
+      };
+
+      const result = await bookingService.createBooking(bookingData);
+      expect(result).toHaveProperty('booking_id');
+    });
   });
 
   describe('updateBookingStatus', () => {

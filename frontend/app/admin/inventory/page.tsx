@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { productsApi, bookingsApi } from '@/lib/api';
+import { toast } from '@/lib/toast';
 import { Product } from '@/types';
 import { Button, Input, ImageUpload, MultipleImageUpload, AvailabilityCalendar, ProductTrackingModal } from '@/components/common';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -25,6 +26,7 @@ export default function InventoryPage() {
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSize, setFilterSize] = useState('');
   const [filterMaintenance, setFilterMaintenance] = useState<'all' | 'maintenance' | 'available'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'archived'>('all');
 
   // Verify new code is loaded
   console.log('🔄 Inventory page loaded with IMAGE HELPER v2.0');
@@ -38,7 +40,7 @@ export default function InventoryPage() {
     gender: '', // Male or Female
     size: '',
     description: '',
-    availability: true,
+
     image: '', // Keep for backward compatibility
     images: [] as string[], // New: array of images
   });
@@ -61,7 +63,7 @@ export default function InventoryPage() {
 
   async function fetchProducts() {
     try {
-      const response = await productsApi.getAll();
+      const response = await productsApi.getAll({ includeArchived: true });
       setProducts(response.data);
     } catch (error) {
       console.error('Error fetching products:', error);
@@ -209,21 +211,34 @@ export default function InventoryPage() {
       gender: (product as any).gender || '',
       size: (product as any).size || '',
       description: product.description || '',
-      availability: product.availability,
       image: singleImage,
       images: images,
     });
     setShowAddModal(true);
   }
 
-  async function handleDelete(id: number) {
-    if (!confirm('Are you sure you want to delete this product?')) return;
+  async function handleArchive(id: number) {
+    if (!confirm('Archive this product? It will no longer appear in booking or product listings.')) return;
     try {
-      await productsApi.delete(id);
+      await productsApi.archive(id);
       await fetchProducts();
-    } catch (error) {
-      console.error('Error deleting product:', error);
-      toast.error('Error deleting product');
+      toast.success('Product archived successfully');
+    } catch (error: any) {
+      console.error('Error archiving product:', error);
+      const message = error.response?.data?.error || 'Error archiving product';
+      toast.error(message);
+    }
+  }
+
+  async function handleRestore(id: number) {
+    try {
+      await productsApi.restore(id);
+      await fetchProducts();
+      toast.success('Product restored to available');
+    } catch (error: any) {
+      console.error('Error restoring product:', error);
+      const message = error.response?.data?.error || 'Error restoring product';
+      toast.error(message);
     }
   }
 
@@ -238,7 +253,6 @@ export default function InventoryPage() {
       gender: '',
       size: '',
       description: '',
-      availability: true,
       image: '',
       images: [],
     });
@@ -292,14 +306,19 @@ export default function InventoryPage() {
       // Size filter
       const matchesSize = !filterSize || (p as any).size === filterSize;
 
-      // Maintenance filter
+      // Maintenance filter (from product_tracking)
       const isUnderMaintenance = !!productMaintenanceStatus[p.id];
-      const matchesMaintenance = 
+      const matchesMaintenance =
         filterMaintenance === 'all' ||
         (filterMaintenance === 'maintenance' && isUnderMaintenance) ||
         (filterMaintenance === 'available' && !isUnderMaintenance);
 
-      return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesMaintenance;
+      // Status filter (archived vs available)
+      const matchesStatus =
+        filterStatus === 'all' ||
+        p.status === filterStatus;
+
+      return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesMaintenance && matchesStatus;
     })
     .sort((a, b) => {
       // Sort: maintenance products first, then by name
@@ -478,6 +497,19 @@ export default function InventoryPage() {
                 <option value="available">✅ Available</option>
               </select>
             </div>
+
+            <div className="flex-1">
+              <label className="block text-xs text-gray-600 mb-1">Product Status</label>
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as 'all' | 'available' | 'archived')}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="all">All</option>
+                <option value="available">✅ Available</option>
+                <option value="archived">🗃️ Archived</option>
+              </select>
+            </div>
           </div>
 
           {/* Second Row - Clear Button */}
@@ -501,6 +533,7 @@ export default function InventoryPage() {
                   setFilterCategory('');
                   setFilterSize('');
                   setFilterMaintenance('all');
+                  setFilterStatus('all');
                   setSearchTerm('');
                 }}
                 className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-sm font-medium rounded-lg transition-colors"
@@ -711,12 +744,21 @@ export default function InventoryPage() {
                     >
                       Edit
                     </button>
-                    <button
-                      onClick={() => handleDelete(product.id)}
-                      className="px-3 py-2 text-red-600 hover:text-red-900 hover:bg-red-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                    >
-                      Delete
-                    </button>
+                    {product.status === 'archived' ? (
+                      <button
+                        onClick={() => handleRestore(product.id)}
+                        className="px-3 py-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                      >
+                        Restore
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleArchive(product.id)}
+                        className="px-3 py-2 text-orange-600 hover:text-orange-900 hover:bg-orange-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                      >
+                        Archive
+                      </button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -1188,15 +1230,15 @@ export default function InventoryPage() {
               )}
 
               <div className="bg-gray-50 p-3 rounded-lg">
-                <p className="text-xs text-gray-500 uppercase tracking-wide">Availability</p>
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Status</p>
                 <span
                   className={`inline-flex mt-1 px-2 py-1 text-xs font-semibold rounded-full ${
-                    viewingProduct.availability
+                    viewingProduct.status === 'available'
                       ? 'bg-green-100 text-green-800'
-                      : 'bg-red-100 text-red-800'
+                      : 'bg-gray-100 text-gray-600'
                   }`}
                 >
-                  {viewingProduct.availability ? 'Available' : 'Not Available'}
+                  {viewingProduct.status === 'available' ? '✅ Available' : '🗃️ Archived'}
                 </span>
               </div>
             </div>

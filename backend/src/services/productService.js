@@ -1,20 +1,35 @@
 const pool = require('../database/connection');
 const imageStorage = require('./imageStorage');
 
+// Valid product status values (mirrors the DB enum)
+const PRODUCT_STATUS = {
+  AVAILABLE: 'available',
+  ARCHIVED: 'archived',
+};
+
 /**
  * ProductService - Manages product CRUD operations
  */
 class ProductService {
   /**
-   * Get all products with optional filters
-   * @param {Object} filters - {search, category, availability}
+   * Get products with optional filters.
+   * By default only returns 'available' products.
+   * Pass includeArchived=true to return all statuses (inventory page).
+   * @param {Object} filters - {search, category, includeArchived}
    * @returns {Promise<Array>} - List of products
    */
   async getProducts(filters = {}) {
-    const { search, category, availability } = filters;
+    const { search, category, includeArchived } = filters;
     let query = 'SELECT * FROM products WHERE 1=1';
     const params = [];
     let paramCount = 0;
+
+    // Only filter by status when not requesting archived products
+    if (!includeArchived) {
+      paramCount++;
+      query += ` AND status = $${paramCount}`;
+      params.push(PRODUCT_STATUS.AVAILABLE);
+    }
 
     if (search) {
       paramCount++;
@@ -28,37 +43,29 @@ class ProductService {
       params.push(category);
     }
 
-    if (availability !== undefined) {
-      paramCount++;
-      query += ` AND availability = $${paramCount}`;
-      params.push(availability === 'true' || availability === true);
-    }
-
     query += ' ORDER BY created_at DESC';
 
     const result = await pool.query(query, params);
-    
-    // Parse image data if it's JSON array
     return result.rows.map(product => this._parseProductImages(product));
   }
 
   /**
-   * Get product by ID
+   * Get product by ID (returns any status — used by admin and internal services)
    * @param {number} productId - Product ID
    * @returns {Promise<Object>} - Product details
    */
   async getProductById(productId) {
     const result = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
-    
+
     if (result.rows.length === 0) {
       throw new Error('Product not found');
     }
-    
+
     return this._parseProductImages(result.rows[0]);
   }
 
   /**
-   * Create a new product
+   * Create a new product (always starts as 'available')
    * @param {Object} productData - Product details
    * @returns {Promise<Object>} - Created product
    */
@@ -73,7 +80,6 @@ class ProductService {
       gender,
       size,
       description,
-      availability,
       image,
       images
     } = productData;
@@ -84,7 +90,7 @@ class ProductService {
     const result = await pool.query(
       `INSERT INTO products 
         (name, code, purchase_price, rent, security_deposit, 
-         category, gender, size, description, availability, image) 
+         category, gender, size, description, status, image) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
        RETURNING *`,
       [
@@ -97,7 +103,7 @@ class ProductService {
         gender || null,
         size || null,
         description || null,
-        availability !== undefined ? availability : true,
+        PRODUCT_STATUS.AVAILABLE,
         imageData
       ]
     );
@@ -106,7 +112,7 @@ class ProductService {
   }
 
   /**
-   * Update a product
+   * Update a product's details (does not change status)
    * @param {number} productId - Product ID
    * @param {Object} productData - Updated product details
    * @returns {Promise<Object>} - Updated product
@@ -122,7 +128,6 @@ class ProductService {
       gender,
       size,
       description,
-      availability,
       image,
       images
     } = productData;
@@ -133,7 +138,7 @@ class ProductService {
 
     // Get existing product
     const existingProduct = await pool.query('SELECT image FROM products WHERE id = $1', [productId]);
-    
+
     if (existingProduct.rows.length === 0) {
       throw new Error('Product not found');
     }
@@ -150,9 +155,9 @@ class ProductService {
       `UPDATE products 
        SET name = $1, code = $2, purchase_price = $3, rent = $4, 
            security_deposit = $5, category = $6, gender = $7, 
-           size = $8, description = $9, availability = $10, image = $11, 
+           size = $8, description = $9, image = $10, 
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $12 
+       WHERE id = $11 
        RETURNING *`,
       [
         name,
@@ -164,7 +169,6 @@ class ProductService {
         gender,
         size,
         description,
-        availability,
         imageData,
         productId
       ]
@@ -174,24 +178,67 @@ class ProductService {
   }
 
   /**
-   * Delete a product
+   * Archive a product (soft-delete).
+   * Blocked if the product has any active (non-cancelled, non-completed, non-exchanged) bookings.
    * @param {number} productId - Product ID
-   * @returns {Promise<Object>} - Deletion confirmation
+   * @returns {Promise<Object>} - Updated product
    */
-  async deleteProduct(productId) {
-    const result = await pool.query('DELETE FROM products WHERE id = $1 RETURNING *', [productId]);
-
-    if (result.rows.length === 0) {
+  async archiveProduct(productId) {
+    const existing = await pool.query(
+      'SELECT id, status FROM products WHERE id = $1',
+      [productId]
+    );
+    if (existing.rows.length === 0) {
       throw new Error('Product not found');
     }
-
-    // Delete associated images
-    const deletedProduct = result.rows[0];
-    if (deletedProduct.image) {
-      await this._deleteOldImages(deletedProduct.image);
+    if (existing.rows[0].status === PRODUCT_STATUS.ARCHIVED) {
+      throw new Error('Product is already archived');
     }
 
-    return { message: 'Product deleted successfully' };
+    // Block if there are active bookings for this product
+    const activeCheck = await pool.query(
+      `SELECT 1 FROM booking_products bp
+       WHERE bp.product_id = $1
+         AND bp.status NOT IN ('cancelled', 'completed', 'exchanged')
+       LIMIT 1`,
+      [productId]
+    );
+    if (activeCheck.rows.length > 0) {
+      throw new Error(
+        'Cannot archive this product because it has active bookings. ' +
+        'Please complete or cancel those bookings first.'
+      );
+    }
+
+    const result = await pool.query(
+      `UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
+      [PRODUCT_STATUS.ARCHIVED, productId]
+    );
+    return this._parseProductImages(result.rows[0]);
+  }
+
+  /**
+   * Restore an archived product back to 'available'.
+   * @param {number} productId - Product ID
+   * @returns {Promise<Object>} - Updated product
+   */
+  async restoreProduct(productId) {
+    const existing = await pool.query(
+      'SELECT id, status FROM products WHERE id = $1',
+      [productId]
+    );
+    if (existing.rows.length === 0) {
+      throw new Error('Product not found');
+    }
+    if (existing.rows[0].status === PRODUCT_STATUS.AVAILABLE) {
+      throw new Error('Product is already available');
+    }
+
+    const result = await pool.query(
+      `UPDATE products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 RETURNING *`,
+      [PRODUCT_STATUS.AVAILABLE, productId]
+    );
+    return this._parseProductImages(result.rows[0]);
   }
 
   /**
@@ -218,7 +265,7 @@ class ProductService {
    */
   async _processImages(images, image, code) {
     let imageData = null;
-    
+
     // If images array is provided, process multiple images
     if (images && Array.isArray(images) && images.length > 0) {
       const imageUrls = [];
@@ -237,7 +284,7 @@ class ProductService {
         }
       }
       imageData = imageUrls.length > 0 ? JSON.stringify(imageUrls) : null;
-    } 
+    }
     // If single image is provided (backward compatibility)
     else if (image) {
       if (image.startsWith('data:image')) {
@@ -280,3 +327,4 @@ class ProductService {
 }
 
 module.exports = new ProductService();
+module.exports.PRODUCT_STATUS = PRODUCT_STATUS;

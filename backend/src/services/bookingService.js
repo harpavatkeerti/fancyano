@@ -108,6 +108,18 @@ class BookingService {
           discountValue
         );
 
+        // Guard: reject if the product is archived
+        const productInfo = await client.query(
+          'SELECT name, code, status FROM products WHERE id = $1',
+          [productId]
+        );
+        if (!productInfo.rows[0]) {
+          throw new Error(`Product ${productId} not found`);
+        }
+        if (productInfo.rows[0].status !== 'available') {
+          throw new Error(`Product "${productInfo.rows[0].name}" (${productInfo.rows[0].code}) is archived and cannot be booked`);
+        }
+
         // Guard: reject if the product is already booked over this date range
         await checkProductAvailability(productId, bookedFrom, bookedTo, { client });
 
@@ -146,12 +158,6 @@ class BookingService {
           effectiveRent,  // Use effective rent, not original rent
           securityDeposit,
           client
-        );
-
-        // Get product name for activity log
-        const productInfo = await client.query(
-          'SELECT name, code FROM products WHERE id = $1',
-          [productId]
         );
 
         productDetails.push({

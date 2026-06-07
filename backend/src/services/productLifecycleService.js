@@ -66,6 +66,16 @@ class ProductLifecycleService {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
       }
 
+      // Guard: every replacement product must have explicit date range provided
+      for (const newProd of newProducts) {
+        if (!newProd.bookedFrom || !newProd.bookedTo) {
+          throw new Error(
+            `Product ${newProd.productId} is missing booked_from or booked_to. ` +
+            'Dates must be explicitly provided for all replacement products and cannot default to booking dates.'
+          );
+        }
+      }
+
       // Guard: new products must not already be active in this booking
       const activeRows = await client.query(
         `SELECT DISTINCT product_id FROM booking_products
@@ -130,6 +140,18 @@ class ProductLifecycleService {
       // Create new booking products
       const newBookingProductIds = [];
       for (const newProd of newProducts) {
+        // Guard: reject if the replacement product is archived
+        const newProdInfo = await client.query(
+          'SELECT name, code, status FROM products WHERE id = $1',
+          [newProd.productId]
+        );
+        if (!newProdInfo.rows[0]) {
+          throw new Error(`Product ${newProd.productId} not found`);
+        }
+        if (newProdInfo.rows[0].status !== 'available') {
+          throw new Error(`Product "${newProdInfo.rows[0].name}" (${newProdInfo.rows[0].code}) is archived and cannot be added to a booking`);
+        }
+
         // Guard: reject if the replacement product is already booked on these dates
         await checkProductAvailability(
           newProd.productId, newProd.bookedFrom, newProd.bookedTo, { client }

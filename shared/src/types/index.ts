@@ -6,7 +6,7 @@ export interface Product {
   purchase_price?: number;
   rent: number;
   security_deposit: number;
-  availability: boolean;
+  status: 'available' | 'archived';
   category?: string;
   gender?: string;
   size?: string;

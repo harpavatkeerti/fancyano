@@ -255,7 +255,7 @@ export function ProductExchange({
         .filter(p => p.id !== selectedOriginalProduct)
         .map(p => p.id);
       const available = response.data.filter((p: any) =>
-        p.availability && !currentProductIds.includes(p.id)
+        !currentProductIds.includes(p.id)
       );
       setAvailableProducts(available);
 
@@ -655,6 +655,18 @@ export function ProductExchange({
   const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
 
   const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
+
+  // All newly-added products (main + additional) must have both dates set before proceeding
+  const allProductDatesSet = (() => {
+    if (!selectedExchangedProduct) return false;
+    const mainDates = productDates[selectedExchangedProduct];
+    if (!mainDates?.booked_from || !mainDates?.booked_to) return false;
+    for (const pid of additionalProducts) {
+      const d = productDates[pid];
+      if (!d?.booked_from || !d?.booked_to) return false;
+    }
+    return true;
+  })();
 
   return (
     <div className="space-y-4">
@@ -1156,67 +1168,69 @@ export function ProductExchange({
                                   <h3 className="text-sm font-semibold text-gray-700 mb-3">
                                     Select Dates for {product.name}
                                   </h3>
-                                  <DateRangePicker
-                                    key={`date-picker-${product.id}-${index}`}
-                                    label=""
-                                    startDate={productDates[product.id]?.booked_from || ''}
-                                    endDate={productDates[product.id]?.booked_to || ''}
-                                    bookings={productBookings[product.id] || []}
-                                    productName={product.name}
-                                    onStartDateChange={(date) => {
-                                      setProductDates(prev => ({
-                                        ...prev,
-                                        [product.id]: {
-                                          ...prev[product.id],
-                                          booked_from: date || ''
-                                        }
-                                      }));
-                                      // Clear error when date changes
-                                      setAvailabilityErrors(prev => {
-                                        const newErrors = { ...prev };
-                                        delete newErrors[product.id];
-                                        return newErrors;
-                                      });
-                                    }}
-                                    onEndDateChange={(date) => {
-                                      const currentFrom = productDates[product.id]?.booked_from || '';
-                                      setProductDates(prev => ({
-                                        ...prev,
-                                        [product.id]: {
-                                          ...prev[product.id],
-                                          booked_to: date || ''
-                                        }
-                                      }));
-
-                                      // Check availability when both dates are set
-                                      if (date && currentFrom) {
-                                        checkProductAvailability(
-                                          product.id,
-                                          currentFrom,
-                                          date
-                                        ).then(availability => {
-                                          if (!availability.available) {
-                                            setAvailabilityErrors(prev => ({
-                                              ...prev,
-                                              [product.id]: availability.message || 'Not available'
-                                            }));
-                                          } else if (availability.isUrgent) {
-                                            setAvailabilityErrors(prev => ({
-                                              ...prev,
-                                              [product.id]: `⚠️ ${availability.message || 'Tight schedule'}`
-                                            }));
-                                          } else {
-                                            setAvailabilityErrors(prev => {
-                                              const newErrors = { ...prev };
-                                              delete newErrors[product.id];
-                                              return newErrors;
-                                            });
+                                  <div>
+                                    <DateRangePicker
+                                      key={`date-picker-${product.id}-${index}`}
+                                      label=""
+                                      startDate={productDates[product.id]?.booked_from || ''}
+                                      endDate={productDates[product.id]?.booked_to || ''}
+                                      bookings={productBookings[product.id] || []}
+                                      productName={product.name}
+                                      onStartDateChange={(date) => {
+                                        setProductDates(prev => ({
+                                          ...prev,
+                                          [product.id]: {
+                                            ...prev[product.id],
+                                            booked_from: date || ''
                                           }
+                                        }));
+                                        // Clear error when date changes
+                                        setAvailabilityErrors(prev => {
+                                          const newErrors = { ...prev };
+                                          delete newErrors[product.id];
+                                          return newErrors;
                                         });
-                                      }
-                                    }}
-                                    minDate={new Date().toISOString().split('T')[0]}
-                                  />
+                                      }}
+                                      onEndDateChange={(date) => {
+                                        const currentFrom = productDates[product.id]?.booked_from || '';
+                                        setProductDates(prev => ({
+                                          ...prev,
+                                          [product.id]: {
+                                            ...prev[product.id],
+                                            booked_to: date || ''
+                                          }
+                                        }));
+
+                                        // Check availability when both dates are set
+                                        if (date && currentFrom) {
+                                          checkProductAvailability(
+                                            product.id,
+                                            currentFrom,
+                                            date
+                                          ).then(availability => {
+                                            if (!availability.available) {
+                                              setAvailabilityErrors(prev => ({
+                                                ...prev,
+                                                [product.id]: availability.message || 'Not available'
+                                              }));
+                                            } else if (availability.isUrgent) {
+                                              setAvailabilityErrors(prev => ({
+                                                ...prev,
+                                                [product.id]: `⚠️ ${availability.message || 'Tight schedule'}`
+                                              }));
+                                            } else {
+                                              setAvailabilityErrors(prev => {
+                                                const newErrors = { ...prev };
+                                                delete newErrors[product.id];
+                                                return newErrors;
+                                              });
+                                            }
+                                          });
+                                        }
+                                      }}
+                                      minDate={new Date().toISOString().split('T')[0]}
+                                    />
+                                  </div>
                                   {availabilityErrors[product.id] && (
                                     <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
                                       <div className="flex items-start">
@@ -1373,26 +1387,34 @@ export function ProductExchange({
               )}
             </div>
 
-            <div className="flex justify-end gap-4 p-6 border-t border-gray-200">
-              <button
-                onClick={() => {
-                  setShowExchangeModal(false);
-                  setTotalPaymentDue(0);
-                  setPendingExchangeData(null);
-                  setPaymentMethod('Cash');
-                  setPaymentNarration('');
-                }}
-                className="px-6 py-2.5 bg-white border-2 border-red-600 text-red-600 font-semibold rounded-lg hover:bg-red-50 transition-colors"
-              >
-                CANCEL
-              </button>
-              <button
-                onClick={totalPaymentDue > 0 ? handlePaymentCollection : handleExchange}
-                disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct}
-                className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {loading ? 'Processing...' : (totalPaymentDue > 0 ? 'COLLECT PAYMENT & EXCHANGE' : 'EXCHANGE')}
-              </button>
+            <div className="flex flex-col gap-2 p-6 border-t border-gray-200">
+              {!allProductDatesSet && selectedExchangedProduct && (
+                <p className="text-xs text-red-600 text-right">
+                  ⚠️ Please select start and end dates for all replacement products.
+                </p>
+              )}
+              <div className="flex justify-end gap-4">
+                <button
+                  onClick={() => {
+                    setShowExchangeModal(false);
+                    setTotalPaymentDue(0);
+                    setPendingExchangeData(null);
+                    setPaymentMethod('Cash');
+                    setPaymentNarration('');
+                  }}
+                  className="px-6 py-2.5 bg-white border-2 border-red-600 text-red-600 font-semibold rounded-lg hover:bg-red-50 transition-colors"
+                >
+                  CANCEL
+                </button>
+                <button
+                  onClick={totalPaymentDue > 0 ? handlePaymentCollection : handleExchange}
+                  disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct || !allProductDatesSet}
+                  title={!allProductDatesSet && selectedExchangedProduct ? 'Please select dates for all replacement products' : undefined}
+                  className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {loading ? 'Processing...' : (totalPaymentDue > 0 ? 'COLLECT PAYMENT & EXCHANGE' : 'EXCHANGE')}
+                </button>
+              </div>
             </div>
           </div>
         </div>

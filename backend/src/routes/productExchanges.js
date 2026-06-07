@@ -75,6 +75,17 @@ router.post('/', async (req, res) => {
         }
       });
     }
+
+    // Validate that every replacement product has explicit dates
+    for (let i = 0; i < new_product_ids.length; i++) {
+      const p = new_product_ids[i];
+      if (!p.booked_from || !p.booked_to) {
+        return res.status(400).json({
+          error: `Replacement product at index ${i} is missing booked_from or booked_to. Dates must be explicitly provided for all replacement products.`,
+          product_id: p.product_id
+        });
+      }
+    }
     
     // Map snake_case API fields to camelCase expected by service
     const mappedProducts = new_product_ids.map(p => ({

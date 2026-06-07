@@ -647,6 +647,43 @@ describe('ProductLifecycleService', () => {
           await pool.query('DELETE FROM bookings WHERE id = $1', [cancelledId]);
         }
       });
+
+      test('should reject exchange if the replacement product is archived', async () => {
+        // Archive testProductId2 which is used as the replacement
+        await pool.query(`UPDATE products SET status = 'archived' WHERE id = $1`, [testProductId2]);
+
+        const from = new Date().toISOString().slice(0, 10);
+        const to   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+
+        try {
+          await expect(
+            productLifecycleService.exchangeProduct(
+              testBookingProductId,
+              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              'Exchange to archived product',
+              String(testUserId)
+            )
+          ).rejects.toThrow('is archived and cannot be added to a booking');
+        } finally {
+          await pool.query(`UPDATE products SET status = 'available' WHERE id = $1`, [testProductId2]);
+        }
+      });
+
+      test('should succeed exchange when replacement product is available', async () => {
+        // Ensure testProductId2 is available
+        await pool.query(`UPDATE products SET status = 'available' WHERE id = $1`, [testProductId2]);
+
+        const from = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+        const to   = new Date(Date.now() + 35 * 864e5).toISOString().slice(0, 10);
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+          'Exchange to available product',
+          String(testUserId)
+        );
+        expect(result).toHaveProperty('new_booking_product_ids');
+      });
     });
   });
 

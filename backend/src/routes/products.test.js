@@ -100,8 +100,7 @@ describe('Products Routes', () => {
           purchase_price: 50000,
           rent: 10000,
           security_deposit: 5000,
-          category: 'test',
-          availability: true
+          category: 'test'
         });
 
       expect(response.status).toBe(201);
@@ -197,28 +196,69 @@ describe('Products Routes', () => {
     });
   });
 
-  describe('DELETE /products/:id', () => {
+  describe('PATCH /products/:id/archive', () => {
     beforeEach(async () => {
       const result = await pool.query(
-        `INSERT INTO products (code, name, rent, security_deposit)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO products (code, name, rent, security_deposit, status)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING id`,
-        ['TEST-PROD-ROUTE-DEL', 'To Delete', 10000, 5000]
+        ['TEST-PROD-ROUTE-DEL', 'To Archive', 10000, 5000, 'available']
       );
       testProductId = result.rows[0].id;
     });
 
-    it('should delete a product', async () => {
-      const response = await request(app).delete(`/products/${testProductId}`);
+    it('should archive an available product', async () => {
+      const response = await request(app).patch(`/products/${testProductId}/archive`);
 
       expect(response.status).toBe(200);
-      expect(response.body.message).toContain('deleted successfully');
+      expect(response.body.status).toBe('archived');
     });
 
     it('should return 404 for non-existent product', async () => {
-      const response = await request(app).delete('/products/999999');
+      const response = await request(app).patch('/products/999999/archive');
 
       expect(response.status).toBe(404);
+    });
+
+    it('should return 409 when archiving an already archived product', async () => {
+      await request(app).patch(`/products/${testProductId}/archive`);
+      const response = await request(app).patch(`/products/${testProductId}/archive`);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error).toContain('already archived');
+    });
+  });
+
+  describe('PATCH /products/:id/restore', () => {
+    beforeEach(async () => {
+      const result = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, status)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        ['TEST-PROD-ROUTE-DEL', 'To Restore', 10000, 5000, 'archived']
+      );
+      testProductId = result.rows[0].id;
+    });
+
+    it('should restore an archived product', async () => {
+      const response = await request(app).patch(`/products/${testProductId}/restore`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.status).toBe('available');
+    });
+
+    it('should return 404 for non-existent product', async () => {
+      const response = await request(app).patch('/products/999999/restore');
+
+      expect(response.status).toBe(404);
+    });
+
+    it('should return 409 when restoring an already available product', async () => {
+      await request(app).patch(`/products/${testProductId}/restore`);
+      const response = await request(app).patch(`/products/${testProductId}/restore`);
+
+      expect(response.status).toBe(409);
+      expect(response.body.error).toContain('already available');
     });
   });
 });

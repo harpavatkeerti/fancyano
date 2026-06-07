@@ -253,15 +253,15 @@ export default function ProductDetailPage() {
     }
   }
 
-  async function handleAddToCart() {
+  async function handleAddToCart(): Promise<boolean> {
     if (!dateFrom || !dateTo) {
       toast.warning('Please select rental dates');
-      return;
+      return false;
     }
 
     if (!product) {
       toast.error('Product information is missing');
-      return;
+      return false;
     }
 
     // Check availability before adding to cart
@@ -275,7 +275,7 @@ export default function ProductDetailPage() {
       } else {
         toast.error('Selected dates are not available. Please choose different dates.');
       }
-      return;
+      return false;
     }
 
     // Check for tight schedule (bookings within 2 days)
@@ -284,10 +284,12 @@ export default function ProductDetailPage() {
       setWarningMessage(tightScheduleCheck.message);
       setShowWarningModal(true);
       setPendingAddToCart(true);
-      return;
+      // Navigation will happen after the user confirms the warning modal
+      return false;
     }
 
     addToCartConfirmed();
+    return true;
   }
 
   function addToCartConfirmed() {
@@ -318,15 +320,19 @@ export default function ProductDetailPage() {
     toast.success('Product added to cart!');
   }
 
-  function handleBookNow() {
+  async function handleBookNow() {
     if (!dateFrom || !dateTo) {
       toast.warning('Please select rental dates');
       return;
     }
 
-    // Add to cart and redirect
-    handleAddToCart();
-    router.push('/salesman/cart');
+    // Add to cart and redirect only if successfully added
+    const added = await handleAddToCart();
+    if (added) {
+      router.push('/salesman/cart');
+    }
+    // If not added (e.g. tight schedule warning modal shown), don't navigate yet.
+    // The warning modal's Continue button will call addToCartConfirmed() and then navigate.
   }
 
   if (loading) {
@@ -629,8 +635,13 @@ export default function ProductDetailPage() {
               <button
                 onClick={() => {
                   setShowWarningModal(false);
+                  const wasPendingBookNow = pendingAddToCart;
                   setPendingAddToCart(false);
                   addToCartConfirmed();
+                  // If triggered via Book Now, navigate to cart after confirming
+                  if (wasPendingBookNow) {
+                    router.push('/salesman/cart');
+                  }
                 }}
                 className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
               >
