@@ -818,6 +818,30 @@ class ProductLifecycleService {
         ]
       );
 
+      // Insert picked_by_customer tracking row for each picked-up product
+      for (const bpId of bookingProductIds) {
+        const bpRow = await client.query(
+          `SELECT bp.product_id, p.code
+           FROM booking_products bp
+           JOIN products p ON p.id = bp.product_id
+           WHERE bp.id = $1`,
+          [bpId]
+        );
+        if (bpRow.rows[0]) {
+          await client.query(
+            `INSERT INTO product_tracking
+               (product_id, booking_id, product_code, tracking_status, notes)
+             VALUES ($1, $2, $3, 'picked_by_customer', $4)`,
+            [
+              bpRow.rows[0].product_id,
+              bookingId,
+              bpRow.rows[0].code,
+              `Picked up by customer for booking #${bookingId}`
+            ]
+          );
+        }
+      }
+
       await client.query('COMMIT');
 
       return {
@@ -905,6 +929,28 @@ class ProductLifecycleService {
           'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           ['completed', bookingProductId]
         );
+
+        // Insert in_house tracking row — product is back in store
+        const prodRow = await client.query(
+          `SELECT bp.product_id, p.code
+           FROM booking_products bp
+           JOIN products p ON p.id = bp.product_id
+           WHERE bp.id = $1`,
+          [bookingProductId]
+        );
+        if (prodRow.rows[0]) {
+          await client.query(
+            `INSERT INTO product_tracking
+               (product_id, booking_id, product_code, tracking_status, notes)
+             VALUES ($1, $2, $3, 'in_house', $4)`,
+            [
+              prodRow.rows[0].product_id,
+              bookingId,
+              prodRow.rows[0].code,
+              `Returned by customer, booking #${bookingId} product completed`
+            ]
+          );
+        }
       }
 
       // Log in booking activity

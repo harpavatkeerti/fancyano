@@ -5,7 +5,7 @@ import { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';
 import { creditNotesApi } from '@/lib/creditNotesApi';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product } from '@/types';
-import { Button, Input, DateRangePicker, PhoneInput, BookingProductTrackingModal, PaymentMethodInput } from '@/components/common';
+import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput } from '@/components/common';
 import dynamic from 'next/dynamic';
 import axios from 'axios';
 
@@ -21,7 +21,6 @@ const QRScanner = dynamic(
 );
 import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 import { settingsApi } from '@/lib/settingsApi';
-import { productTrackingApi } from '@/lib/productTrackingApi';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -116,8 +115,6 @@ export default function BookingsPage() {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1); // For keyboard navigation
-  const [trackingBooking, setTrackingBooking] = useState<Booking | null>(null);
-  const [showProductTrackingList, setShowProductTrackingList] = useState(false);
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
@@ -449,16 +446,6 @@ export default function BookingsPage() {
       // Update booking basic info (date changes handled in separate modal)
       await bookingsApi.update(selectedBooking.id, formData);
 
-      // Auto-track when status changes to 'confirmed' (picked by customer)
-      if (oldStatus !== 'confirmed' && newStatus === 'confirmed') {
-        await handleAutoTrackPickup(selectedBooking);
-      }
-
-      // Auto-track return when status changes to 'completed'
-      if (oldStatus !== 'completed' && newStatus === 'completed') {
-        await handleAutoTrackReturn(selectedBooking);
-      }
-
       await fetchBookings();
       setShowModifyModal(false);
       setSelectedBooking(null);
@@ -467,49 +454,6 @@ export default function BookingsPage() {
     } catch (error) {
       console.error('Error updating booking:', error);
       toast.error('Error updating booking');
-    }
-  }
-
-  async function handleAutoTrackPickup(booking: Booking) {
-    try {
-      const products = Array.isArray(booking.products) ? booking.products : [];
-
-      for (const product of products) {
-        await productTrackingApi.create({
-          product_id: product.id,
-          booking_id: booking.id,
-          product_code: product.code ?? '',
-          tracking_type: 'picked_by_customer',
-          notes: `Automatically tracked: Product picked up by ${booking.customer_name}`,
-        });
-      }
-
-      console.log('✅ Products automatically tracked as picked by customer');
-    } catch (error) {
-      console.error('Error auto-tracking pickup:', error);
-    }
-  }
-
-  async function handleAutoTrackReturn(booking: Booking) {
-    try {
-      // Get all tracking records and filter for this booking's active ones
-      const response = await productTrackingApi.getAll();
-      const allTracks = response.data?.data || response.data || [];
-      const bookingTracks = allTracks.filter((track: any) =>
-        track.booking_id === booking.id && track.status === 'out'
-      );
-
-      // Mark all as returned
-      for (const track of bookingTracks) {
-        await productTrackingApi.markReturned(
-          track.id,
-          `Automatically returned: Booking completed for ${booking.customer_name}`
-        );
-      }
-
-      console.log('✅ Products automatically marked as returned');
-    } catch (error) {
-      console.error('Error auto-tracking return:', error);
     }
   }
 
@@ -2558,20 +2502,6 @@ export default function BookingsPage() {
           <QRScanner
             onScan={handleQRScan}
             onClose={() => setShowQRScanner(false)}
-          />
-        )
-      }
-
-      {/* Booking Product Tracking Modal */}
-      {
-        trackingBooking && showProductTrackingList && (
-          <BookingProductTrackingModal
-            booking={trackingBooking}
-            onClose={() => {
-              setTrackingBooking(null);
-              setShowProductTrackingList(false);
-              fetchBookings(); // Refresh bookings after tracking updates
-            }}
           />
         )
       }

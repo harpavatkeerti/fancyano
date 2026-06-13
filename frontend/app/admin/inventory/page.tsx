@@ -4,9 +4,9 @@ import { useEffect, useState } from 'react';
 import { productsApi, bookingsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { Product } from '@/types';
-import { Button, Input, ImageUpload, MultipleImageUpload, AvailabilityCalendar, ProductTrackingModal } from '@/components/common';
+import { Button, Input, ImageUpload, MultipleImageUpload, AvailabilityCalendar, ProductTrackingModal, QRScanner } from '@/components/common';
 import { getImageUrl } from '@/lib/imageHelper';
-import { productTrackingApi, ProductTracking } from '@/lib/productTrackingApi';
+import { productTrackingApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES } from '@/lib/productTrackingApi';
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -18,14 +18,14 @@ export default function InventoryPage() {
   const [checkingAvailability, setCheckingAvailability] = useState<Product | null>(null);
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
-  const [productMaintenanceStatus, setProductMaintenanceStatus] = useState<Record<number, ProductTracking | null>>({});
+  const [showQRScanner, setShowQRScanner] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   
   // Filter states
   const [filterProductType, setFilterProductType] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSize, setFilterSize] = useState('');
-  const [filterMaintenance, setFilterMaintenance] = useState<'all' | 'maintenance' | 'available'>('all');
+  const [filterTrackingStatus, setFilterTrackingStatus] = useState<TrackingStatus[]>([]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'archived'>('all');
 
   // Verify new code is loaded
@@ -49,12 +49,6 @@ export default function InventoryPage() {
     fetchProducts();
   }, []);
 
-  useEffect(() => {
-    if (products.length > 0) {
-      fetchMaintenanceStatus();
-    }
-  }, [products]);
-
   // Reset image index when viewing product changes
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -72,43 +66,11 @@ export default function InventoryPage() {
     }
   }
 
-  async function fetchMaintenanceStatus() {
-    try {
-      const statusMap: Record<number, ProductTracking | null> = {};
-      
-      // Fetch active tracking for all products in parallel
-      const trackingPromises = products.map(async (product) => {
-        try {
-          const response = await productTrackingApi.getByProductId(product.id);
-          let data = [];
-          if (response.data && Array.isArray(response.data.data)) {
-            data = response.data.data;
-          } else if (Array.isArray(response.data)) {
-            data = response.data;
-          }
-          
-          // Find active (out) tracking that is NOT picked_by_customer (maintenance/repair)
-          const activeMaintenance = data.find((t: ProductTracking) => 
-            t.status === 'out' && 
-            t.tracking_type !== 'picked_by_customer' &&
-            (t.tracking_type === 'repair' || 
-             t.tracking_type === 'going_to_dry_clean' || 
-             t.tracking_type === 'alternation_related_work' || 
-             t.tracking_type === 'other_work')
-          );
-          
-          statusMap[product.id] = activeMaintenance || null;
-        } catch (error) {
-          console.error(`Error fetching tracking for product ${product.id}:`, error);
-          statusMap[product.id] = null;
-        }
-      });
-      
-      await Promise.all(trackingPromises);
-      setProductMaintenanceStatus(statusMap);
-    } catch (error) {
-      console.error('Error fetching maintenance status:', error);
-    }
+  // QR scan handler — sets search to the scanned product code
+  function handleQRScan(code: string) {
+    setSearchTerm(code);
+    setShowQRScanner(false);
+    toast.success(`Searching for product: ${code}`);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -306,27 +268,25 @@ export default function InventoryPage() {
       // Size filter
       const matchesSize = !filterSize || (p as any).size === filterSize;
 
-      // Maintenance filter (from product_tracking)
-      const isUnderMaintenance = !!productMaintenanceStatus[p.id];
-      const matchesMaintenance =
-        filterMaintenance === 'all' ||
-        (filterMaintenance === 'maintenance' && isUnderMaintenance) ||
-        (filterMaintenance === 'available' && !isUnderMaintenance);
+      // Tracking status filter — treat null/undefined as in_house
+      const currentStatus: TrackingStatus = (p.tracking_status as TrackingStatus) || 'in_house';
+      const matchesTrackingStatus =
+        filterTrackingStatus.length === 0 ||
+        filterTrackingStatus.includes(currentStatus);
 
       // Status filter (archived vs available)
       const matchesStatus =
         filterStatus === 'all' ||
         p.status === filterStatus;
 
-      return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesMaintenance && matchesStatus;
+      return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesTrackingStatus && matchesStatus;
     })
     .sort((a, b) => {
-      // Sort: maintenance products first, then by name
-      const aMaintenance = !!productMaintenanceStatus[a.id];
-      const bMaintenance = !!productMaintenanceStatus[b.id];
-      
-      if (aMaintenance && !bMaintenance) return -1;
-      if (!aMaintenance && bMaintenance) return 1;
+      // Sort: out-of-house products first, then by name
+      const aOut = a.tracking_status && a.tracking_status !== 'in_house';
+      const bOut = b.tracking_status && b.tracking_status !== 'in_house';
+      if (aOut && !bOut) return -1;
+      if (!aOut && bOut) return 1;
       return a.name.localeCompare(b.name);
     });
 
@@ -334,9 +294,9 @@ export default function InventoryPage() {
     return <div className="text-center py-12">Loading inventory...</div>;
   }
 
-  // Count products under maintenance
-  const maintenanceCount = Object.values(productMaintenanceStatus).filter(status => status !== null).length;
-  const maintenanceProducts = products.filter(p => !!productMaintenanceStatus[p.id]);
+  // Products currently out (any status except in_house)
+  const outCount = products.filter(p => p.tracking_status && p.tracking_status !== 'in_house').length;
+  const outProducts = products.filter(p => p.tracking_status && p.tracking_status !== 'in_house');
 
   return (
     <div className="space-y-6">
@@ -351,9 +311,9 @@ export default function InventoryPage() {
         </Button>
       </div>
 
-      {/* Maintenance Alert Banner */}
-      {maintenanceCount > 0 && (
-        <div className="bg-gradient-to-r from-orange-50 to-red-50 border-l-4 border-orange-500 rounded-lg p-4 shadow-md animate-pulse">
+      {/* Out-of-House Alert Banner */}
+      {outCount > 0 && (
+        <div className="bg-gradient-to-r from-orange-50 to-red-50 border-l-4 border-orange-500 rounded-lg p-4 shadow-md">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="bg-orange-500 rounded-full p-2">
@@ -363,32 +323,27 @@ export default function InventoryPage() {
               </div>
               <div>
                 <h3 className="text-lg font-bold text-orange-900">
-                  ⚠️ {maintenanceCount} Product{maintenanceCount > 1 ? 's' : ''} Under Maintenance
+                  ⚠️ {outCount} Product{outCount > 1 ? 's' : ''} Out of House
                 </h3>
                 <p className="text-sm text-orange-700 mt-1">
-                  {maintenanceProducts.slice(0, 3).map(p => {
-                    const status = productMaintenanceStatus[p.id];
-                    const type = status?.tracking_type === 'repair' ? '🔧 Repair' :
-                                 status?.tracking_type === 'going_to_dry_clean' ? '🧼 Dry Clean' :
-                                 status?.tracking_type === 'alternation_related_work' ? '✂️ Alteration' :
-                                 '⚙️ Maintenance';
-                    return `${p.code} (${type})`;
+                  {outProducts.slice(0, 3).map(p => {
+                    const label = TRACKING_STATUS_LABELS[p.tracking_status as TrackingStatus] || '❓ Unknown';
+                    return `${p.code} (${label})`;
                   }).join(', ')}
-                  {maintenanceCount > 3 && ` and ${maintenanceCount - 3} more...`}
+                  {outCount > 3 && ` and ${outCount - 3} more...`}
                 </p>
               </div>
             </div>
             <button
               onClick={() => {
-                setFilterMaintenance('maintenance');
-                // Scroll to table
+                setFilterTrackingStatus(MANUAL_TRACKING_STATUSES);
                 setTimeout(() => {
                   document.querySelector('table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                 }, 100);
               }}
               className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold rounded-lg transition-colors shadow-md"
             >
-              View All Maintenance Products
+              View All Out Products
             </button>
           </div>
         </div>
@@ -403,6 +358,14 @@ export default function InventoryPage() {
             onChange={(e) => setSearchTerm(e.target.value)}
             className="flex-1"
           />
+          <button
+            id="inventory-qr-scan-btn"
+            onClick={() => setShowQRScanner(true)}
+            className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg transition-colors flex items-center gap-2"
+            title="Scan QR code to find product"
+          >
+            📷 Scan QR
+          </button>
           <span className="text-sm text-gray-600">
             Showing: {filteredProducts.length} / {products.length}
           </span>
@@ -486,16 +449,28 @@ export default function InventoryPage() {
             </div>
             
             <div className="flex-1">
-              <label className="block text-xs text-gray-600 mb-1">Maintenance Status</label>
-              <select
-                value={filterMaintenance}
-                onChange={(e) => setFilterMaintenance(e.target.value as 'all' | 'maintenance' | 'available')}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="all">All Products</option>
-                <option value="maintenance">⚠️ Under Maintenance</option>
-                <option value="available">✅ Available</option>
-              </select>
+              <label className="block text-xs text-gray-600 mb-1">Tracking Status</label>
+              <div className="flex flex-wrap gap-1">
+                {(['in_house', 'picked_by_customer', 'going_to_dry_clean', 'alternation_related_work', 'repair', 'other_work'] as TrackingStatus[]).map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => {
+                      setFilterTrackingStatus(prev =>
+                        prev.includes(status)
+                          ? prev.filter(s => s !== status)
+                          : [...prev, status]
+                      );
+                    }}
+                    className={`px-2 py-1 text-xs rounded-full border transition-colors ${
+                      filterTrackingStatus.includes(status)
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'
+                    }`}
+                  >
+                    {TRACKING_STATUS_LABELS[status]}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="flex-1">
@@ -532,7 +507,7 @@ export default function InventoryPage() {
                   setFilterProductType('');
                   setFilterCategory('');
                   setFilterSize('');
-                  setFilterMaintenance('all');
+                  setFilterTrackingStatus([]);
                   setFilterStatus('all');
                   setSearchTerm('');
                 }}
@@ -567,7 +542,10 @@ export default function InventoryPage() {
                 Size
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Product Tracking
+                Tracking Status
+              </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Rent per day
@@ -582,34 +560,12 @@ export default function InventoryPage() {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredProducts.map((product) => {
-              const maintenanceStatus = productMaintenanceStatus[product.id];
-              const isUnderMaintenance = !!maintenanceStatus;
-              const maintenanceType = maintenanceStatus?.tracking_type;
-              
-              // Get maintenance icon and text
-              const getMaintenanceInfo = () => {
-                if (!isUnderMaintenance) return null;
-                
-                switch (maintenanceType) {
-                  case 'repair':
-                    return { icon: '🔧', text: 'Repair', color: 'text-red-600' };
-                  case 'going_to_dry_clean':
-                    return { icon: '🧼', text: 'Dry Clean', color: 'text-blue-600' };
-                  case 'alternation_related_work':
-                    return { icon: '✂️', text: 'Alteration', color: 'text-purple-600' };
-                  case 'other_work':
-                    return { icon: '⚙️', text: 'Maintenance', color: 'text-orange-600' };
-                  default:
-                    return { icon: '⚠️', text: 'Out', color: 'text-yellow-600' };
-                }
-              };
-              
-              const maintenanceInfo = getMaintenanceInfo();
-              
+              const isOutOfHouse = product.tracking_status && product.tracking_status !== 'in_house';
+
               return (
-              <tr 
-                key={product.id} 
-                className={`hover:bg-gray-50 ${isUnderMaintenance ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
+              <tr
+                key={product.id}
+                className={`hover:bg-gray-50 ${isOutOfHouse ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
               >
                 <td className="px-6 py-4 whitespace-nowrap">
                   {(() => {
@@ -669,51 +625,29 @@ export default function InventoryPage() {
                   {(product as any).size || <span className="text-gray-400">N/A</span>}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap">
-                  <div className="relative">
-                    {isUnderMaintenance && maintenanceInfo && (
-                      <div className="absolute -top-2 -left-2 z-10 animate-pulse">
-                        <div className="bg-orange-500 text-white rounded-full p-1.5 shadow-lg border-2 border-white">
-                          <span className="text-lg">{maintenanceInfo.icon}</span>
-                        </div>
-                      </div>
-                    )}
-                    <button
-                      onClick={() => {
-                        setTrackingProduct(product);
-                        // Refresh maintenance status after closing modal
-                        setTimeout(() => fetchMaintenanceStatus(), 500);
-                      }}
-                      className={`px-3 py-1 text-white text-sm font-medium rounded-lg transition-all flex items-center gap-2 relative ${
-                        isUnderMaintenance 
-                          ? 'bg-orange-500 hover:bg-orange-600 animate-pulse' 
-                          : 'bg-purple-500 hover:bg-purple-600'
-                      }`}
-                      title={isUnderMaintenance && maintenanceInfo ? `${maintenanceInfo.text} - ${maintenanceStatus?.work_description || 'No description'}` : 'Track Product'}
-                    >
-                      {isUnderMaintenance && maintenanceInfo ? (
-                        <>
-                          <span>{maintenanceInfo.icon}</span>
-                          <span>{maintenanceInfo.text}</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>📦</span>
-                          <span>Track</span>
-                        </>
-                      )}
-                    </button>
-                    {isUnderMaintenance && maintenanceStatus && (
-                      <div className="absolute top-full left-0 mt-1 bg-gray-900 text-white text-xs rounded px-2 py-1 whitespace-nowrap z-20 opacity-0 hover:opacity-100 transition-opacity pointer-events-none">
-                        <div className="font-semibold">{maintenanceInfo?.text}</div>
-                        <div className="text-gray-300">
-                          {maintenanceStatus.work_description || 'No description'}
-                        </div>
-                        <div className="text-gray-400 text-xs mt-1">
-                          Out: {new Date(maintenanceStatus.out_date).toLocaleDateString('en-GB')}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+                  {(() => {
+                    const ts: TrackingStatus = (product.tracking_status as TrackingStatus) || 'in_house';
+                    const colorMap: Record<TrackingStatus, string> = {
+                      in_house: 'bg-green-100 text-green-800',
+                      picked_by_customer: 'bg-blue-100 text-blue-800',
+                      going_to_dry_clean: 'bg-yellow-100 text-yellow-800',
+                      alternation_related_work: 'bg-purple-100 text-purple-800',
+                      repair: 'bg-orange-100 text-orange-800',
+                      other_work: 'bg-gray-100 text-gray-800',
+                    };
+                    return (
+                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${colorMap[ts]}`}>
+                        {TRACKING_STATUS_LABELS[ts]}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td className="px-6 py-4 whitespace-nowrap">
+                  {product.status === 'available' ? (
+                    <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">✅ Available</span>
+                  ) : (
+                    <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">🗃️ Archived</span>
+                  )}
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   ₹{product.rent}
@@ -743,6 +677,14 @@ export default function InventoryPage() {
                       className="px-3 py-2 text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
                     >
                       Edit
+                    </button>
+                    <button
+                      id={`track-btn-${product.id}`}
+                      onClick={() => setTrackingProduct(product)}
+                      className="px-3 py-2 text-indigo-600 hover:text-indigo-900 hover:bg-indigo-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                      title="Track product status"
+                    >
+                      🗺️ Track
                     </button>
                     {product.status === 'archived' ? (
                       <button
@@ -1267,6 +1209,14 @@ export default function InventoryPage() {
         />
       )}
 
+      {/* QR Scanner Modal */}
+      {showQRScanner && (
+        <QRScanner
+          onScan={handleQRScan}
+          onClose={() => setShowQRScanner(false)}
+        />
+      )}
+
       {/* Product Tracking Modal */}
       {trackingProduct && (
         <ProductTrackingModal
@@ -1274,8 +1224,8 @@ export default function InventoryPage() {
           productCode={trackingProduct.code}
           onClose={() => {
             setTrackingProduct(null);
-            // Refresh maintenance status after closing modal
-            fetchMaintenanceStatus();
+            // Refresh products to get updated tracking_status
+            fetchProducts();
           }}
         />
       )}

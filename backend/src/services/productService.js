@@ -15,39 +15,53 @@ class ProductService {
    * Get products with optional filters.
    * By default only returns 'available' products.
    * Pass includeArchived=true to return all statuses (inventory page).
+   * Embeds current tracking_status and tracking_booking_id from product_tracking.
    * @param {Object} filters - {search, category, includeArchived}
    * @returns {Promise<Array>} - List of products
    */
   async getProducts(filters = {}) {
     const { search, category, includeArchived } = filters;
-    let query = 'SELECT * FROM products WHERE 1=1';
+    let query = `
+      SELECT p.*,
+             lt.tracking_status,
+             lt.booking_id AS tracking_booking_id
+      FROM products p
+      LEFT JOIN LATERAL (
+        SELECT tracking_status, booking_id
+        FROM product_tracking
+        WHERE product_id = p.id
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) lt ON true
+      WHERE 1=1`;
     const params = [];
     let paramCount = 0;
 
     // Only filter by status when not requesting archived products
     if (!includeArchived) {
       paramCount++;
-      query += ` AND status = $${paramCount}`;
+      query += ` AND p.status = $${paramCount}`;
       params.push(PRODUCT_STATUS.AVAILABLE);
     }
 
     if (search) {
       paramCount++;
-      query += ` AND (name ILIKE $${paramCount} OR code ILIKE $${paramCount})`;
+      query += ` AND (p.name ILIKE $${paramCount} OR p.code ILIKE $${paramCount})`;
       params.push(`%${search}%`);
     }
 
     if (category) {
       paramCount++;
-      query += ` AND category = $${paramCount}`;
+      query += ` AND p.category = $${paramCount}`;
       params.push(category);
     }
 
-    query += ' ORDER BY created_at DESC';
+    query += ' ORDER BY p.created_at DESC';
 
     const result = await pool.query(query, params);
     return result.rows.map(product => this._parseProductImages(product));
   }
+
 
   /**
    * Get product by ID (returns any status — used by admin and internal services)

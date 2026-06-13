@@ -7,7 +7,6 @@ export { default as MultipleImageUpload } from './MultipleImageUpload';
 export { default as AvailabilityCalendar } from './AvailabilityCalendar';
 export { default as QRScanner } from './QRScanner';
 export { ProductTrackingModal } from './ProductTrackingModal';
-export { BookingProductTrackingModal } from './BookingProductTrackingModal';
 export { PaymentManagement } from './PaymentManagement';
 export { MeasurementModal, isFemaleClothing, isMaleClothing } from './MeasurementModal';
 export { PaymentMethodInput } from './PaymentMethodInput';

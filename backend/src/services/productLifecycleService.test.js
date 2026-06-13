@@ -818,6 +818,16 @@ describe('ProductLifecycleService', () => {
         [testBookingId]
       );
       expect(booking.rows[0].status).toBe('in_progress');
+
+      // Verify tracking row inserted with picked_by_customer status
+      const tracking = await pool.query(
+        `SELECT tracking_status FROM product_tracking
+         WHERE booking_id = $1 AND tracking_status = 'picked_by_customer'
+         ORDER BY created_at DESC LIMIT 1`,
+        [testBookingId]
+      );
+      expect(tracking.rows.length).toBe(1);
+      expect(tracking.rows[0].tracking_status).toBe('picked_by_customer');
     });
 
     // Test: Handles pickup of multiple products in a single operation
@@ -900,6 +910,16 @@ describe('ProductLifecycleService', () => {
         [testBookingProductId]
       );
       expect(product.rows[0].status).toBe('completed');
+
+      // Verify tracking row inserted with in_house status
+      const tracking = await pool.query(
+        `SELECT tracking_status FROM product_tracking
+         WHERE booking_id = $1 AND tracking_status = 'in_house'
+         ORDER BY created_at DESC LIMIT 1`,
+        [testBookingId]
+      );
+      expect(tracking.rows.length).toBe(1);
+      expect(tracking.rows[0].tracking_status).toBe('in_house');
     });
 
     // Test: Calculates and applies late fees based on number of late days

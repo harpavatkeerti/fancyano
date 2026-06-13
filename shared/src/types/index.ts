@@ -14,6 +14,10 @@ export interface Product {
   image?: string;
   created_at: string;
   updated_at: string;
+  /** Current tracking status — embedded from product_tracking via lateral subquery. Null means in_house. */
+  tracking_status?: 'in_house' | 'picked_by_customer' | 'going_to_dry_clean' | 'alternation_related_work' | 'repair' | 'other_work' | null;
+  /** Booking ID associated with the current tracking record (e.g. for picked_by_customer) */
+  tracking_booking_id?: number | null;
 }
 
 // Booking Product (individual product in a booking)
