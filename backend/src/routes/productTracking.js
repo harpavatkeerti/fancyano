@@ -120,7 +120,6 @@ router.post('/', async (req, res) => {
       booking_id,
       product_code,
       tracking_status,
-      work_description,
       notes
     } = req.body;
 
@@ -133,22 +132,22 @@ router.post('/', async (req, res) => {
     if (!MANUAL_TRACKING_STATUSES.includes(tracking_status)) {
       return res.status(400).json({
         error: `tracking_status '${tracking_status}' is not allowed via this endpoint. ` +
-               `Must be one of: ${MANUAL_TRACKING_STATUSES.join(', ')}. ` +
-               `'in_house' and 'picked_by_customer' are managed by the booking lifecycle.`
+          `Must be one of: ${MANUAL_TRACKING_STATUSES.join(', ')}. ` +
+          `'in_house' and 'picked_by_customer' are managed by the booking lifecycle.`
       });
     }
 
-    // work_description required for other_work
-    if (tracking_status === 'other_work' && !work_description) {
-      return res.status(400).json({ error: 'work_description is required for other_work' });
+    // notes required for other_work (describes what the work actually is)
+    if (tracking_status === 'other_work' && !notes) {
+      return res.status(400).json({ error: 'notes is required for other_work' });
     }
 
     const result = await pool.query(
       `INSERT INTO product_tracking
-        (product_id, booking_id, product_code, tracking_status, work_description, notes)
-       VALUES ($1, $2, $3, $4, $5, $6)
+        (product_id, booking_id, product_code, tracking_status, notes)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [product_id, booking_id || null, product_code, tracking_status, work_description || null, notes || null]
+      [product_id, booking_id || null, product_code, tracking_status, notes || null]
     );
 
     res.status(201).json({ data: result.rows[0] });
@@ -168,7 +167,8 @@ router.get('/active', async (req, res) => {
         p.name  AS product_name,
         p.code  AS product_code_ref,
         p.size  AS product_size,
-        b.customer_name
+        b.customer_name,
+        b.id    AS booking_ref_id
       FROM (
         SELECT DISTINCT ON (product_id) *
         FROM product_tracking

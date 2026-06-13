@@ -106,7 +106,6 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
         booking_id: bookingId,
         product_code: selectedProduct.code,
         tracking_status: trackingType as TrackingStatus,
-        work_description: trackingType === 'other_work' ? notes : undefined,
         notes: notes || undefined,
       });
 
@@ -177,11 +176,10 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
               )}
               <div>
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Current Status</p>
-                <span className={`inline-flex px-2 py-1 rounded-full text-xs font-semibold ${
-                  isInHouse ? 'bg-green-100 text-green-800' :
-                  isPickedByCustomer ? 'bg-blue-100 text-blue-800' :
-                  'bg-orange-100 text-orange-800'
-                }`}>
+                <span className={`inline-flex px-2 py-1 rounded-full text-xs font-semibold ${isInHouse ? 'bg-green-100 text-green-800' :
+                    isPickedByCustomer ? 'bg-blue-100 text-blue-800' :
+                      'bg-orange-100 text-orange-800'
+                  }`}>
                   {TRACKING_STATUS_LABELS[currentStatus]}
                 </span>
               </div>
@@ -283,14 +281,8 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
                       </h3>
                     </div>
 
-                    {currentRecord.work_description && (
-                      <p className="text-sm text-gray-700 mb-2">
-                        <strong>Work:</strong> {currentRecord.work_description}
-                      </p>
-                    )}
-
                     {currentRecord.notes && (
-                      <p className="text-sm text-gray-600 mb-2">
+                      <p className="text-sm text-gray-700 mb-2">
                         <strong>Notes:</strong> {currentRecord.notes}
                       </p>
                     )}
@@ -334,9 +326,6 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
                             <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${colorMap[status]}`}>
                               {TRACKING_STATUS_LABELS[status]}
                             </span>
-                            {record.work_description && (
-                              <span className="text-xs text-gray-600">— {record.work_description}</span>
-                            )}
                           </div>
                           {record.notes && (
                             <p className="text-xs text-gray-500">{record.notes}</p>

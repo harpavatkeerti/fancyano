@@ -36,7 +36,6 @@ export interface ProductTracking {
   booking_id?: number;
   product_code: string;
   tracking_status: TrackingStatus;
-  work_description?: string;
   notes?: string;
   product_name?: string;
   product_size?: string;
@@ -52,7 +51,6 @@ export interface CreateTrackingData {
   product_code: string;
   /** Must be one of the MANUAL_TRACKING_STATUSES */
   tracking_status: TrackingStatus;
-  work_description?: string;
   notes?: string;
 }
 
