@@ -27,6 +27,7 @@ export const complaintsApi = api.complaints;
 export const feedbackApi = api.feedback;
 export const creditNotesApi = api.creditNotes;
 export const productTrackingApi = api.productTracking;
+export const invoicesApi = api.invoices;
 
 // ── Re-export types from shared ──
 export type {

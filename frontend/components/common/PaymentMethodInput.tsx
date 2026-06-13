@@ -247,8 +247,7 @@ export function PaymentMethodInput({
       {showQRScanner && (
         <QRScanner
           title="📷 Scan Payment QR Code"
-          onScan={(code: string) => {
-            console.log('Payment QR scanned:', code);
+          onScan={() => {
             setPaymentScanned(true);
             setShowQRScanner(false);
             setShowUPIModal(true);

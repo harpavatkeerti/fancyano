@@ -166,7 +166,6 @@ export function PaymentManagement({
     try {
       // Simply call backend to recalculate and update status
       await bookingsApi.updateStatus(bookingId);
-      console.log('✅ Booking status updated by backend');
     } catch (error) {
       console.error('Error updating booking status:', error);
     }

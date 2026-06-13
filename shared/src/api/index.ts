@@ -14,6 +14,7 @@ import { createComplaintsApi } from './complaints';
 import { createFeedbackApi } from './feedback';
 import { createCreditNotesApi } from './creditNotes';
 import { createProductTrackingApi } from './productTracking';
+import { createInvoicesApi } from './invoices';
 
 export interface Api {
   products: ReturnType<typeof createProductsApi>;
@@ -30,6 +31,7 @@ export interface Api {
   feedback: ReturnType<typeof createFeedbackApi>;
   creditNotes: ReturnType<typeof createCreditNotesApi>;
   productTracking: ReturnType<typeof createProductTrackingApi>;
+  invoices: ReturnType<typeof createInvoicesApi>;
   client: AxiosInstance;
 }
 
@@ -51,6 +53,7 @@ export function createApi(config: ApiConfig): Api {
     feedback: createFeedbackApi(apiClient),
     creditNotes: createCreditNotesApi(apiClient),
     productTracking: createProductTrackingApi(apiClient),
+    invoices: createInvoicesApi(apiClient),
     client: apiClient,
   };
 }
@@ -70,3 +73,4 @@ export * from './complaints';
 export * from './feedback';
 export * from './creditNotes';
 export * from './productTracking';
+export * from './invoices';

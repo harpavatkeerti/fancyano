@@ -36,7 +36,6 @@ export default function QRScanner({ onScan, onClose, title = '📷 Scan Product 
 
         scanner.render(
           (decodedText: string) => {
-            console.log('QR Code scanned:', decodedText);
             setIsScanning(false);
             scanner.clear();
             onScan(decodedText);

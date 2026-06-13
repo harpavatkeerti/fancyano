@@ -86,7 +86,6 @@ export default function PhoneInput({
   const handleCountrySelect = (isoCode: string, event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
-    console.log('Selected country ISO code:', isoCode);
     onCountryCodeChange(isoCode);
     setError('');
     onValueChange('');

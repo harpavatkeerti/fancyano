@@ -1,6 +1,6 @@
 'use client';
 
-import { productExchangesApi, productsApi, bookingsApi, settingsApi, api } from '@/lib/api';
+import { productExchangesApi, productsApi, bookingsApi, settingsApi, availabilityApi, paymentTransactionsApi } from '@/lib/api';
 import React, { useState, useEffect } from 'react';
 
 import { toast } from '@/lib/toast';
@@ -166,7 +166,7 @@ export function ProductExchange({
 
   async function fetchProductBookings(productId: number) {
     try {
-      const response = await api.client.get(`/bookings/by-product/${productId}`);
+      const response = await bookingsApi.getByProductId(productId);
       setProductBookings(prev => ({
         ...prev,
         [productId]: response.data || []
@@ -186,7 +186,7 @@ export function ProductExchange({
     }
 
     try {
-      const response = await api.client.post('/availability/check', {
+      const response = await availabilityApi.check({
         product_id: productId,
         date_from: dateFrom,
         date_to: dateTo
@@ -469,7 +469,6 @@ export function ProductExchange({
         : pendingExchangeData.exchange_reason || undefined;
 
       // STEP 1: Create exchange in database first
-      console.log('📝 Creating exchange in database...');
       const newProductIds = [
         {
           product_id: pendingExchangeData.exchanged_product_id,
@@ -498,7 +497,6 @@ export function ProductExchange({
       const detailedNarration = `Total Payment: ₹${totalPaymentDue.toLocaleString('en-IN')} (${breakdownParts.join(' + ')})${paymentNarration ? ` | ${paymentNarration.trim()}` : ''}`;
 
       // ATOMIC: Exchange + Payment in one API call (backend handles both in same transaction)
-      console.log('📝 Creating exchange with atomic payment...');
       const exchangeResult = await productExchangesApi.exchange({
         old_booking_product_id: pendingExchangeData.original_product_id,
         new_product_ids: newProductIds,
@@ -512,9 +510,6 @@ export function ProductExchange({
         payment_recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
         payment_notes: detailedNarration,
       });
-
-      const createdExchange = exchangeResult.data;
-      console.log('✅ Exchange + payment completed atomically:', createdExchange.id || createdExchange);
 
       toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
 
@@ -590,7 +585,7 @@ export function ProductExchange({
       // If admin chose to refund, create a special refund transaction
       if (refundAmountValue > 0) {
         try {
-          await api.client.post('/payment-transactions', {
+          await paymentTransactionsApi.create({
             booking_id: bookingId,
             amount: refundAmountValue,
             type: 'refund',

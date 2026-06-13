@@ -3,6 +3,8 @@
 import { productTrackingApi, ProductTracking, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, productsApi } from '@/lib/api';
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/common';
+import { toast } from '@/lib/toast';
+import { useConfirm } from '@/hooks/useConfirm';
 
 import { Product } from '@/types';
 
@@ -14,6 +16,7 @@ interface ProductTrackingModalProps {
 }
 
 export function ProductTrackingModal({ onClose, productId, productCode, bookingId }: ProductTrackingModalProps) {
+  const { confirm, ConfirmDialog } = useConfirm();
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [trackingHistory, setTrackingHistory] = useState<ProductTracking[]>([]);
   /** The latest tracking record — determines which panel to show */
@@ -74,7 +77,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
         setSelectedProduct(product);
         await fetchTrackingHistory(product.id);
       } else {
-        alert(`❌ Product with code "${code}" not found`);
+        toast.error(`Product with code "${code}" not found`);
       }
     } catch (error) {
       console.error('Error searching product:', error);
@@ -106,10 +109,10 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
       setTrackingType('');
       setNotes('');
       await fetchTrackingHistory(selectedProduct.id);
-      alert('✅ Product tracked out successfully.');
+      toast.success('Product tracked out successfully.');
     } catch (error: any) {
       console.error('Error creating tracking record:', error);
-      alert(error?.response?.data?.error || 'Error creating tracking record');
+      toast.error(error?.response?.data?.error || 'Error creating tracking record');
     } finally {
       setLoading(false);
     }
@@ -118,16 +121,24 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
   /** Mark returned: insert a new in_house row via PATCH /:id/return */
   async function handleMarkReturned() {
     if (!currentRecord) return;
-    if (!confirm('Mark this product as returned (back in house)?')) return;
+    if (!selectedProduct) return;
+    const confirmed = await confirm({
+      title: 'Mark as Returned',
+      message: 'Mark this product as returned (back in house)?',
+      confirmText: 'Mark Returned',
+      cancelText: 'Cancel',
+      confirmColor: 'green',
+    });
+    if (!confirmed) return;
 
     try {
       setLoading(true);
       await productTrackingApi.markReturned(currentRecord.id);
-      await fetchTrackingHistory(selectedProduct!.id);
-      alert('✅ Product marked as returned — now In House.');
+      await fetchTrackingHistory(selectedProduct.id);
+      toast.success('Product marked as returned — now In House.');
     } catch (error) {
       console.error('Error marking as returned:', error);
-      alert('Error marking product as returned');
+      toast.error('Error marking product as returned');
     } finally {
       setLoading(false);
     }
@@ -140,6 +151,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
   const isInHouse = currentStatus === 'in_house';
 
   return (
+    <>
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
       <div className="bg-white rounded-lg p-6 w-full max-w-3xl my-8 max-h-[90vh] overflow-y-auto">
         {/* Header */}
@@ -345,5 +357,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
         </div>
       </div>
     </div>
+    {ConfirmDialog}
+    </>
   );
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { bookingsApi, paymentTransactionsApi, PaymentSummary, creditNotesApi, api, SERVER_BASE_URL } from '@/lib/api';
+import { bookingsApi, paymentTransactionsApi, PaymentSummary, creditNotesApi, invoicesApi, SERVER_BASE_URL } from '@/lib/api';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 
@@ -191,13 +191,10 @@ export default function OrderDetailsPage() {
   }
 
   async function handleGenerateDocument(type: 'estimate' | 'invoice' | 'tax-invoice') {
+    if (!booking) return;
     try {
       // Use POST endpoint to generate PDF and get blob directly for preview
-      const response = await api.client.post(
-        `/invoices/${type}/${booking?.id}`,
-        {},
-        { responseType: 'blob' }
-      );
+      const response = await invoicesApi.generate(type, booking.id);
 
       // Store PDF blob and show preview instead of auto-downloading
       const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -210,9 +207,7 @@ export default function OrderDetailsPage() {
       // Generate public URL for WhatsApp sharing
       // Use GET endpoint to get the public URL
       try {
-        const generateResponse = await api.client.get(
-          `/invoices/${type}/${booking?.id}`
-        );
+        const generateResponse = await invoicesApi.getPublicUrl(type, booking.id);
         const publicUrl = generateResponse.data.url;
         const fullUrl = generateResponse.data.fullUrl || `${SERVER_BASE_URL}${publicUrl}`;
         setPdfPublicUrl(makeShareableUrl(fullUrl));
@@ -354,6 +349,11 @@ export default function OrderDetailsPage() {
       return;
     }
 
+    if (!pdfType) {
+      toast.warning('No document type selected.');
+      return;
+    }
+
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
 
     // Prompt for customer email if not available
@@ -370,7 +370,7 @@ export default function OrderDetailsPage() {
 
     // Try to send email via backend API (with attachment support)
     try {
-      const response = await api.client.post('/invoices/send-email', {
+      const response = await invoicesApi.sendEmail({
         bookingId: booking.id,
         documentType: pdfType,
         customerName: booking.customer_name,
@@ -646,7 +646,7 @@ export default function OrderDetailsPage() {
                 {!isInactive && product.status === 'confirmed' && (
                   <MarkPickedUpButton
                     product={product}
-                    bookingId={booking!.id}
+                    bookingId={booking.id}
                     pickedUpBy="Admin"
                     onSuccess={fetchBooking}
                   />

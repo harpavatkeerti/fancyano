@@ -150,53 +150,39 @@ export default function MyBookingsPage() {
   async function fetchBookings() {
     try {
       const response = await bookingsApi.getAll();
-      
+
       // Store ALL bookings for urgent checking
       setAllBookings(response.data);
-      
+
       // Get logged-in salesman name from localStorage (same logic as cart page)
       const userData = localStorage.getItem('user');
       let salesmanName = '';
-      
+
       if (userData) {
         try {
           const user = JSON.parse(userData);
           salesmanName = user.name || user.userName || '';
         } catch (e) {
-          // If parsing fails, try direct keys
           salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
         }
       } else {
         salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
       }
-      
+
       // Normalize names for comparison (trim whitespace, case-insensitive)
       const normalizeName = (name: string | null | undefined): string => {
         if (!name) return '';
         return name.trim().toLowerCase();
       };
-      
+
       const normalizedSalesmanName = normalizeName(salesmanName);
-      
-      console.log('🔍 Fetching bookings for salesman:', salesmanName, '(normalized:', normalizedSalesmanName + ')');
-      console.log('📦 Total bookings from API:', response.data.length);
-      
+
       // Filter for salesman's own bookings (where created_by matches logged-in salesman)
-      // Use case-insensitive comparison and trim whitespace
       const filteredBookings = response.data.filter((booking: Booking) => {
         const bookingCreatedBy = normalizeName(booking.created_by);
-        const matches = normalizedSalesmanName && bookingCreatedBy && bookingCreatedBy === normalizedSalesmanName;
-        
-        if (matches) {
-          console.log(`✅ Booking ${booking.id} matches (created_by: "${booking.created_by}")`);
-        }
-        
-        return matches;
+        return normalizedSalesmanName && bookingCreatedBy && bookingCreatedBy === normalizedSalesmanName;
       });
-      
-      console.log('📋 Filtered bookings count:', filteredBookings.length);
-      console.log('📋 Filtered bookings:', filteredBookings.map((b: Booking) => ({ id: b.id, created_by: b.created_by, status: b.status })));
-      
+
       setBookings(filteredBookings);
     } catch (error) {
       console.error('Error fetching bookings:', error);

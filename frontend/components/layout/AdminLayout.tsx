@@ -98,7 +98,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       setTempPassword('');
       
       toast.success('Login successful');
-      console.log('✅ Admin logged in:', user.name);
     } catch (error: any) {
       console.error('Login error:', error);
       const errorMessage = error.response?.data?.error || 'Invalid credentials. Please check your name and password.';

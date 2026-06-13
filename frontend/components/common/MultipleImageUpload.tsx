@@ -175,13 +175,7 @@ export default function MultipleImageUpload({
         // Create unique ID for this image
         const imageId = `img-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}-${file.name}`;
         
-        console.log(`🖼️ Processing image ${i + 1}/${uniqueFiles.length}:`, file.name, `(${file.size} bytes, modified: ${new Date(file.lastModified).toISOString()})`);
-        console.log(`   📌 Unique ID: ${imageId}`);
-        
         const processedDataUrl = await processImage(file);
-        // Log first 100 chars to verify images are different
-        const preview = processedDataUrl.substring(0, 100);
-        console.log(`   ✅ Processed: ${preview}... (total length: ${processedDataUrl.length})`);
         
         processedImages.push({
           id: imageId,
@@ -194,41 +188,6 @@ export default function MultipleImageUpload({
         newFileSizes[imageId] = sizeInKB;
       }
       
-      console.log(`📦 Total processed images: ${processedImages.length}`);
-      // Verify all images are different by checking multiple points in the data
-      const imageHashes = processedImages.map(img => {
-        // Create hash from multiple points: start (1000 chars), middle (1000 chars), and end (1000 chars)
-        // This is more reliable than just checking the header
-        const len = img.data.length;
-        const start = img.data.substring(0, Math.min(1000, len));
-        const middle = img.data.substring(Math.floor(len / 2), Math.floor(len / 2) + Math.min(1000, len));
-        const end = img.data.substring(Math.max(0, len - 1000), len);
-        const combined = start + middle + end;
-        
-        let hash = 0;
-        for (let i = 0; i < combined.length; i++) {
-          const char = combined.charCodeAt(i);
-          hash = ((hash << 5) - hash) + char;
-          hash = hash & hash; // Convert to 32bit integer
-        }
-        return hash;
-      });
-      const uniqueHashes = new Set(imageHashes);
-      console.log(`🔍 Unique images (by hash of start/middle/end): ${uniqueHashes.size} out of ${processedImages.length}`);
-      
-      // Also check by total length (different images should have different sizes after processing)
-      const uniqueLengths = new Set(processedImages.map(img => img.data.length));
-      console.log(`📏 Unique image lengths: ${uniqueLengths.size} out of ${processedImages.length}`);
-      
-      if (uniqueHashes.size < processedImages.length || uniqueLengths.size < processedImages.length) {
-        console.warn(`⚠️ WARNING: Possible duplicate image(s) detected!`);
-        processedImages.forEach((img, idx) => {
-          console.log(`   Image ${idx + 1} (${img.fileName}): ID=${img.id.substring(0, 20)}..., Length=${img.data.length}`);
-        });
-      } else {
-        console.log(`✅ All ${processedImages.length} images are unique!`);
-      }
-
       const newPreviews = [...previews, ...processedImages];
       setPreviews(newPreviews);
       setFileSizes(newFileSizes);

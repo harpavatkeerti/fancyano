@@ -619,8 +619,8 @@ export default function BookingsPage() {
 
     const newProduct = {
       ...pendingProduct,
-      booked_from: useSameDates ? lastProductDates!.from : '',
-      booked_to: useSameDates ? lastProductDates!.to : '',
+      booked_from: useSameDates ? (lastProductDates?.from ?? '') : '',
+      booked_to: useSameDates ? (lastProductDates?.to ?? '') : '',
     };
 
     // Add the new product and also fill any other empty products in one update
@@ -1755,6 +1755,7 @@ export default function BookingsPage() {
               <div className="flex space-x-3">
                 <button
                   onClick={async () => {
+                    if (!selectedBooking) return;
                     if (!changeDateFrom || !changeDateTo) {
                       toast.warning('Please select both pickup and return dates');
                       return;
@@ -1776,7 +1777,7 @@ export default function BookingsPage() {
                         : calculateDateChangeCharge(oldFrom, oldTo, changeDateFrom, changeDateTo);
 
                       // Update the booking with new dates
-                      await bookingsApi.update(selectedBooking!.id, {
+                      await bookingsApi.update(selectedBooking.id, {
                         products: [{
                           id: selectedProductForDateChange.id,
                           booked_from: changeDateFrom,
@@ -1787,7 +1788,7 @@ export default function BookingsPage() {
                       // Record the charge if any (as date_change_charge - does not affect payment calculations)
                       if (finalCharge > 0) {
                         await paymentTransactionsApi.create({
-                          booking_id: selectedBooking!.id,
+                          booking_id: selectedBooking.id,
                           amount: finalCharge,
                           type: 'date_change_charge',
                           method: 'Manual',

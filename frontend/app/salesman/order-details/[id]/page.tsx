@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, api, SERVER_BASE_URL } from '@/lib/api';
+import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, invoicesApi, SERVER_BASE_URL } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { makeShareableUrl } from '@/lib/urlHelper';
@@ -193,109 +193,16 @@ export default function OrderDetailsPage() {
   async function fetchBooking() {
     try {
       setPaymentRefreshKey(prev => prev + 1);
-      window.console.log('🚀🚀🚀 FETCHBOOKING CALLED 🚀🚀🚀');
       const [bookingResponse, transactionsResponse, summaryResponse] = await Promise.all([
         bookingsApi.getById(Number(params.id)),
         paymentTransactionsApi.getByBookingId(Number(params.id)),
         bookingsApi.getPaymentSummary(Number(params.id)),
       ]);
-      window.console.log('✅ API RESPONSES RECEIVED');
-      window.console.log('Fetched booking data:', bookingResponse.data);
-      window.console.log('Payment Summary:', summaryResponse.data);
-
-      console.log('Transportation charge:', bookingResponse.data.transport_charge);
-
-      // Debug: Log product images
-      if (bookingResponse.data.products) {
-        bookingResponse.data.products.forEach((product: any, index: number) => {
-          console.log(`Product ${index + 1} (${product.name}):`, {
-            id: product.id,
-            code: product.code,
-            image: product.image,
-            imageType: typeof product.image,
-            imageUrl: getImageUrl(product.image)
-          });
-        });
-      }
 
       setBooking(bookingResponse.data);
       setPaymentSummary(summaryResponse.data);
       const allTransactions = transactionsResponse.data || [];
       setTransactions(allTransactions);
-
-      // Check for rent difference payment and log it
-      const rentDiffPayments = allTransactions.filter((t: any) => {
-        const method = (t.method || '').toLowerCase();
-        const notes = (t.notes || '').toLowerCase();
-        return method === 'exchange_upgrade' ||
-          notes.includes('additional rent') ||
-          notes.includes('rent difference');
-      });
-
-      if (rentDiffPayments.length > 0) {
-        console.log('✅✅✅ FOUND RENT DIFFERENCE PAYMENTS:', rentDiffPayments);
-        rentDiffPayments.forEach((t: any) => {
-          console.log(`  - Transaction ID: ${t.id}, Amount: ₹${t.amount}, Method: ${t.method}, Notes: ${t.notes?.substring(0, 80)}`);
-        });
-      } else {
-        console.log('⚠️ No rent difference payment transactions found');
-      }
-
-      // Check for refund transactions
-      const refundTransactions = allTransactions.filter((t: any) => t.type === 'refund');
-      if (refundTransactions.length > 0) {
-        console.log('========================================');
-        console.log('💰 REFUND TRANSACTIONS FOUND');
-        console.log('========================================');
-        console.log('Total Refunds: ₹' + refundTransactions.reduce((sum: number, t: any) => {
-          return sum + (typeof t.amount === 'number' ? t.amount : parseFloat(String(t.amount || '0')) || 0);
-        }, 0).toLocaleString('en-IN'));
-        refundTransactions.forEach((t: any) => {
-          console.log(`  - Refund ID: ${t.id}, Amount: ₹${t.amount}, Method: ${t.method || 'N/A'}, Notes: ${t.notes?.substring(0, 80) || 'N/A'}, Date: ${t.created_at}`);
-        });
-        console.log('========================================');
-      } else {
-        console.log('ℹ️ No refund transactions found');
-      }
-
-      console.log('📊 Transactions updated:', allTransactions.length, 'transactions');
-      console.log('📊 All transactions:', transactionsResponse.data);
-      console.log('📊 ALL TRANSACTIONS DETAILED:', JSON.stringify(transactionsResponse.data, null, 2));
-      console.log('📊 Refund transactions:', transactionsResponse.data?.filter((t: any) => t.type === 'refund').length);
-
-      // Check for exchange-related transactions
-      const exchangeTransactions = (transactionsResponse.data || []).filter((t: any) => {
-        const method = (t.method || '').toLowerCase();
-        const notes = (t.notes || '').toLowerCase();
-        return method === 'exchange_penalty' || method === 'downgrade_penalty' || method === 'exchange' || method === 'exchange_upgrade' || notes.includes('exchange');
-      });
-      if (exchangeTransactions.length > 0) {
-        console.log('🚫 Found exchange transactions:', exchangeTransactions.map((t: any) => ({
-          id: t.id,
-          amount: t.amount,
-          type: t.type,
-          method: t.method,
-          notes: t.notes?.substring(0, 80)
-        })));
-      }
-
-      // Specifically check for rent difference payments (exchange_upgrade)
-      const rentDifferencePayments = (transactionsResponse.data || []).filter((t: any) => {
-        const method = (t.method || '').toLowerCase();
-        const notes = (t.notes || '').toLowerCase();
-        return method === 'exchange_upgrade' || notes.includes('additional rent') || notes.includes('rent difference');
-      });
-      if (rentDifferencePayments.length > 0) {
-        console.log('✅ Found rent difference payments (should be included in paid amount):', rentDifferencePayments.map((t: any) => ({
-          id: t.id,
-          amount: t.amount,
-          type: t.type,
-          method: t.method,
-          notes: t.notes?.substring(0, 80)
-        })));
-      } else {
-        console.log('⚠️ WARNING: No rent difference payment transactions found! If customer paid rent difference during exchange, the transaction may not have been created.');
-      }
 
       // Backend handles product and booking status through lifecycle APIs (pickup, return, etc.)
       // No frontend status derivation needed
@@ -355,13 +262,10 @@ export default function OrderDetailsPage() {
   }
 
   async function handleGenerateDocument(type: 'estimate' | 'invoice' | 'tax-invoice') {
+    if (!booking) return;
     try {
       // Use POST endpoint to generate PDF and get blob directly for preview
-      const response = await api.client.post(
-        `/invoices/${type}/${booking?.id}`,
-        {},
-        { responseType: 'blob' }
-      );
+      const response = await invoicesApi.generate(type, booking.id);
 
       // Store PDF blob and show preview instead of auto-downloading
       const blob = new Blob([response.data], { type: 'application/pdf' });
@@ -374,14 +278,14 @@ export default function OrderDetailsPage() {
       // Generate public URL for WhatsApp sharing
       // Use GET endpoint to get the public URL
       try {
-        const generateResponse = await api.client.get(`/invoices/${type}/${booking?.id}`);
+        const generateResponse = await invoicesApi.getPublicUrl(type, booking.id);
         const publicUrl = generateResponse.data.url;
         const fullUrl = generateResponse.data.fullUrl || `${SERVER_BASE_URL}${publicUrl}`;
         setPdfPublicUrl(makeShareableUrl(fullUrl));
       } catch (urlError) {
         // If GET fails, construct URL manually
         console.warn('Could not get public URL, constructing manually:', urlError);
-        setPdfPublicUrl(makeShareableUrl(`${SERVER_BASE_URL}/uploads/${type}_${booking?.id}.pdf`));
+        setPdfPublicUrl(makeShareableUrl(`${SERVER_BASE_URL}/uploads/${type}_${booking.id}.pdf`));
       }
 
       // Show preview modal based on type
@@ -518,6 +422,11 @@ export default function OrderDetailsPage() {
       return;
     }
 
+    if (!pdfType) {
+      toast.warning('No document type selected.');
+      return;
+    }
+
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
 
     // Prompt for customer email if not available
@@ -534,7 +443,7 @@ export default function OrderDetailsPage() {
 
     // Try to send email via backend API (with attachment support)
     try {
-      const response = await api.client.post('/invoices/send-email', {
+      const response = await invoicesApi.sendEmail({
         bookingId: booking.id,
         documentType: pdfType,
         customerName: booking.customer_name,
@@ -634,13 +543,6 @@ export default function OrderDetailsPage() {
       const finalCharge = dateChangeChargeSettings.charge_type === 'manual'
         ? dateChangeCharge
         : calculateDateChangeCharge(oldFrom, oldTo, changeDateFrom, changeDateTo);
-
-      console.log('Updating product dates:', {
-        productId: selectedProduct.id,
-        oldDates: { from: oldFrom, to: oldTo },
-        newDates: { from: changeDateFrom, to: changeDateTo },
-        charge: finalCharge
-      });
 
       // Update booking with new product dates
       // The backend will automatically:
@@ -1074,7 +976,7 @@ export default function OrderDetailsPage() {
                   {!isCancelled && product.status === 'confirmed' && (
                     <MarkPickedUpButton
                       product={product}
-                      bookingId={booking!.id}
+                      bookingId={booking.id}
                       pickedUpBy="Salesman"
                       onSuccess={fetchBooking}
                     />
