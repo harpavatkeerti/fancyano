@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const requireRole = require('../middleware/requireRole');
 const bookingService = require('../services/bookingService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingCalculationService = require('../services/bookingCalculationService');
@@ -236,8 +237,8 @@ router.put('/:id/status', async (req, res) => {
   }
 });
 
-// DELETE booking
-router.delete('/:id', async (req, res) => {
+// DELETE booking (admin only)
+router.delete('/:id', requireRole('admin'), async (req, res) => {
   const pool = require('../database/connection');
   const client = await pool.connect();
 

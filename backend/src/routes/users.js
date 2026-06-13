@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { hashPassword } = require('../middleware/auth');
 const pool = require('../database/connection');
 
 // GET all users
@@ -47,8 +48,9 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    // Return user with password for admin editing (admin-only endpoint)
-    res.json(result.rows[0]);
+    // Do NOT return password hash
+    const { password, ...userWithoutPassword } = result.rows[0];
+    res.json(userWithoutPassword);
   } catch (error) {
     console.error('Error fetching user:', error);
     res.status(500).json({ error: 'Failed to fetch user' });
@@ -67,9 +69,15 @@ router.post('/', async (req, res) => {
     // Auto-generate username if not provided
     const finalUsername = username || name.toLowerCase().replace(/\s+/g, '');
 
+    // Hash password with bcrypt (password is mandatory)
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required' });
+    }
+    const hashedPassword = await hashPassword(password);
+
     const result = await pool.query(
       'INSERT INTO users (name, phone, role, username, password, email, address) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [name, phone, role || 'customer', finalUsername, password || null, email || null, address || null]
+      [name, phone, role || 'customer', finalUsername, hashedPassword, email || null, address || null]
     );
 
     res.status(201).json(result.rows[0]);
@@ -120,9 +128,11 @@ router.put('/:id', async (req, res) => {
       values.push(username);
     }
     if (password !== undefined && password !== null && password.trim() !== '') {
+      // Hash password with bcrypt before storing
+      const hashedPassword = await hashPassword(password);
       paramCount++;
       updates.push(`password = $${paramCount}`);
-      values.push(password);
+      values.push(hashedPassword);
     }
     if (email !== undefined) {
       paramCount++;

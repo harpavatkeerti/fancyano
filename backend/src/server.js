@@ -3,6 +3,9 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const path = require('path');
+const { verifyToken } = require('./middleware/auth');
+const requireRole = require('./middleware/requireRole');
+const routePermissions = require('./middleware/routePermissions');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -27,27 +30,25 @@ app.use('/uploads', express.static(uploadDir, {
   }
 }));
 
-// Routes
+// ── Public routes (no auth required) ──
 app.use('/api/health', require('./routes/health'));
-app.use('/api/products', require('./routes/products'));
-app.use('/api/bookings', require('./routes/bookings'));
-app.use('/api/users', require('./routes/users'));
-app.use('/api/settings', require('./routes/settings'));
-app.use('/api/product-tracking', require('./routes/productTracking'));
-app.use('/api/invoices', require('./routes/invoices'));
-app.use('/api/payment-transactions', require('./routes/paymentTransactions'));
-app.use('/api/auto-cancel', require('./routes/autoCancelBookings'));
-app.use('/api/availability', require('./routes/availability'));
-app.use('/api/credit-notes', require('./routes/creditNotes'));
-app.use('/api/setup', require('./routes/setup'));
-app.use('/api/complaints', require('./routes/complaints'));
-app.use('/api/feedback', require('./routes/feedback'));
 app.use('/api/auth', require('./routes/auth'));
-app.use('/api/product-exchanges', require('./routes/productExchanges'));
-app.use('/api/booking-cancellation', require('./routes/bookingCancellation'));
-app.use('/api/policies', require('./routes/policies'));
-app.use('/api/lifecycle', require('./routes/productLifecycle'));
-app.use('/api/booking-preview', require('./routes/bookingPreview'));
+
+// ── JWT authentication for all other /api/* routes ──
+app.use('/api', verifyToken);
+
+// ── Role-restricted routes (from centralized config) ──
+for (const [path, roles] of Object.entries(routePermissions.routes)) {
+  app.use(path, requireRole(...roles), require(`./routes/${routePermissions.files[path]}`));
+}
+
+// ── Shared routes — any authenticated user (from centralized config) ──
+const sharedPaths = Object.keys(routePermissions.files).filter(
+  path => !routePermissions.routes[path]
+);
+for (const path of sharedPaths) {
+  app.use(path, require(`./routes/${routePermissions.files[path]}`));
+}
 
 // Error handling middleware
 app.use((err, req, res, next) => {
@@ -63,4 +64,3 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server is running on http://localhost:${PORT}`);
   console.log(`API available at http://localhost:${PORT}/api`);
 });
-
