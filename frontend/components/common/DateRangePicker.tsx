@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 interface BookingDateRange {
   booked_from: string;
@@ -19,6 +19,8 @@ interface DateRangePickerProps {
   minDate?: string; // Minimum selectable date (defaults to today)
   bookings?: BookingDateRange[]; // Bookings to check availability
   productName?: string; // Product name for display
+  readOnly?: boolean; // When true: dates cannot be selected (availability view only)
+  onOpen?: () => void; // Called when the calendar dropdown opens
 }
 
 export default function DateRangePicker({
@@ -31,10 +33,40 @@ export default function DateRangePicker({
   minDate,
   bookings = [],
   productName,
+  readOnly = false,
+  onOpen,
 }: DateRangePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [selecting, setSelecting] = useState<'start' | 'end'>('start');
+  const [popupPos, setPopupPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
+  // Compute popup position relative to the trigger button
+  const computePopupPos = () => {
+    if (!wrapperRef.current) return;
+    const rect = wrapperRef.current.getBoundingClientRect();
+    const popupWidth = 320;
+    const popupHeight = 400; // approximate height of calendar popup
+    const viewportW = window.innerWidth;
+    const viewportH = window.innerHeight;
+
+    // Prefer below the button; fall back to above if not enough space below
+    let top = rect.bottom + 6;
+    if (top + popupHeight > viewportH - 8) {
+      top = rect.top - popupHeight - 6;
+    }
+    // Clamp: never go above the top or below the bottom of the viewport
+    top = Math.max(8, Math.min(top, viewportH - popupHeight - 8));
+
+    // Left-align to button, clamp to viewport edges
+    let left = rect.left;
+    if (left + popupWidth > viewportW - 8) {
+      left = viewportW - popupWidth - 8;
+    }
+    if (left < 8) left = 8;
+    setPopupPos({ top, left });
+  };
 
   // Reset selecting mode when dates change externally or when opening calendar
   useEffect(() => {
@@ -249,15 +281,29 @@ export default function DateRangePicker({
 
 
   return (
-    <div className="relative">
+    <div className="relative" ref={wrapperRef}>
       {!compact && label && (
         <label className="block text-sm font-medium text-gray-700 mb-2">{label}</label>
       )}
       
-      {/* Date Display Button */}
+      {/* Date Display Button — hidden in readOnly mode */}
+      {readOnly ? (
+        /* Read-only trigger: simple "View Calendar" button */
+        <button
+          type="button"
+          onClick={() => {
+            if (!isOpen) { onOpen?.(); computePopupPos(); }
+            setIsOpen(!isOpen);
+          }}
+          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+        >
+          📅 View Calendar
+        </button>
+      ) : (
       <button
         type="button"
         onClick={() => {
+          if (!isOpen) { onOpen?.(); computePopupPos(); }
           setIsOpen(!isOpen);
         }}
         className={`w-full border border-gray-300 rounded-lg bg-white text-left flex items-center justify-between hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
@@ -282,6 +328,7 @@ export default function DateRangePicker({
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+      )}
 
       {/* Calendar Dropdown */}
       {isOpen && (
@@ -294,12 +341,12 @@ export default function DateRangePicker({
           {/* Calendar Popup */}
           <div key={`${startDate}-${endDate}`} className="fixed z-50 bg-white rounded-lg shadow-2xl border border-gray-200 p-4" style={{ 
             width: '320px',
-            top: '50%',
-            left: '50%',
-            transform: 'translate(-50%, -50%)'
+            top: popupPos.top,
+            left: popupPos.left,
           }}>
-          {/* Header with Reset and Navigation */}
+          {/* Header with Navigation (Reset and X hidden in readOnly) */}
           <div className="flex items-center justify-between mb-4">
+            {!readOnly && (
             <button
               type="button"
               onClick={resetDates}
@@ -307,6 +354,7 @@ export default function DateRangePicker({
             >
               Reset
             </button>
+            )}
             <div className="flex items-center space-x-2">
               <button
                 type="button"
@@ -328,6 +376,7 @@ export default function DateRangePicker({
                 </svg>
               </button>
             </div>
+            {!readOnly && (
             <button
               type="button"
               onClick={() => setIsOpen(false)}
@@ -337,9 +386,11 @@ export default function DateRangePicker({
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
+            )}
           </div>
 
-          {/* Selection Mode Indicator */}
+          {/* Selection Mode Indicator — hidden in readOnly */}
+          {!readOnly && (
           <div className="mb-3 text-center">
             <p className="text-xs text-gray-600">
               {selecting === 'start' ? (
@@ -353,6 +404,7 @@ export default function DateRangePicker({
               )}
             </p>
           </div>
+          )}
 
           {/* Day Headers */}
           <div className="grid grid-cols-7 gap-1 mb-2">
@@ -409,9 +461,9 @@ export default function DateRangePicker({
                 <button
                   key={day}
                   type="button"
-                  onClick={() => !disabled && handleDateClick(day)}
+                  onClick={() => !disabled && !readOnly && handleDateClick(day)}
                   disabled={disabled}
-                  title={booked ? `Booked: ${booked.customer_name || 'Customer'}` : undefined}
+                  title={booked ? `Booked: ${booked.customer_name || 'Customer'}` : readOnly && !booked && !past ? 'Available' : undefined}
                   className={`
                     aspect-square flex items-center justify-center text-sm rounded-full
                     transition-colors
@@ -425,7 +477,9 @@ export default function DateRangePicker({
                           ? 'bg-blue-100 text-blue-900'
                           : today
                             ? 'bg-green-100 text-green-700 font-medium border-2 border-green-500'
-                            : 'text-gray-700 hover:bg-green-50 border border-green-200'
+                            : readOnly
+                              ? 'text-gray-700 bg-green-50 border border-green-200'
+                              : 'text-gray-700 hover:bg-green-50 border border-green-200'
                     }
                   `}
                 >
@@ -435,10 +489,12 @@ export default function DateRangePicker({
             })}
           </div>
 
-          {/* Selection Hint */}
+          {/* Selection Hint — hidden in readOnly */}
+          {!readOnly && (
           <div className="mt-4 pt-3 border-t border-gray-200 text-xs text-gray-500 text-center">
             {selecting === 'start' ? '1️⃣ Select start date' : '2️⃣ Select end date'}
           </div>
+          )}
 
           {/* Legend - only show if bookings are provided */}
           {bookings && bookings.length > 0 && (

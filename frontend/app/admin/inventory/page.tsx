@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { productsApi, bookingsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { Product } from '@/types';
-import { Button, Input, ImageUpload, MultipleImageUpload, AvailabilityCalendar, ProductTrackingModal, QRScanner } from '@/components/common';
+import { Button, Input, ImageUpload, MultipleImageUpload, ProductTrackingModal, QRScanner } from '@/components/common';
+import DateRangePicker from '@/components/common/DateRangePicker';
 import { getImageUrl } from '@/lib/imageHelper';
 import { productTrackingApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES } from '@/lib/productTrackingApi';
 
@@ -15,8 +16,7 @@ export default function InventoryPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
-  const [checkingAvailability, setCheckingAvailability] = useState<Product | null>(null);
-  const [productBookings, setProductBookings] = useState<any[]>([]);
+  const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -239,11 +239,11 @@ export default function InventoryPage() {
     });
   }
 
-  async function handleCheckAvailability(product: Product) {
+  async function fetchProductBookings(productId: number) {
+    if (productBookings[productId]) return; // already loaded
     try {
-      setCheckingAvailability(product);
-      const response = await bookingsApi.getByProductId(product.id);
-      setProductBookings(response.data);
+      const response = await bookingsApi.getByProductId(productId);
+      setProductBookings(prev => ({ ...prev, [productId]: response.data || [] }));
     } catch (error) {
       console.error('Error fetching product bookings:', error);
       toast.error('Error loading availability calendar');
@@ -652,13 +652,18 @@ export default function InventoryPage() {
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                   ₹{product.rent}
                 </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  <button
-                    onClick={() => handleCheckAvailability(product)}
-                    className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors"
-                  >
-                    📅 View Calendar
-                  </button>
+                <td className="px-4 py-4 whitespace-nowrap">
+                  <DateRangePicker
+                    startDate=""
+                    endDate=""
+                    onStartDateChange={() => {}}
+                    onEndDateChange={() => {}}
+                    bookings={productBookings[product.id] || []}
+                    onOpen={() => fetchProductBookings(product.id)}
+                    compact
+                    label=""
+                    readOnly
+                  />
                 </td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                   <div className="flex items-center gap-2">
@@ -1195,18 +1200,6 @@ export default function InventoryPage() {
             </div>
           </div>
         </div>
-      )}
-
-      {/* Availability Calendar Modal */}
-      {checkingAvailability && (
-        <AvailabilityCalendar
-          bookings={productBookings}
-          onClose={() => {
-            setCheckingAvailability(null);
-            setProductBookings([]);
-          }}
-          productName={`${checkingAvailability.name} - ${checkingAvailability.code}${(checkingAvailability as any).size ? ` (${(checkingAvailability as any).size})` : ''}`}
-        />
       )}
 
       {/* QR Scanner Modal */}
