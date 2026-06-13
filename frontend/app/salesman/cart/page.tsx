@@ -1,12 +1,12 @@
 'use client';
 
+import { bookingsApi, settingsApi } from '@/lib/api';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { bookingsApi } from '@/lib/api';
-import { settingsApi } from '@/lib/settingsApi';
+
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
-import { PhoneInput, QRScanner } from '@/components/common';
+import { PhoneInput } from '@/components/common';
 import { toast } from '@/lib/toast';
 
 interface CartItem {

@@ -9,6 +9,11 @@ import { createLifecycleApi } from './lifecycle';
 import { createPoliciesApi } from './policies';
 import { createProductExchangesApi } from './productExchanges';
 import { createBookingCancellationApi } from './bookingCancellation';
+import { createSettingsApi } from './settings';
+import { createComplaintsApi } from './complaints';
+import { createFeedbackApi } from './feedback';
+import { createCreditNotesApi } from './creditNotes';
+import { createProductTrackingApi } from './productTracking';
 
 export interface Api {
   products: ReturnType<typeof createProductsApi>;
@@ -20,12 +25,17 @@ export interface Api {
   policies: ReturnType<typeof createPoliciesApi>;
   productExchanges: ReturnType<typeof createProductExchangesApi>;
   bookingCancellation: ReturnType<typeof createBookingCancellationApi>;
+  settings: ReturnType<typeof createSettingsApi>;
+  complaints: ReturnType<typeof createComplaintsApi>;
+  feedback: ReturnType<typeof createFeedbackApi>;
+  creditNotes: ReturnType<typeof createCreditNotesApi>;
+  productTracking: ReturnType<typeof createProductTrackingApi>;
   client: AxiosInstance;
 }
 
 export function createApi(config: ApiConfig): Api {
   const apiClient = createApiClient(config);
-  
+
   return {
     products: createProductsApi(apiClient),
     bookings: createBookingsApi(apiClient),
@@ -36,6 +46,11 @@ export function createApi(config: ApiConfig): Api {
     policies: createPoliciesApi(apiClient),
     productExchanges: createProductExchangesApi(apiClient),
     bookingCancellation: createBookingCancellationApi(apiClient),
+    settings: createSettingsApi(apiClient),
+    complaints: createComplaintsApi(apiClient),
+    feedback: createFeedbackApi(apiClient),
+    creditNotes: createCreditNotesApi(apiClient),
+    productTracking: createProductTrackingApi(apiClient),
     client: apiClient,
   };
 }
@@ -50,5 +65,8 @@ export * from './lifecycle';
 export * from './policies';
 export * from './productExchanges';
 export * from './bookingCancellation';
-
-
+export * from './settings';
+export * from './complaints';
+export * from './feedback';
+export * from './creditNotes';
+export * from './productTracking';

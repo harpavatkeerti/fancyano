@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { creditNotesApi, CreditNote } from '@/lib/creditNotesApi';
+import { creditNotesApi, CreditNote } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';

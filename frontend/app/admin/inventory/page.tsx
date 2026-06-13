@@ -1,13 +1,13 @@
 'use client';
 
+import { productsApi, bookingsApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES } from '@/lib/api';
 import { useEffect, useState } from 'react';
-import { productsApi, bookingsApi } from '@/lib/api';
+
 import { toast } from '@/lib/toast';
 import { Product } from '@/types';
-import { Button, Input, ImageUpload, MultipleImageUpload, ProductTrackingModal, QRScanner } from '@/components/common';
+import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner } from '@/components/common';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { getImageUrl } from '@/lib/imageHelper';
-import { productTrackingApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES } from '@/lib/productTrackingApi';
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -53,7 +53,6 @@ export default function InventoryPage() {
   useEffect(() => {
     setCurrentImageIndex(0);
   }, [viewingProduct]);
-
 
   async function fetchProducts() {
     try {

@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { paymentTransactionsApi, bookingsApi, lifecycleApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
-import { creditNotesApi } from '@/lib/creditNotesApi';
+import { useEffect, useState } from 'react';
+
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
@@ -171,8 +171,6 @@ export function PaymentManagement({
       console.error('Error updating booking status:', error);
     }
   }
-
-
 
   // Outstanding balance from backend — charge-based (product_charges.due - paid),
   // matching the backend's own overpayment check. No frontend computation.
@@ -875,7 +873,6 @@ export function PaymentManagement({
           </div>
         </div>
       ) : null}
-
 
     </div>
   );

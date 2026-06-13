@@ -1,15 +1,15 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { bookingsApi, productsApi, paymentTransactionsApi } from '@/lib/api';
-import { creditNotesApi } from '@/lib/creditNotesApi';
+import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi } from '@/lib/api';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput } from '@/components/common';
-import dynamic from 'next/dynamic';
-import axios from 'axios';
+import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
+import { getImageUrl } from '@/lib/imageHelper';
+import { toast } from '@/lib/toast';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+import dynamic from 'next/dynamic';
 
 // Dynamically import QRScanner to avoid SSR issues with html5-qrcode
 const QRScanner = dynamic(
@@ -19,11 +19,6 @@ const QRScanner = dynamic(
     loading: () => <div className="p-4 text-center">Loading scanner...</div>
   }
 );
-import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
-import { settingsApi } from '@/lib/settingsApi';
-import { getImageUrl } from '@/lib/imageHelper';
-import { toast } from '@/lib/toast';
-import { useConfirm } from '@/hooks/useConfirm';
 
 export default function BookingsPage() {
   const [bookings, setBookings] = useState<Booking[]>([]);
@@ -1112,7 +1107,7 @@ export default function BookingsPage() {
           };
           console.log('📝 Recording payment:', paymentData);
 
-          await axios.post(`${API_URL}/payment-transactions`, paymentData);
+          await paymentTransactionsApi.create(paymentData);
           console.log('✅ Payment recorded successfully');
 
           // Let backend calculate and update booking status based on payment

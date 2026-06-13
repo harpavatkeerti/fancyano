@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+import { AxiosInstance } from 'axios';
 
 export type TrackingStatus =
   | 'in_house'
@@ -54,28 +52,17 @@ export interface CreateTrackingData {
   notes?: string;
 }
 
-export const productTrackingApi = {
-  // Get all tracking records
-  getAll: () => axios.get(`${API_URL}/product-tracking`),
-
-  // Get current (latest) tracking record for a product
-  getCurrentStatus: (productId: number) =>
-    axios.get(`${API_URL}/product-tracking/current/${productId}`),
-
-  // Get full tracking history for a product
-  getByProductId: (productId: number) =>
-    axios.get(`${API_URL}/product-tracking/product/${productId}`),
-
-  // Get tracking records by product code
-  getByCode: (code: string) => axios.get(`${API_URL}/product-tracking/code/${code}`),
-
-  // Create new tracking record (manual Track modal only)
-  create: (data: CreateTrackingData) => axios.post(`${API_URL}/product-tracking`, data),
-
-  // Mark a product as returned — inserts a new in_house row
-  markReturned: (id: number, notes?: string) =>
-    axios.patch(`${API_URL}/product-tracking/${id}/return`, { notes }),
-
-  // Delete tracking record
-  delete: (id: number) => axios.delete(`${API_URL}/product-tracking/${id}`),
-};
+export function createProductTrackingApi(api: AxiosInstance) {
+  return {
+    getAll: () => api.get<ProductTracking[]>('/product-tracking'),
+    getCurrentStatus: (productId: number) =>
+      api.get<ProductTracking>(`/product-tracking/current/${productId}`),
+    getByProductId: (productId: number) =>
+      api.get<ProductTracking[]>(`/product-tracking/product/${productId}`),
+    getByCode: (code: string) => api.get<ProductTracking[]>(`/product-tracking/code/${code}`),
+    create: (data: CreateTrackingData) => api.post<ProductTracking>('/product-tracking', data),
+    markReturned: (id: number, notes?: string) =>
+      api.patch(`/product-tracking/${id}/return`, { notes }),
+    delete: (id: number) => api.delete(`/product-tracking/${id}`),
+  };
+}

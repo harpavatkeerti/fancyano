@@ -1,19 +1,15 @@
 'use client';
 
+import { bookingsApi, paymentTransactionsApi, PaymentSummary, creditNotesApi, api, SERVER_BASE_URL } from '@/lib/api';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { bookingsApi, paymentTransactionsApi, PaymentSummary } from '@/lib/api';
-import { creditNotesApi } from '@/lib/creditNotesApi';
-import { settingsApi } from '@/lib/settingsApi';
-import { productTrackingApi } from '@/lib/productTrackingApi';
+
 import { Booking } from '@/types';
 import { Button, PaymentManagement, ProductExchange, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton } from '@/components/common';
 import { AutoCancelCountdown } from '@/components/common/AutoCancelCountdown';
 import { toast } from '@/lib/toast';
 import { getImageUrl } from '@/lib/imageHelper';
-import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+import { makeShareableUrl } from '@/lib/urlHelper';
 
 export default function OrderDetailsPage() {
   const params = useParams();
@@ -197,8 +193,8 @@ export default function OrderDetailsPage() {
   async function handleGenerateDocument(type: 'estimate' | 'invoice' | 'tax-invoice') {
     try {
       // Use POST endpoint to generate PDF and get blob directly for preview
-      const response = await axios.post(
-        `${API_URL}/invoices/${type}/${booking?.id}`,
+      const response = await api.client.post(
+        `/invoices/${type}/${booking?.id}`,
         {},
         { responseType: 'blob' }
       );
@@ -214,34 +210,16 @@ export default function OrderDetailsPage() {
       // Generate public URL for WhatsApp sharing
       // Use GET endpoint to get the public URL
       try {
-        const generateResponse = await axios.get(
-          `${API_URL}/invoices/${type}/${booking?.id}`
+        const generateResponse = await api.client.get(
+          `/invoices/${type}/${booking?.id}`
         );
         const publicUrl = generateResponse.data.url;
-        const fullUrl = generateResponse.data.fullUrl || `${API_URL.replace('/api', '')}${publicUrl}`;
-
-        // Replace localhost with actual server IP if needed
-        let shareableUrl = fullUrl;
-        if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
-          // Try to get server IP from environment or use current hostname
-          const serverIP = process.env.NEXT_PUBLIC_SERVER_IP || window.location.hostname;
-          if (serverIP !== 'localhost' && serverIP !== '127.0.0.1') {
-            shareableUrl = shareableUrl.replace(/localhost|127\.0\.0\.1/, serverIP);
-          }
-        }
-        setPdfPublicUrl(shareableUrl);
+        const fullUrl = generateResponse.data.fullUrl || `${SERVER_BASE_URL}${publicUrl}`;
+        setPdfPublicUrl(makeShareableUrl(fullUrl));
       } catch (urlError) {
         // If GET fails, construct URL manually
         console.warn('Could not get public URL, constructing manually:', urlError);
-        const baseUrl = API_URL.replace('/api', '');
-        let shareableUrl = `${baseUrl}/uploads/${type}_${booking?.id}.pdf`;
-        if (shareableUrl.includes('localhost') || shareableUrl.includes('127.0.0.1')) {
-          const serverIP = process.env.NEXT_PUBLIC_SERVER_IP || window.location.hostname;
-          if (serverIP !== 'localhost' && serverIP !== '127.0.0.1') {
-            shareableUrl = shareableUrl.replace(/localhost|127\.0\.0\.1/, serverIP);
-          }
-        }
-        setPdfPublicUrl(shareableUrl);
+        setPdfPublicUrl(makeShareableUrl(`${SERVER_BASE_URL}/uploads/${type}_${booking?.id}.pdf`));
       }
 
       // Show preview modal based on type
@@ -315,23 +293,10 @@ export default function OrderDetailsPage() {
     if (pdfPublicUrl) {
       pdfDownloadLink = pdfPublicUrl;
     } else {
-      // Fallback: construct URL from API_URL
-      const baseUrl = API_URL.replace('/api', '');
-      if (baseUrl.includes('localhost') || baseUrl.includes('127.0.0.1')) {
-        if (typeof window !== 'undefined') {
-          const hostname = window.location.hostname;
-          const protocol = window.location.protocol;
-          if (hostname !== 'localhost' && hostname !== '127.0.0.1') {
-            pdfDownloadLink = `${protocol}//${hostname}:3001/uploads/${pdfType}_${booking.id}.pdf`;
-          } else {
-            toast.warning('Please configure your server IP for mobile access');
-            pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
-          }
-        } else {
-          pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
-        }
-      } else {
-        pdfDownloadLink = `${baseUrl}/uploads/${pdfType}_${booking.id}.pdf`;
+      // Fallback: construct URL from server base URL
+      pdfDownloadLink = makeShareableUrl(`${SERVER_BASE_URL}/uploads/${pdfType}_${booking.id}.pdf`);
+      if (/localhost|127\.0\.0\.1/.test(pdfDownloadLink)) {
+        toast.warning('Please configure NEXT_PUBLIC_SERVER_IP for mobile sharing');
       }
     }
 
@@ -405,7 +370,7 @@ export default function OrderDetailsPage() {
 
     // Try to send email via backend API (with attachment support)
     try {
-      const response = await axios.post(`${API_URL}/invoices/send-email`, {
+      const response = await api.client.post('/invoices/send-email', {
         bookingId: booking.id,
         documentType: pdfType,
         customerName: booking.customer_name,

@@ -1,15 +1,9 @@
 'use client';
 
+import { productTrackingApi, ProductTracking, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, productsApi } from '@/lib/api';
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/common';
-import {
-  productTrackingApi,
-  ProductTracking,
-  TrackingStatus,
-  TRACKING_STATUS_LABELS,
-  MANUAL_TRACKING_STATUSES,
-} from '@/lib/productTrackingApi';
-import { productsApi } from '@/lib/api';
+
 import { Product } from '@/types';
 
 interface ProductTrackingModalProps {

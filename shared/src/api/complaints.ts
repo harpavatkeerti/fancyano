@@ -1,6 +1,4 @@
-import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+import { AxiosInstance } from 'axios';
 
 export interface Complaint {
   id: number;
@@ -43,13 +41,15 @@ export interface AddNoteData {
   new_status?: string;
 }
 
-export const complaintsApi = {
-  getAll: () => axios.get<Complaint[]>(`${API_URL}/complaints`),
-  getById: (id: number) => axios.get<Complaint>(`${API_URL}/complaints/${id}`),
-  create: (data: CreateComplaintData) => axios.post<Complaint>(`${API_URL}/complaints`, data),
-  update: (id: number, data: Partial<Complaint> & { note?: string; user_name?: string; user_role?: string }) => axios.put<Complaint>(`${API_URL}/complaints/${id}`, data),
-  delete: (id: number) => axios.delete(`${API_URL}/complaints/${id}`),
-  getNotes: (id: number) => axios.get<ComplaintNote[]>(`${API_URL}/complaints/${id}/notes`),
-  addNote: (id: number, data: AddNoteData) => axios.post<ComplaintNote>(`${API_URL}/complaints/${id}/notes`, data),
-};
-
+export function createComplaintsApi(api: AxiosInstance) {
+  return {
+    getAll: () => api.get<Complaint[]>('/complaints'),
+    getById: (id: number) => api.get<Complaint>(`/complaints/${id}`),
+    create: (data: CreateComplaintData) => api.post<Complaint>('/complaints', data),
+    update: (id: number, data: Partial<Complaint> & { note?: string; user_name?: string; user_role?: string }) =>
+      api.put<Complaint>(`/complaints/${id}`, data),
+    delete: (id: number) => api.delete(`/complaints/${id}`),
+    getNotes: (id: number) => api.get<ComplaintNote[]>(`/complaints/${id}/notes`),
+    addNote: (id: number, data: AddNoteData) => api.post<ComplaintNote>(`/complaints/${id}/notes`, data),
+  };
+}

@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { feedbackApi, CreateFeedbackData } from '@/lib/feedbackApi';
+import { feedbackApi, CreateFeedbackData } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
 interface FeedbackFormProps {

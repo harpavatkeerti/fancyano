@@ -1,10 +1,9 @@
 'use client';
 
+import { complaintsApi, Complaint, ComplaintNote, feedbackApi, Feedback, usersApi } from '@/lib/api';
 import { useState, useEffect } from 'react';
 import { ComplaintForm, FeedbackForm } from '@/components/common';
-import { complaintsApi, Complaint, ComplaintNote } from '@/lib/complaintsApi';
-import { feedbackApi, Feedback } from '@/lib/feedbackApi';
-import { usersApi } from '@/lib/api';
+
 import { toast } from '@/lib/toast';
 
 export default function SalesmanComplaintsPage() {

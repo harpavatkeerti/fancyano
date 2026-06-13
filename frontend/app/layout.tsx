@@ -1,8 +1,9 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { AuthProvider } from '@/lib/authContext'
 
 export const metadata: Metadata = {
-  title: 'Rental Booking System',
+  title: 'FAN-C-YA-NO',
   description: 'Manage your rental store bookings',
 }
 
@@ -13,7 +14,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="bg-gray-50">{children}</body>
+      <body className="bg-gray-50">
+        <AuthProvider>
+          {children}
+        </AuthProvider>
+      </body>
     </html>
   )
 }

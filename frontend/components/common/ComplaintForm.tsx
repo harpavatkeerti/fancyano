@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { complaintsApi, CreateComplaintData } from '@/lib/complaintsApi';
+import { complaintsApi, CreateComplaintData } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
 interface ComplaintFormProps {

@@ -1,28 +1,41 @@
-import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+import { api } from './api';
 
 export interface LoginData {
   username?: string;
   name?: string;
   password: string;
+}
+
+export interface AuthUser {
+  id: number;
+  name: string;
+  username: string;
   role: 'admin' | 'salesman' | 'customer';
+  phone?: string;
+  email?: string;
 }
 
 export interface LoginResponse {
   success: boolean;
-  user: {
-    id: number;
-    name: string;
-    username?: string;
-    phone?: string;
-    role: string;
-    email?: string;
-    address?: string;
-  };
+  token: string;
+  user: AuthUser;
+  expiresAt: number; // Unix ms timestamp
+}
+
+export interface VerifyResponse {
+  valid: boolean;
+  user?: AuthUser;
+  error?: string;
 }
 
 export const authApi = {
-  login: (data: LoginData) => axios.post<LoginResponse>(`${API_URL}/auth/login`, data),
-};
+  login: (data: LoginData) =>
+    api.client.post<LoginResponse>('/auth/login', data),
 
+  verify: (token: string) =>
+    api.client.post<VerifyResponse>(
+      '/auth/verify',
+      {},
+      { headers: { Authorization: `Bearer ${token}` } }
+    ),
+};

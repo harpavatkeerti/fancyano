@@ -1,9 +1,8 @@
 'use client';
 
+import { settingsApi, policiesApi } from '@/lib/api';
 import { useState, useEffect, useRef } from 'react';
-import { settingsApi } from '@/lib/settingsApi';
-import { policiesApi } from '@/lib/api';
-import { Button, Input } from '@/components/common';
+
 import { toast } from '@/lib/toast';
 
 // Each policy tier = one row in rental_policies table

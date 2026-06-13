@@ -1,9 +1,8 @@
 'use client';
 
+import { complaintsApi, Complaint, ComplaintNote, feedbackApi, Feedback, usersApi } from '@/lib/api';
 import { useState, useEffect } from 'react';
-import { complaintsApi, Complaint, ComplaintNote } from '@/lib/complaintsApi';
-import { feedbackApi, Feedback } from '@/lib/feedbackApi';
-import { usersApi } from '@/lib/api';
+
 import { ComplaintForm, FeedbackForm } from '@/components/common';
 import { toast } from '@/lib/toast';
 

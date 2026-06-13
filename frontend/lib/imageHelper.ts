@@ -1,3 +1,5 @@
+import { SERVER_BASE_URL } from './api';
+
 /**
  * Helper function to get the correct image URL
  * Handles both base64 images (old format) and file paths (new format)
@@ -55,9 +57,7 @@ export function getImageUrl(imagePath: string | string[] | undefined | null | an
   // If it's a file path, prepend the backend URL
   if (imagePath.startsWith('/uploads/')) {
     // Get the base backend URL without /api suffix
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
-    const backendUrl = apiUrl.replace('/api', ''); // Remove /api suffix if present
-    return `${backendUrl}${imagePath}`;
+    return `${SERVER_BASE_URL}${imagePath}`;
   }
 
   // If it's already a full URL (cloud storage), return as-is

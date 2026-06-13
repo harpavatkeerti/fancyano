@@ -1,14 +1,11 @@
 'use client';
 
+import { productExchangesApi, productsApi, bookingsApi, settingsApi, api } from '@/lib/api';
 import React, { useState, useEffect } from 'react';
-import { productExchangesApi, productsApi, bookingsApi } from '@/lib/api';
-import { settingsApi } from '@/lib/settingsApi';
+
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { PaymentMethodInput } from './PaymentMethodInput';
-import axios from 'axios';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
 
 interface ProductExchangeProps {
   bookingId: number;
@@ -63,8 +60,6 @@ export function ProductExchange({
   const [pendingExchange, setPendingExchange] = useState<any>(null);
   const [pendingExchangeData, setPendingExchangeData] = useState<any>(null); // Store exchange data before creating it
   const [paymentType, setPaymentType] = useState<'penalty' | 'rent' | 'both'>('penalty');
-
-
 
   // Exchange preview from backend API
   const [exchangePreview, setExchangePreview] = useState<any>(null);
@@ -171,7 +166,7 @@ export function ProductExchange({
 
   async function fetchProductBookings(productId: number) {
     try {
-      const response = await axios.get(`${API_URL}/bookings/by-product/${productId}`);
+      const response = await api.client.get(`/bookings/by-product/${productId}`);
       setProductBookings(prev => ({
         ...prev,
         [productId]: response.data || []
@@ -191,7 +186,7 @@ export function ProductExchange({
     }
 
     try {
-      const response = await axios.post(`${API_URL}/availability/check`, {
+      const response = await api.client.post('/availability/check', {
         product_id: productId,
         date_from: dateFrom,
         date_to: dateTo
@@ -595,7 +590,7 @@ export function ProductExchange({
       // If admin chose to refund, create a special refund transaction
       if (refundAmountValue > 0) {
         try {
-          await axios.post(`${API_URL}/payment-transactions`, {
+          await api.client.post('/payment-transactions', {
             booking_id: bookingId,
             amount: refundAmountValue,
             type: 'refund',
@@ -1419,8 +1414,6 @@ export function ProductExchange({
           </div>
         </div>
       )}
-
-
 
       {/* Refund Modal for Lapsed Amount */}
       {showRefundModal && (
