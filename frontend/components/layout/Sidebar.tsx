@@ -2,48 +2,37 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-
-interface SidebarProps {
-  role?: 'admin' | 'salesman' | 'customer';
-}
+import { useAuth } from '@/lib/authContext';
 
 const adminMenuItems = [
-  { name: 'Dashboard', href: '/admin', icon: '📊' },
-  { name: 'Inventory', href: '/admin/inventory', icon: '📦' },
-  { name: 'Bookings', href: '/admin/bookings', icon: '📅' },
-  { name: 'Credit Notes', href: '/admin/credit-notes', icon: '💳' },
-  { name: 'User Management', href: '/admin/users', icon: '👥' },
-  { name: 'Complaints & Feedback', href: '/admin/complaints', icon: '💬' },
-  { name: 'Reports', href: '/admin/reports', icon: '📈' },
-  { name: 'Settings & Policies', href: '/admin/settings', icon: '⚙️' },
+  { name: 'Dashboard',            href: '/dashboard',    icon: '📊' },
+  { name: 'Inventory',            href: '/inventory',    icon: '📦' },
+  { name: 'Bookings',             href: '/bookings',     icon: '📅' },
+  { name: 'Credit Notes',         href: '/credit-notes', icon: '💳' },
+  { name: 'User Management',      href: '/users',        icon: '👥' },
+  { name: 'Complaints & Feedback',href: '/complaints',   icon: '💬' },
+  { name: 'Reports',              href: '/reports',      icon: '📈' },
+  { name: 'Settings & Policies',  href: '/settings',     icon: '⚙️' },
 ];
 
-const salesmanMenuItems = [
-  { name: 'Dashboard', href: '/salesman', icon: '📊' },
-  { name: 'Products', href: '/salesman/products', icon: '📦' },
-  { name: 'Bookings', href: '/salesman/bookings', icon: '📅' },
-  { name: 'Customers', href: '/salesman/customers', icon: '👥' },
-];
-
-const customerMenuItems = [
-  { name: 'Home', href: '/customer', icon: '🏠' },
-  { name: 'Products', href: '/customer/products', icon: '📦' },
-  { name: 'My Bookings', href: '/customer/bookings', icon: '📅' },
-];
-
-export default function Sidebar({ role = 'admin' }: SidebarProps) {
+export default function Sidebar() {
   const pathname = usePathname();
-  const menuItems = role === 'admin' ? adminMenuItems : role === 'salesman' ? salesmanMenuItems : customerMenuItems;
+  const { isAdmin } = useAuth();
+
+  // Sidebar is admin-only
+  if (!isAdmin) return null;
 
   return (
-    <div className="w-64 bg-white h-screen fixed left-0 top-0 shadow-lg">
+    <div className="w-64 bg-white h-screen fixed left-0 top-0 shadow-lg z-40">
       <div className="p-6 border-b">
-        <h1 className="text-2xl font-bold text-gray-800">FAN-CYAND</h1>
+        <div className="bg-red-600 text-white px-3 py-1 font-bold text-lg inline-block mb-1">
+          FAN-C-YA-NO
+        </div>
         <p className="text-sm text-gray-500">Wedding Dress Rental</p>
       </div>
       <nav className="p-4">
         <ul className="space-y-2">
-          {menuItems.map((item) => {
+          {adminMenuItems.map((item) => {
             const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
             return (
               <li key={item.href}>
@@ -51,7 +40,7 @@ export default function Sidebar({ role = 'admin' }: SidebarProps) {
                   href={item.href}
                   className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors ${
                     isActive
-                      ? 'bg-blue-50 text-blue-700 font-semibold'
+                      ? 'bg-red-50 text-red-700 font-semibold'
                       : 'text-gray-700 hover:bg-gray-50'
                   }`}
                 >
@@ -66,4 +55,3 @@ export default function Sidebar({ role = 'admin' }: SidebarProps) {
     </div>
   );
 }
-

@@ -36,8 +36,8 @@ export default routePermissions;
 export function getHomeRoute(role: Role | null | undefined): string {
   switch (role) {
     case 'admin':     return '/dashboard';
-    case 'salesman':  return '/salesman';
-    case 'customer':  return '/customer';
+    case 'salesman':  return '/home';
+    case 'customer':  return '/home';
     default:          return '/login';
   }
 }

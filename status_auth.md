@@ -1,7 +1,7 @@
 # Status: Unified Auth, RBAC & Route Restructuring
 
 > **Plan**: [PLAN_auth.md](file:///c:/Users/User/Documents/app/PLAN_auth.md)
-> **Last updated**: 2026-06-13
+> **Last updated**: 2026-06-14
 > **Last updated by**: Agent
 > **Current step**: Awaiting user approval to start
 
@@ -12,9 +12,9 @@
 | Area | Status |
 |------|--------|
 | Step 1: Backend — JWT auth infrastructure (middleware, bcrypt, token generation) | `[x]` Complete |
-| Step 2: Backend — Protect routes by role | `[/]` In progress |
-| Step 3: Frontend — AuthProvider, useAuth, Login page, API interceptor | `[ ]` Not started |
-| Step 4: Frontend — Unified layout with role-based navigation | `[ ]` Not started |
+| Step 2: Backend — Protect routes by role | `[x]` Complete |
+| Step 3: Frontend — AuthProvider, useAuth, Login page, API interceptor | `[x]` Complete |
+| Step 4: Frontend — Unified layout with role-based navigation | `[x]` Complete |
 | Step 5: Route migration — Move admin pages to flat routes | `[ ]` Not started |
 | Step 6: Unified booking detail page (admin + salesman) | `[ ]` Not started |
 | Step 7: Move remaining salesman & customer pages | `[ ]` Not started |
@@ -51,9 +51,9 @@
 | Step | Description | Status | Completed By | Date | Notes |
 |------|-------------|--------|-------------|------|-------|
 | 1 | Backend — JWT auth infrastructure: `auth.js` middleware, `requireRole.js`, `routePermissions.js`, update `auth.js` route, bcrypt migration (mandatory passwords, admin default pw), add deps | `[x]` | Agent | 2026-06-13 | 29 auth tests passing |
-| 2 | Backend — Apply centralized route permission config to `server.js`, protect role-restricted routes, inline role checks in `bookings.js`, bcrypt in `users.js` (create/update user with password) | `[/]` | — | — | — |
-| 3 | Frontend — `AuthProvider` context, `RequireRole` component, `routePermissions.ts`, updated `authApi.ts`, API interceptor, `/login` page (role-based redirect), wrap `layout.tsx` | `[ ]` | — | — | — |
-| 4 | Frontend — Sidebar (admin-only), Header top bar (all roles, role-based nav items), rename AdminLayout → `AppLayout.tsx`, `(authenticated)/layout.tsx` with route permission check | `[ ]` | — | — | — |
+| 2 | Backend — Apply centralized route permission config to `server.js`, protect role-restricted routes, inline role checks in `bookings.js`, bcrypt in `users.js` (create/update user with password) | `[x]` | Agent | 2026-06-13 | — |
+| 3 | Frontend — `AuthProvider` context, `RequireRole` component, `routePermissions.ts`, updated `authApi.ts`, API interceptor, `/login` page (role-based redirect), wrap `layout.tsx` | `[x]` | Agent | 2026-06-13 | TypeScript clean |
+| 4 | Frontend — Sidebar (admin-only, flat routes, useAuth), Header top bar (all roles, role-based nav, auth.logout), `AppLayout.tsx` (no login modal/localStorage), `(authenticated)/layout.tsx` (route permission check) | `[x]` | Agent | 2026-06-14 | TypeScript clean |
 | 5 | Route migration — Move admin pages (`/dashboard`, `/inventory`, `/bookings`, `/credit-notes`, `/users`, `/complaints`, `/reports`, `/settings`) to flat routes under `(authenticated)/` | `[ ]` | — | — | — |
 | 6 | Unified booking detail — Create shared `/bookings/[id]/page.tsx` from salesman order-details, add admin-only features with `RequireRole`, delete old pages | `[ ]` | — | — | — |
 | 7 | Move remaining — Salesman home → `/home`, products, cart, my-bookings, customer-bookings, complaints; Customer pages merged | `[ ]` | — | — | — |
