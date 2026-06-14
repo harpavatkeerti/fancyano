@@ -126,7 +126,6 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
       setTempPassword('');
       
       toast.success('Login successful');
-      console.log('✅ Salesman logged in:', user.name);
     } catch (error: any) {
       console.error('Login error:', error);
       const errorMessage = error.response?.data?.error || 'Invalid credentials. Please check your name and password.';
@@ -137,18 +136,14 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
   }
   
   function handleLogout() {
-    if (confirm('Are you sure you want to logout? Your cart will be cleared.')) {
-      // Clear salesman localStorage
-      localStorage.removeItem('salesman_name');
-      localStorage.removeItem('name');
-      localStorage.removeItem('user');
-      localStorage.removeItem('salesman_user');
-      localStorage.removeItem('salesman_cart');
-      localStorage.removeItem('salesman_cart_created_at');
-      
-      // Reload page to show login modal
-      window.location.reload();
-    }
+    // Clear salesman localStorage and reload
+    localStorage.removeItem('salesman_name');
+    localStorage.removeItem('name');
+    localStorage.removeItem('user');
+    localStorage.removeItem('salesman_user');
+    localStorage.removeItem('salesman_cart');
+    localStorage.removeItem('salesman_cart_created_at');
+    window.location.reload();
   }
 
   // Update cart count when pathname changes (user navigates)
@@ -169,7 +164,6 @@ export default function SalesmanLayout({ children }: { children: React.ReactNode
       const elapsedMinutes = (now - createdAt) / (1000 * 60);
 
       if (elapsedMinutes >= 5) {
-        console.log('⏰ Cart expired (5 minutes passed), clearing cart...');
         localStorage.removeItem('salesman_cart');
         localStorage.removeItem('salesman_cart_created_at');
         updateCartCount();

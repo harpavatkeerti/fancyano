@@ -94,7 +94,6 @@ export default function CartPage() {
       setTimeRemaining(timeRem);
 
       if (timeRem && timeRem.minutes === 0 && timeRem.seconds === 0) {
-        console.log('⏰ Cart expired (5 minutes passed), clearing cart...');
         localStorage.removeItem('salesman_cart');
         localStorage.removeItem('salesman_cart_created_at');
         setCartItems([]);
@@ -458,8 +457,6 @@ export default function CartPage() {
 
       // Trim whitespace to ensure consistent matching
       salesmanName = salesmanName.trim();
-
-      console.log('📝 Creating booking with created_by:', salesmanName);
 
       // Create one booking with all products
       const discountAmount = calculateDiscount();

@@ -76,7 +76,6 @@ export default function CartPage() {
       setTimeRemaining(timeRem);
 
       if (timeRem && timeRem.minutes === 0 && timeRem.seconds === 0) {
-        console.log('⏰ Cart expired (5 minutes passed), clearing cart...');
         localStorage.removeItem('customer_cart');
         localStorage.removeItem('customer_cart_created_at');
         setCartItems([]);
@@ -139,7 +138,6 @@ export default function CartPage() {
     
     if (storedName && storedName.trim() !== '') {
       setCustomerName(storedName);
-      console.log('✅ Customer name pre-filled:', storedName);
     }
   }
 
@@ -406,10 +404,6 @@ export default function CartPage() {
       // Calculate total security deposit from all products
       const totalSecurityDeposit = calculateSecurityDeposit();
 
-      console.log('📝 Creating booking with customer name:', customerName);
-      console.log('📝 Customer from localStorage:', localStorage.getItem('customer_name'));
-      console.log('📝 Customer user from localStorage:', localStorage.getItem('customer_user'));
-
       // Create one booking with all products
       const bookingResponse = await bookingsApi.create({
         customer_name: customerName,
@@ -435,16 +429,10 @@ export default function CartPage() {
       localStorage.removeItem('customer_cart');
       localStorage.removeItem('customer_cart_created_at');
       setTimeRemaining(null);
-      // Dispatch event to update cart count in header
       window.dispatchEvent(new Event('cartUpdated'));
-      
-      console.log('✅ Booking created successfully:', bookingResponse.data);
-      console.log('   Booking ID:', bookingResponse.data.id);
-      console.log('   Customer Name in booking:', bookingResponse.data.customer_name);
       
       toast.success('Booking request submitted successfully! Your booking is pending confirmation. A salesman will contact you shortly.');
       
-      // Redirect to bookings page
       router.push('/customer/bookings');
     } catch (error: any) {
       console.error('Error creating booking:', error);

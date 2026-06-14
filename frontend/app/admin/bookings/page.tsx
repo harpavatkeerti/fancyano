@@ -389,14 +389,12 @@ export default function BookingsPage() {
           customer_phone: b.customer_phone,
         }));
         bookingsMap[product.id] = bookings;
-        console.log(`Fetched ${bookings.length} bookings for product ${product.id}:`, bookings);
       } catch (error) {
         console.error(`Error fetching bookings for product ${product.id}:`, error);
         bookingsMap[product.id] = [];
       }
     }
     setProductBookings(bookingsMap);
-    console.log('Product bookings map:', bookingsMap);
 
     setShowModifyModal(true);
   }
@@ -410,28 +408,22 @@ export default function BookingsPage() {
       // Check if trying to confirm a booking that has a credit note
       if (oldStatus !== 'confirmed' && newStatus === 'confirmed') {
         try {
-          console.log('🔍 Checking credit notes for booking:', selectedBooking.id);
           const creditNotesResponse = await creditNotesApi.getByBookingId(selectedBooking.id);
           const creditNotes = creditNotesResponse.data || [];
-          console.log('📋 Found credit notes:', creditNotes);
 
           if (creditNotes.length > 0) {
             const activeCreditNote = creditNotes.find((note: any) => {
               const validUntil = new Date(note.valid_until);
               const now = new Date();
               const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
-              const isActive = validUntil >= now && availableAmount > 0;
-              console.log(`  Note ${note.id}: validUntil=${validUntil.toISOString()}, now=${now.toISOString()}, available=${availableAmount}, isActive=${isActive}`);
-              return isActive;
+              return validUntil >= now && availableAmount > 0;
             });
 
             if (activeCreditNote) {
-              console.log('❌ Blocking confirmation due to active credit note:', activeCreditNote.id);
               toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
               return;
             }
-          }
-          console.log('✅ No active credit notes found, proceeding with confirmation');
+          };
         } catch (error) {
           console.error('Error checking credit notes:', error);
           // Continue with update if check fails
@@ -761,7 +753,6 @@ export default function BookingsPage() {
 
   // Handle QR code scan
   function handleQRScan(code: string) {
-    console.log('QR Code scanned:', code);
     handleSearchByCode(code);
     setShowQRScanner(false);
   }
@@ -1092,7 +1083,6 @@ export default function BookingsPage() {
       } as any);
 
       const newBookingId = response.data.id;
-      console.log('🆔 Created booking ID:', newBookingId);
 
       // If payment amount is provided, record it
       if (paymentAmount && parseFloat(paymentAmount) > 0) {
@@ -1102,17 +1092,14 @@ export default function BookingsPage() {
             amount: parseFloat(paymentAmount),
             type: 'payment',
             method: paymentMethod,
-            notes: paymentNotes || 'Initial payment recorded', // Default note if empty
+            notes: paymentNotes || 'Initial payment recorded',
             recorded_by: 'admin'
           };
-          console.log('📝 Recording payment:', paymentData);
 
           await paymentTransactionsApi.create(paymentData);
-          console.log('✅ Payment recorded successfully');
 
           // Let backend calculate and update booking status based on payment
-          const statusResult = await bookingsApi.updateStatus(newBookingId);
-          console.log('✅ Booking status updated by backend:', statusResult.data);
+          await bookingsApi.updateStatus(newBookingId);
         } catch (paymentError: any) {
           console.error('❌ Error recording payment:', paymentError);
           console.error('Error response:', paymentError.response?.data);
@@ -1870,10 +1857,8 @@ export default function BookingsPage() {
                   value={addFormData.customer_phone}
                   countryCode={addFormData.customer_phone_country}
                   onValueChange={(value) => {
-                    console.log('Phone value changed:', value);
                     setAddFormData((prev) => {
                       const updated = { ...prev, customer_phone: value };
-                      // Check for duplicate after state update
                       setTimeout(() => {
                         checkPhoneNumberDuplicate(value, prev.customer_phone_country, prev.alternate_phone, prev.alternate_phone_country);
                       }, 0);
@@ -1881,7 +1866,6 @@ export default function BookingsPage() {
                     });
                   }}
                   onCountryCodeChange={(code) => {
-                    console.log('Country code changed:', code);
                     setAddFormData((prev) => {
                       const updated = { ...prev, customer_phone_country: code };
                       // Check for duplicate after state update
@@ -1898,10 +1882,8 @@ export default function BookingsPage() {
                   value={addFormData.alternate_phone}
                   countryCode={addFormData.alternate_phone_country}
                   onValueChange={(value) => {
-                    console.log('Alt phone value changed:', value);
                     setAddFormData((prev) => {
                       const updated = { ...prev, alternate_phone: value };
-                      // Check for duplicate after state update
                       setTimeout(() => {
                         checkPhoneNumberDuplicate(prev.customer_phone, prev.customer_phone_country, value, prev.alternate_phone_country);
                       }, 0);
@@ -1909,7 +1891,6 @@ export default function BookingsPage() {
                     });
                   }}
                   onCountryCodeChange={(code) => {
-                    console.log('Alt country code changed:', code);
                     setAddFormData((prev) => {
                       const updated = { ...prev, alternate_phone_country: code };
                       // Check for duplicate after state update

@@ -113,15 +113,6 @@ export default function ComplaintsPage() {
       const statusChanged = resolutionStatus !== oldStatus;
       const note = newNote.trim();
       
-      console.log('Updating complaint:', {
-        id: selectedComplaint.id,
-        oldStatus,
-        newStatus: resolutionStatus,
-        statusChanged,
-        note,
-        assignTo,
-      });
-      
       const updateData: any = {
         status: resolutionStatus as any,
         assigned_to: assignTo ? parseInt(assignTo) : undefined,
@@ -136,10 +127,8 @@ export default function ComplaintsPage() {
         updateData.note = `Status changed from ${oldStatus} to ${resolutionStatus}`;
       }
       
-      const response = await complaintsApi.update(selectedComplaint.id, updateData);
-      
-      console.log('Update response:', response.data);
-      
+      await complaintsApi.update(selectedComplaint.id, updateData);
+
       toast.success('Complaint updated successfully');
       
       // Reload complaint data

@@ -28,8 +28,6 @@ export default function InventoryPage() {
   const [filterTrackingStatus, setFilterTrackingStatus] = useState<TrackingStatus[]>([]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'archived'>('all');
 
-  // Verify new code is loaded
-  console.log('🔄 Inventory page loaded with IMAGE HELPER v2.0');
   const [formData, setFormData] = useState({
     name: '',
     code: '',
@@ -80,21 +78,6 @@ export default function InventoryPage() {
         ? formData.images 
         : (formData.image ? [formData.image] : []);
 
-      // Debug: Check if images are different
-      console.log('📤 Preparing to submit images:', imagesToSubmit.length);
-      const imageLengths = new Set(imagesToSubmit.map(img => img.length));
-      console.log(`   Unique image lengths: ${imageLengths.size} out of ${imagesToSubmit.length}`);
-      
-      imagesToSubmit.forEach((img, idx) => {
-        const preview = img.substring(0, 50);
-        const middle = img.substring(Math.floor(img.length / 2), Math.floor(img.length / 2) + 50);
-        console.log(`   Image ${idx + 1}: ${preview}...${middle}... (length: ${img.length})`);
-      });
-      
-      if (imageLengths.size < imagesToSubmit.length) {
-        console.warn(`⚠️ WARNING: Some images have the same length - they might be duplicates!`);
-      }
-
       const dataToSubmit = {
         ...formData,
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
@@ -110,15 +93,10 @@ export default function InventoryPage() {
         image: imagesToSubmit.length > 0 ? imagesToSubmit[0] : '',
       };
 
-      console.log('📤 Submitting product data:', JSON.stringify({ ...dataToSubmit, images: `[${imagesToSubmit.length} images]` }, null, 2));
-
       if (editingProduct) {
-        const response = await productsApi.update(editingProduct.id, dataToSubmit);
-        console.log('Product updated:', response.data);
+        await productsApi.update(editingProduct.id, dataToSubmit);
       } else {
-        const response = await productsApi.create(dataToSubmit);
-        console.log('Product created:', response.data);
-        console.log('Images from backend:', response.data.image);
+        await productsApi.create(dataToSubmit);
       }
       await fetchProducts();
       setShowAddModal(false);

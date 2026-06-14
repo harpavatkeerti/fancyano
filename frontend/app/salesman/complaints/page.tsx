@@ -44,9 +44,6 @@ export default function SalesmanComplaintsPage() {
       );
       const userId = currentUser?.id || null;
       
-      console.log('Found User:', currentUser);
-      console.log('User ID:', userId);
-      
       setSalesmanUserId(userId);
       
       // Filter complaints: show complaints raised by OR assigned to this salesman

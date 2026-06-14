@@ -104,9 +104,7 @@ export default function SettingsPage() {
         if (exchangeResponse.data && exchangeResponse.data.length > 0) {
           setExchangeTiers(policiesToTiers(exchangeResponse.data));
         }
-      } catch (error) {
-        console.log('Exchange policies not found, using defaults');
-      }
+      } catch { }
 
       // Fetch cancellation penalty policies from rental_policies table
       try {
@@ -114,9 +112,7 @@ export default function SettingsPage() {
         if (cancelResponse.data && cancelResponse.data.length > 0) {
           setCancellationTiers(policiesToTiers(cancelResponse.data));
         }
-      } catch (error) {
-        console.log('Cancellation policies not found, using defaults');
-      }
+      } catch { }
 
       // Fetch salesman permissions
       try {
@@ -124,9 +120,7 @@ export default function SettingsPage() {
         if (permData.data?.setting_value) {
           setSalesmanPermissions(JSON.parse(permData.data.setting_value));
         }
-      } catch (error) {
-        console.log('Salesman permissions not found, using defaults');
-      }
+      } catch { }
 
       // Fetch late charges
       try {
@@ -134,9 +128,7 @@ export default function SettingsPage() {
         if (lateData.data?.setting_value) {
           setLateCharges(lateData.data.setting_value);
         }
-      } catch (error) {
-        console.log('Late charges not found');
-      }
+      } catch { }
 
       // Fetch exchange charges
       try {
@@ -144,19 +136,17 @@ export default function SettingsPage() {
         if (exchangeData.data?.setting_value) {
           setExchangeCharges(exchangeData.data.setting_value);
         }
-      } catch (error) {
-        console.log('Exchange charges not found');
-      }
+      } catch { }
 
       // Fetch payment QR codes (rent + security)
       try {
         const rentQr = await settingsApi.getByKey('payment_qr_rent');
         if (rentQr.data?.setting_value) setRentQrCode(rentQr.data.setting_value);
-      } catch (error) { console.log('Rent QR not found'); }
+      } catch { }
       try {
         const secQr = await settingsApi.getByKey('payment_qr_security');
         if (secQr.data?.setting_value) setSecurityQrCode(secQr.data.setting_value);
-      } catch (error) { console.log('Security QR not found'); }
+      } catch { }
 
       // Fetch late fee policy from rental_policies table
       try {
@@ -166,9 +156,7 @@ export default function SettingsPage() {
           setLateFeePolicy(policy);
           setLateFeeValue(policy.value?.toString() || '200');
         }
-      } catch (error) {
-        console.log('Late fee policy not found, using defaults');
-      }
+      } catch { }
     } catch (error) {
       console.error('Error fetching settings:', error);
     } finally {

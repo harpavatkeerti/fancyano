@@ -9,6 +9,7 @@ import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
 
 export default function CustomerBookings() {
+  const { confirm, ConfirmDialog } = useConfirm();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,7 +134,6 @@ export default function CustomerBookings() {
       
       // If no customer is logged in, don't fetch bookings
       if (!customerName || customerName.trim() === '') {
-        console.log('⚠️ No customer logged in, waiting for login...');
         setLoading(false);
         return;
       }
@@ -150,25 +150,13 @@ export default function CustomerBookings() {
       };
       
       const normalizedCustomerName = normalizeName(customerName);
-      
-      console.log('🔍 Fetching bookings for customer:', customerName, '(normalized:', normalizedCustomerName + ')');
-      console.log('📦 Total bookings from API:', response.data.length);
-      
+
       // Filter bookings for this customer (match by customer_name in booking)
       const customerBookings = response.data.filter((booking: Booking) => {
         const bookingCustomerName = normalizeName(booking.customer_name);
-        const matches = normalizedCustomerName && bookingCustomerName && bookingCustomerName === normalizedCustomerName;
-        
-        console.log(`🔎 Checking booking ${booking.id}:`);
-        console.log(`   Booking customer_name: "${booking.customer_name}" (normalized: "${bookingCustomerName}")`);
-        console.log(`   Logged-in customer: "${customerName}" (normalized: "${normalizedCustomerName}")`);
-        console.log(`   Matches: ${matches ? '✅ YES' : '❌ NO'}`);
-        
-        return matches;
+        return normalizedCustomerName && bookingCustomerName && bookingCustomerName === normalizedCustomerName;
       });
-      
-      console.log('📋 Filtered customer bookings count:', customerBookings.length);
-      
+
       setBookings(customerBookings);
     } catch (error) {
       console.error('Error fetching bookings:', error);
@@ -181,17 +169,22 @@ export default function CustomerBookings() {
     e.preventDefault();
     e.stopPropagation();
     
-    if (!confirm('Are you sure you want to cancel this booking? This action cannot be undone.')) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: 'Cancel Booking',
+      message: 'Are you sure you want to cancel this booking? This action cannot be undone.',
+      confirmText: 'Cancel Booking',
+      cancelText: 'Keep Booking',
+      confirmColor: 'red',
+    });
+    if (!confirmed) return;
 
     try {
       await bookingsApi.delete(bookingId);
       await fetchBookings();
-      alert('✅ Booking cancelled successfully');
+      toast.success('Booking cancelled successfully');
     } catch (error) {
       console.error('Error deleting booking:', error);
-      alert('❌ Failed to cancel booking. Please try again.');
+      toast.error('Failed to cancel booking. Please try again.');
     }
   }
 
@@ -287,6 +280,7 @@ export default function CustomerBookings() {
   }
 
   return (
+    <>
     <div className="max-w-7xl mx-auto px-6 py-8">
       <h1 className="text-3xl font-bold text-gray-900 mb-8">My Bookings</h1>
       
@@ -477,6 +471,8 @@ export default function CustomerBookings() {
         </div>
       )}
     </div>
+    {ConfirmDialog}
+    </>
   );
 }
 

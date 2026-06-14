@@ -120,11 +120,6 @@ export default function ProductDetailPage() {
     // Check against items already in cart
     try {
       const cart = JSON.parse(localStorage.getItem('customer_cart') || '[]');
-      console.log('🔍 Checking cart for conflicts:', {
-        productId,
-        cartLength: cart.length,
-        requestedDates: { from: dateFrom, to: dateTo }
-      });
       
       for (const item of cart) {
         // Check if this cart item is for the same product
@@ -138,7 +133,6 @@ export default function ProductDetailPage() {
         const cartDateTo = item.dateTo || item.booked_to;
         
         if (!cartDateFrom || !cartDateTo) {
-          console.log('⚠️ Cart item missing dates:', item);
           continue;
         }
         
@@ -147,15 +141,8 @@ export default function ProductDetailPage() {
         cartFrom.setHours(0, 0, 0, 0);
         cartTo.setHours(0, 0, 0, 0);
         
-        console.log('🔍 Comparing dates:', {
-          requested: { from: fromDate.toISOString(), to: toDate.toISOString() },
-          cartItem: { from: cartFrom.toISOString(), to: cartTo.toISOString() },
-          overlap: fromDate <= cartTo && toDate >= cartFrom
-        });
-        
         // Check if dates overlap: fromDate <= cartTo && toDate >= cartFrom
         if (fromDate <= cartTo && toDate >= cartFrom) {
-          console.log('❌ Overlap detected!');
           return {
             available: false,
             conflictType: 'cart_item',
@@ -163,8 +150,6 @@ export default function ProductDetailPage() {
           };
         }
       }
-      
-      console.log('✅ No cart conflicts found');
     } catch (error) {
       console.error('Error checking cart:', error);
     }
@@ -311,7 +296,6 @@ export default function ProductDetailPage() {
     // Store timestamp when first product is added to cart
     if (isFirstItem) {
       localStorage.setItem('customer_cart_created_at', Date.now().toString());
-      console.log('🕐 Cart timer started:', new Date().toISOString());
     }
 
     // Dispatch event to update cart count in header

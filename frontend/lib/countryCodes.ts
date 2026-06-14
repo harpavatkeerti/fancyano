@@ -112,7 +112,6 @@ export function isValidPhoneNumber(phoneNumber: string, countryIsoCode: string):
   
   const isCorrectLength = digits.length >= expectedLength.min && digits.length <= expectedLength.max;
   if (!isCorrectLength) {
-    console.log('Length check failed:', digits.length, 'not between', expectedLength.min, 'and', expectedLength.max);
     return false;
   }
   
@@ -121,15 +120,12 @@ export function isValidPhoneNumber(phoneNumber: string, countryIsoCode: string):
     const parsed = parsePhoneNumber(digits, countryIsoCode as any);
     
     if (parsed && parsed.isValid()) {
-      console.log('✓ Valid phone number:', digits, 'for', countryIsoCode);
       return true;
     }
     
-    console.log('Library validation failed, but length is correct. Accepting as valid.');
     // If parsing fails but length is correct, accept it (be lenient)
     return true;
-  } catch (error) {
-    console.log('Parse error, but length is correct. Accepting as valid.', error);
+  } catch {
     // If there's an error but length matches, accept it (be lenient)
     return true;
   }

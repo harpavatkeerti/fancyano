@@ -44,7 +44,6 @@ export default function OrderDetailsPage() {
 
     try {
       const response = await bookingsApi.getPaymentSummary(Number(params.id));
-      console.log('📊 Payment Summary:', response.data);
       setPaymentSummary(response.data);
     } catch (error) {
       console.error('Error fetching payment summary:', error);

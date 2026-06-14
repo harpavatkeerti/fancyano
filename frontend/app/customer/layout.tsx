@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { useState, useEffect, useRef } from 'react';
 import { productsApi } from '@/lib/api';
 import { ToastContainer } from '@/components/common';
+import { toast } from '@/lib/toast';
 
 export default function CustomerLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -65,7 +66,7 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
   
   function handleLogin() {
     if (!tempName || tempName.trim() === '') {
-      alert('Please enter your name');
+      toast.error('Please enter your name');
       return;
     }
     
@@ -86,25 +87,19 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
     
     setCustomerName(name);
     setShowLoginModal(false);
-    
-    console.log('✅ Customer logged in:', name);
-    
+
     // Reload page to ensure all components get the updated localStorage
     window.location.reload();
   }
   
   function handleLogout() {
-    if (confirm('Are you sure you want to logout? Your cart will be cleared.')) {
-      // Clear customer localStorage
-      localStorage.removeItem('customer_name');
-      localStorage.removeItem('customer_email');
-      localStorage.removeItem('customer_user');
-      localStorage.removeItem('customer_cart');
-      localStorage.removeItem('customer_cart_created_at');
-      
-      // Reload page to show login modal
-      window.location.reload();
-    }
+    // Clear customer localStorage and reload
+    localStorage.removeItem('customer_name');
+    localStorage.removeItem('customer_email');
+    localStorage.removeItem('customer_user');
+    localStorage.removeItem('customer_cart');
+    localStorage.removeItem('customer_cart_created_at');
+    window.location.reload();
   }
 
   // Update cart count when pathname changes (user navigates)
@@ -125,7 +120,6 @@ export default function CustomerLayout({ children }: { children: React.ReactNode
       const elapsedMinutes = (now - createdAt) / (1000 * 60);
 
       if (elapsedMinutes >= 5) {
-        console.log('⏰ Cart expired (5 minutes passed), clearing cart...');
         localStorage.removeItem('customer_cart');
         localStorage.removeItem('customer_cart_created_at');
         updateCartCount();
