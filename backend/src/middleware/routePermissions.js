@@ -19,11 +19,9 @@ const routePermissions = {
   // Routes not listed here default to: any authenticated user
   routes: {
     '/api/users':        ['admin'],
-    '/api/settings':     ['admin'],
     '/api/policies':     ['admin'],
     '/api/credit-notes': ['admin'],
     '/api/setup':        ['admin'],
-    '/api/auto-cancel':  ['admin'],
     // Add more role-restricted routes as needed — one-line change to modify access
   },
 
@@ -36,7 +34,6 @@ const routePermissions = {
     '/api/policies':            'policies',
     '/api/credit-notes':        'creditNotes',
     '/api/setup':               'setup',
-    '/api/auto-cancel':         'autoCancelBookings',
     // Shared (any authenticated user)
     '/api/products':            'products',
     '/api/bookings':            'bookings',

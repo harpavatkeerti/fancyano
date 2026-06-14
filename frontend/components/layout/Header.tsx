@@ -1,20 +1,21 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/authContext';
+import { LOGO_PATH } from '@/lib/brand';
+import { getHomeRoute } from '@/lib/routePermissions';
 
 // Nav items per role — all hrefs use flat routes
+// Admin: show shared/user-facing nav in header; admin-management links live in the sidebar.
+// Salesman/Customer: full nav in header (no sidebar).
 const NAV_ITEMS = {
   admin: [
-    { name: 'Dashboard',          href: '/dashboard'          },
-    { name: 'Inventory',          href: '/inventory'          },
-    { name: 'Bookings',           href: '/bookings'           },
-    { name: 'Credit Notes',       href: '/credit-notes'       },
-    { name: 'Users',              href: '/users'              },
+    { name: 'Home',               href: '/home'               },
+    { name: 'Products',           href: '/products'           },
+    { name: 'Cart',               href: '/cart'               },
     { name: 'Complaints',         href: '/complaints'         },
-    { name: 'Reports',            href: '/reports'            },
-    { name: 'Settings',           href: '/settings'           },
   ],
   salesman: [
     { name: 'Home',               href: '/home'               },
@@ -49,18 +50,18 @@ export default function Header() {
   }
 
   return (
-    <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
-      <div className="max-w-screen-2xl mx-auto px-6 py-3 flex items-center justify-between">
-        {/* Logo */}
-        <Link href={role === 'admin' ? '/dashboard' : '/home'} className="flex items-center gap-2 shrink-0">
-          <div className="bg-red-600 text-white px-3 py-1 font-bold text-lg">
-            FAN-C-YA-NO
-          </div>
-          <span className="text-xs text-gray-500 hidden sm:block">Wedding Dress Rental</span>
+    <header className="bg-white border-b border-gray-200 sticky top-0 z-50 h-16">
+      <div className="flex items-center h-full">
+        {/* Logo — w-64 flush left, no padding, aligns with sidebar below for admin */}
+        <Link
+          href={getHomeRoute(role)}
+          className="flex items-center justify-center shrink-0 h-full w-64 border-r border-gray-200"
+        >
+          <Image src={LOGO_PATH} alt="Fancyano" width={200} height={56} className="object-contain h-14 w-auto" />
         </Link>
 
         {/* Nav links */}
-        <nav className="flex items-center gap-6">
+        <nav className="flex items-center justify-center gap-6 px-6 flex-1">
           {navItems.map((item) => {
             const isActive = pathname === item.href || pathname?.startsWith(item.href + '/');
             return (
@@ -81,7 +82,7 @@ export default function Header() {
 
         {/* User info + logout */}
         {auth.user && (
-          <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-200">
+          <div className="flex items-center gap-3 pr-6 pl-4 border-l border-gray-200">
             <div className="w-8 h-8 rounded-full bg-red-600 flex items-center justify-center text-white font-semibold text-sm shrink-0">
               {auth.user.name.charAt(0).toUpperCase()}
             </div>

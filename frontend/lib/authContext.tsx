@@ -41,6 +41,7 @@ interface AuthContextValue extends AuthState {
   isSalesman: boolean;
   isCustomer: boolean;
   isAuthenticated: boolean;
+  isInitialised: boolean; // true after first client-side localStorage read
   hasRole: (...roles: string[]) => boolean;
   login: (payload: LoginPayload) => void;
   logout: () => void;
@@ -82,12 +83,17 @@ function clearStorage() {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  // Initial state is null to match SSR (no localStorage on server).
+  // isInitialised becomes true after the first client-side mount reads storage.
+  // Redirect logic in pages/layouts must wait for isInitialised before acting.
   const [auth, setAuth] = useState<AuthState>({ user: null, token: null, expiresAt: null });
+  const [isInitialised, setIsInitialised] = useState(false);
   const router = useRouter();
 
-  // Read from localStorage on mount + set up API interceptors
+  // Read localStorage + set up API interceptors after mount (client only)
   useEffect(() => {
     setAuth(readFromStorage());
+    setIsInitialised(true);
     setupApiInterceptors(() => {
       // Called by interceptor when any API returns 401
       clearStorage();
@@ -140,6 +146,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const value: AuthContextValue = {
     ...auth,
     isAuthenticated: !!auth.user && !!auth.token,
+    isInitialised,
     isAdmin: auth.user?.role === 'admin',
     isSalesman: auth.user?.role === 'salesman',
     isCustomer: auth.user?.role === 'customer',

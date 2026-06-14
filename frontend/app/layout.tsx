@@ -2,9 +2,11 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { AuthProvider } from '@/lib/authContext'
 
+import { BRAND_NAME } from '@/lib/brand'
+
 export const metadata: Metadata = {
-  title: 'FAN-C-YA-NO',
-  description: 'Manage your rental store bookings',
+  title: BRAND_NAME,
+  description: 'Wedding Rentals',
 }
 
 export default function RootLayout({

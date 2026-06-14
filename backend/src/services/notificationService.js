@@ -1,6 +1,7 @@
 const nodemailer = require('nodemailer');
 const path = require('path');
 const fs = require('fs');
+const { BRAND_NAME } = require('../config/brand');
 
 /**
  * NotificationService - Manages email and WhatsApp notifications
@@ -67,7 +68,7 @@ class NotificationService {
                        : 'Tax Invoice';
     
     const mailOptions = {
-      from: `"Fancyano" <${emailConfig.auth.user}>`,
+      from: `"${BRAND_NAME}" <${emailConfig.auth.user}>`,
       to: customerEmail,
       subject: `${documentName} for Booking #${bookingId}`,
       text: `Hi ${customerName},\n\nPlease find your ${documentName} for booking #${bookingId} attached.\n\nThank you!`,

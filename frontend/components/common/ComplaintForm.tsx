@@ -59,15 +59,8 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
         {/* Modal Content */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Raised by
-            </label>
-            <input
-              type="text"
-              value={formData.raised_by}
-              disabled
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 cursor-not-allowed"
-            />
+            <p className="text-sm font-medium text-gray-500">Raised by</p>
+            <p className="text-sm text-gray-900 mt-0.5">{formData.raised_by}</p>
           </div>
 
           {bookingId && (

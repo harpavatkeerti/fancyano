@@ -3,6 +3,7 @@ const router = express.Router();
 const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
+const checkSalesmanPermission = require('../middleware/checkSalesmanPermission');
 
 // GET exchange eligibility check for a booking product
 router.get('/eligibility/:booking_product_id', async (req, res) => {
@@ -47,8 +48,8 @@ router.get('/preview/:old_booking_product_id', async (req, res) => {
   }
 });
 
-// POST exchange product(s) in a booking
-router.post('/', async (req, res) => {
+// POST exchange product(s) in a booking — salesman requires exchange_allowed permission
+router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) => {
   try {
     const {
       old_booking_product_id,

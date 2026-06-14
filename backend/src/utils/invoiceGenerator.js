@@ -6,6 +6,7 @@
 const PDFDocument = require('pdfkit');
 const fs = require('fs');
 const path = require('path');
+const { LOGO_PATH } = require('../config/brand');
 
 class InvoiceGenerator {
   /**
@@ -18,14 +19,11 @@ class InvoiceGenerator {
       
       doc.pipe(stream);
 
-      // Header with Logo - Compact layout
-      doc.fontSize(18).font('Helvetica-Bold')
-        .fillColor('#FF0000')
-        .text('FAN-C-YA-NO', 50, 40);
-      
+      // Header with Logo
+      doc.image(LOGO_PATH, 50, 30, { width: 120, height: 40, fit: [120, 40] });
+
       doc.fontSize(9).font('Helvetica')
         .fillColor('#000000')
-        .text('Wedding Dress Rental', 50, 60)
         .text('23, 1st Floor, Shobhagapura, Main 100 Feet Road,', 50, 72)
         .text('Near SBI Bank, Udaipur (Raj.), 313001', 50, 84);
 

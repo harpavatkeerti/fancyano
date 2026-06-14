@@ -19,22 +19,23 @@ import AppLayout from '@/components/layout/AppLayout';
  * only reads that state and enforces access. It does NOT manage login itself.
  */
 export default function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, isAuthenticated, isInitialised } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
 
   const canAccess = isAuthenticated && isAllowed(pathname, user?.role);
 
   useEffect(() => {
+    if (!isInitialised) return; // wait until localStorage has been read
     if (!isAuthenticated) {
       router.replace('/login');
     } else if (!canAccess) {
       router.replace(getHomeRoute(user?.role));
     }
-  }, [isAuthenticated, canAccess, user, pathname, router]);
+  }, [isInitialised, isAuthenticated, canAccess, user, pathname, router]);
 
-  // Return null while redirecting to prevent flash of content
-  if (!canAccess) return null;
+  // Render nothing until auth state is known (avoids SSR/CSR mismatch)
+  if (!isInitialised || !canAccess) return null;
 
   return <AppLayout>{children}</AppLayout>;
 }

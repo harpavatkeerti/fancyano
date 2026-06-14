@@ -3,7 +3,7 @@
 > **Plan**: [PLAN_auth.md](file:///c:/Users/User/Documents/app/PLAN_auth.md)
 > **Last updated**: 2026-06-14
 > **Last updated by**: Agent
-> **Current step**: Awaiting user approval to start
+> **Current step**: Step 7 complete — awaiting user instruction for Step 8
 
 ---
 
@@ -15,9 +15,9 @@
 | Step 2: Backend — Protect routes by role | `[x]` Complete |
 | Step 3: Frontend — AuthProvider, useAuth, Login page, API interceptor | `[x]` Complete |
 | Step 4: Frontend — Unified layout with role-based navigation | `[x]` Complete |
-| Step 5: Route migration — Move admin pages to flat routes | `[ ]` Not started |
-| Step 6: Unified booking detail page (admin + salesman) | `[ ]` Not started |
-| Step 7: Move remaining salesman & customer pages | `[ ]` Not started |
+| Step 5: Route migration — Move admin pages to flat routes | `[x]` Complete |
+| Step 6: Unified booking detail page (admin + salesman) | `[x]` Complete |
+| Step 7: Move remaining salesman & customer pages | `[x]` Complete |
 | Step 8: Cleanup — Remove old route trees & legacy auth | `[ ]` Not started |
 
 ---
@@ -54,9 +54,9 @@
 | 2 | Backend — Apply centralized route permission config to `server.js`, protect role-restricted routes, inline role checks in `bookings.js`, bcrypt in `users.js` (create/update user with password) | `[x]` | Agent | 2026-06-13 | — |
 | 3 | Frontend — `AuthProvider` context, `RequireRole` component, `routePermissions.ts`, updated `authApi.ts`, API interceptor, `/login` page (role-based redirect), wrap `layout.tsx` | `[x]` | Agent | 2026-06-13 | TypeScript clean |
 | 4 | Frontend — Sidebar (admin-only, flat routes, useAuth), Header top bar (all roles, role-based nav, auth.logout), `AppLayout.tsx` (no login modal/localStorage), `(authenticated)/layout.tsx` (route permission check) | `[x]` | Agent | 2026-06-14 | TypeScript clean |
-| 5 | Route migration — Move admin pages (`/dashboard`, `/inventory`, `/bookings`, `/credit-notes`, `/users`, `/complaints`, `/reports`, `/settings`) to flat routes under `(authenticated)/` | `[ ]` | — | — | — |
-| 6 | Unified booking detail — Create shared `/bookings/[id]/page.tsx` from salesman order-details, add admin-only features with `RequireRole`, delete old pages | `[ ]` | — | — | — |
-| 7 | Move remaining — Salesman home → `/home`, products, cart, my-bookings, customer-bookings, complaints; Customer pages merged | `[ ]` | — | — | — |
+| 5 | Route migration — Move admin pages (`/dashboard`, `/inventory`, `/bookings`, `/bookings/[id]`, `/credit-notes`, `/users`, `/complaints`, `/reports`, `/settings`) to flat routes under `(authenticated)/`. Fixed internal links in moved pages and in `ProductTrackingModal.tsx`. | `[x]` | Agent | 2026-06-14 | TypeScript clean |
+| 6 | Unified booking detail — `(authenticated)/bookings/[id]/page.tsx` based on salesman page. `useAuth()` replaces localStorage `userName`. `auth.user?.role` drives product list filter (admin sees all, salesman/customer filtered). Document buttons wrapped in `<RequireRole roles={['admin']}>`. `userRole` props pass actual role. `recorded_by` uses `auth.user?.name`. | `[x]` | Agent | 2026-06-14 | TypeScript clean |
+| 7 | Moved `/home`, `/products`, `/cart`, `/my-bookings`, `/customer-bookings` to flat routes using salesman versions as base (richer). `/complaints` already correct from Step 5. No internal link fixes needed. `routePermissions.ts` confirmed all new routes are unlisted (= any authenticated user). | `[x]` | Agent | 2026-06-14 | TypeScript clean |
 | 8 | Cleanup — Delete `/admin/`, `/salesman/`, `/customer/` dirs, old home page, legacy localStorage keys, old layouts | `[ ]` | — | — | — |
 
 ### Status Legend

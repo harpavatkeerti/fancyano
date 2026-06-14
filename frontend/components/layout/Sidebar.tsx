@@ -23,13 +23,7 @@ export default function Sidebar() {
   if (!isAdmin) return null;
 
   return (
-    <div className="w-64 bg-white h-screen fixed left-0 top-0 shadow-lg z-40">
-      <div className="p-6 border-b">
-        <div className="bg-red-600 text-white px-3 py-1 font-bold text-lg inline-block mb-1">
-          FAN-C-YA-NO
-        </div>
-        <p className="text-sm text-gray-500">Wedding Dress Rental</p>
-      </div>
+    <div className="w-64 bg-white h-screen fixed left-0 top-0 shadow-lg z-40 pt-16 border-r border-gray-200">
       <nav className="p-4">
         <ul className="space-y-2">
           {adminMenuItems.map((item) => {

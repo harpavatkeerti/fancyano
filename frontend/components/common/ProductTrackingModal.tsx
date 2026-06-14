@@ -259,7 +259,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
                 </p>
                 {currentRecord?.booking_ref_id && (
                   <a
-                    href={`/admin/bookings/${currentRecord.booking_ref_id}`}
+                    href={`/bookings/${currentRecord.booking_ref_id}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"

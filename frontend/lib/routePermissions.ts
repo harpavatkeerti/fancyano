@@ -51,9 +51,11 @@ export function getHomeRoute(role: Role | null | undefined): string {
 export function isAllowed(path: string, role: Role | null | undefined): boolean {
   if (!role) return false;
 
-  // Check exact match first, then prefix match
+  // Exact match only — prefix matching caused /bookings/[id] to incorrectly
+  // inherit the /bookings admin-only rule. Each route must be listed explicitly
+  // if its sub-paths also need restriction.
   for (const [routePath, allowedRoles] of Object.entries(routePermissions.routes)) {
-    if (path === routePath || path.startsWith(routePath + '/')) {
+    if (path === routePath) {
       return allowedRoles.includes(role);
     }
   }
@@ -61,3 +63,4 @@ export function isAllowed(path: string, role: Role | null | undefined): boolean 
   // Not listed → any authenticated user is allowed
   return true;
 }
+

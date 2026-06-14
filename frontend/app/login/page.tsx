@@ -2,9 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { useAuth } from '@/lib/authContext';
 import { authApi } from '@/lib/authApi';
 import { getHomeRoute } from '@/lib/routePermissions';
+import { LOGO_PATH } from '@/lib/brand';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -32,8 +34,6 @@ export default function LoginPage() {
       const { token, user: loggedInUser, expiresAt } = response.data;
 
       login({ user: loggedInUser, token, expiresAt });
-
-      // Redirect based on role
       router.replace(getHomeRoute(loggedInUser.role));
     } catch (err: any) {
       const message = err.response?.data?.error || 'Login failed. Please try again.';
@@ -44,54 +44,28 @@ export default function LoginPage() {
   }
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      background: 'linear-gradient(135deg, #0f0c29, #302b63, #24243e)',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontFamily: "'Inter', 'Segoe UI', sans-serif",
-    }}>
-      <div style={{
-        background: 'rgba(255,255,255,0.05)',
-        backdropFilter: 'blur(20px)',
-        border: '1px solid rgba(255,255,255,0.1)',
-        borderRadius: '24px',
-        padding: '48px',
-        width: '100%',
-        maxWidth: '420px',
-        boxShadow: '0 25px 50px rgba(0,0,0,0.4)',
-      }}>
+    <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="bg-white border border-gray-200 rounded-2xl shadow-sm w-full max-w-sm p-8">
+
         {/* Logo */}
-        <div style={{ textAlign: 'center', marginBottom: '36px' }}>
-          <div style={{
-            fontSize: '32px',
-            fontWeight: 800,
-            letterSpacing: '0.15em',
-            background: 'linear-gradient(90deg, #a78bfa, #60a5fa)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            marginBottom: '8px',
-          }}>
-            FAN-C-YA-NO
-          </div>
-          <p style={{ color: 'rgba(255,255,255,0.45)', fontSize: '14px', margin: 0 }}>
-            Sign in to continue
-          </p>
+        <div className="flex justify-center mb-8">
+          <Image
+            src={LOGO_PATH}
+            alt="Fancyano"
+            width={160}
+            height={48}
+            className="object-contain h-14 w-auto"
+          />
         </div>
 
-        <form onSubmit={handleSubmit}>
+        <h1 className="text-xl font-bold text-gray-900 mb-1">Sign in</h1>
+        <p className="text-sm text-gray-500 mb-6">Enter your credentials to continue</p>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
           {/* Username */}
-          <div style={{ marginBottom: '20px' }}>
-            <label style={{
-              display: 'block',
-              color: 'rgba(255,255,255,0.7)',
-              fontSize: '13px',
-              fontWeight: 500,
-              marginBottom: '8px',
-              letterSpacing: '0.05em',
-            }}>
-              USERNAME
+          <div>
+            <label htmlFor="login-username" className="block text-sm font-medium text-gray-700 mb-1">
+              Username
             </label>
             <input
               id="login-username"
@@ -101,34 +75,14 @@ export default function LoginPage() {
               required
               autoFocus
               placeholder="Enter your username"
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                background: 'rgba(255,255,255,0.08)',
-                border: '1px solid rgba(255,255,255,0.15)',
-                borderRadius: '12px',
-                color: '#fff',
-                fontSize: '15px',
-                outline: 'none',
-                boxSizing: 'border-box',
-                transition: 'border-color 0.2s',
-              }}
-              onFocus={e => e.target.style.borderColor = 'rgba(167,139,250,0.6)'}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.15)'}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-colors"
             />
           </div>
 
           {/* Password */}
-          <div style={{ marginBottom: '28px' }}>
-            <label style={{
-              display: 'block',
-              color: 'rgba(255,255,255,0.7)',
-              fontSize: '13px',
-              fontWeight: 500,
-              marginBottom: '8px',
-              letterSpacing: '0.05em',
-            }}>
-              PASSWORD
+          <div>
+            <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1">
+              Password
             </label>
             <input
               id="login-password"
@@ -137,34 +91,13 @@ export default function LoginPage() {
               onChange={e => setPassword(e.target.value)}
               required
               placeholder="Enter your password"
-              style={{
-                width: '100%',
-                padding: '12px 16px',
-                background: 'rgba(255,255,255,0.08)',
-                border: '1px solid rgba(255,255,255,0.15)',
-                borderRadius: '12px',
-                color: '#fff',
-                fontSize: '15px',
-                outline: 'none',
-                boxSizing: 'border-box',
-                transition: 'border-color 0.2s',
-              }}
-              onFocus={e => e.target.style.borderColor = 'rgba(167,139,250,0.6)'}
-              onBlur={e => e.target.style.borderColor = 'rgba(255,255,255,0.15)'}
+              className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-colors"
             />
           </div>
 
-          {/* Error message */}
+          {/* Error */}
           {error && (
-            <div style={{
-              background: 'rgba(239,68,68,0.15)',
-              border: '1px solid rgba(239,68,68,0.3)',
-              borderRadius: '10px',
-              padding: '12px 16px',
-              color: '#fca5a5',
-              fontSize: '14px',
-              marginBottom: '20px',
-            }}>
+            <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-sm text-red-700">
               {error}
             </div>
           )}
@@ -174,23 +107,7 @@ export default function LoginPage() {
             id="login-submit"
             type="submit"
             disabled={loading}
-            style={{
-              width: '100%',
-              padding: '14px',
-              background: loading
-                ? 'rgba(167,139,250,0.4)'
-                : 'linear-gradient(135deg, #a78bfa, #60a5fa)',
-              border: 'none',
-              borderRadius: '12px',
-              color: '#fff',
-              fontSize: '15px',
-              fontWeight: 600,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              transition: 'opacity 0.2s, transform 0.1s',
-              letterSpacing: '0.03em',
-            }}
-            onMouseEnter={e => { if (!loading) (e.target as HTMLButtonElement).style.opacity = '0.9'; }}
-            onMouseLeave={e => { (e.target as HTMLButtonElement).style.opacity = '1'; }}
+            className="w-full bg-red-600 hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2.5 rounded-lg text-sm transition-colors mt-2"
           >
             {loading ? 'Signing in…' : 'Sign In'}
           </button>

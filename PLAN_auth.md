@@ -200,7 +200,36 @@ New route structure:
 
 ---
 
+## Coding Conventions
+
+### Auth access inside `(authenticated)/` pages
+
+Any page file under `app/(authenticated)/` is guaranteed to have an authenticated user — the layout redirects to `/login` before the component renders if `auth.user` is null.
+
+**Correct pattern** — early-return guard so TypeScript narrows the type naturally:
+
+```tsx
+const auth = useAuth();
+if (!auth.user) return null; // unreachable in practice; satisfies TypeScript narrowing
+const currentUser = auth.user; // type: User (not User | null)
+const userName    = currentUser.name;  // ✅ direct access, no fallback
+const role        = currentUser.role;  // ✅
+```
+
+**Never** use defensive fallbacks inside authenticated pages — they hide real bugs and contradict the layout guarantee:
+
+```tsx
+auth.user?.name ?? 'Staff'     // ❌
+auth.user!.name                // ❌ non-null assertion bypasses TypeScript
+auth.user?.role ?? 'salesman'  // ❌ silently sets wrong role
+```
+
+**Components outside `(authenticated)/`** (e.g. `Header.tsx`, `Sidebar.tsx`, `AppLayout.tsx`) legitimately use `auth.user?.x` because they render in contexts where auth state is not guaranteed.
+
+---
+
 ## Step 1: Backend — JWT Auth Infrastructure
+
 
 **Priority**: Critical
 **Estimated scope**: Medium (5 files)

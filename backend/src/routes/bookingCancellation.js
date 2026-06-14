@@ -3,6 +3,7 @@ const router = express.Router();
 const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
+const checkSalesmanPermission = require('../middleware/checkSalesmanPermission');
 
 // GET cancellation preview for a booking (all cancellable products with penalties & financials)
 router.get('/preview/:bookingId', async (req, res) => {
@@ -24,8 +25,8 @@ router.get('/preview/:bookingId', async (req, res) => {
 });
 
 // POST calculate cancellation summary for selected products (live preview)
-// Frontend sends selection + penalty overrides + extra refund, backend returns all computed values
-router.post('/calculate-summary', async (req, res) => {
+// Salesman requires cancellation_allowed permission (this is part of the cancel flow)
+router.post('/calculate-summary', checkSalesmanPermission('cancellation_allowed'), async (req, res) => {
   try {
     const {
       booking_id,
@@ -73,8 +74,8 @@ router.get('/info/:booking_product_id', async (req, res) => {
   }
 });
 
-// POST cancel product(s) in a booking
-router.post('/', async (req, res) => {
+// POST cancel product(s) in a booking — salesman requires cancellation_allowed permission
+router.post('/', checkSalesmanPermission('cancellation_allowed'), async (req, res) => {
   try {
     const {
       booking_product_ids, // Array of booking_product IDs to cancel

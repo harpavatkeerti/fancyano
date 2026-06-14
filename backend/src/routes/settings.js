@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const settingsService = require('../services/settingsService');
+const requireRole = require('../middleware/requireRole');
 
 // Get all settings
 router.get('/', async (req, res) => {
@@ -42,8 +43,8 @@ router.get('/category/:category', async (req, res) => {
   }
 });
 
-// Update setting
-router.put('/:key', async (req, res) => {
+// Update setting — admin only
+router.put('/:key', requireRole('admin'), async (req, res) => {
   try {
     const { key } = req.params;
     const { setting_value, description } = req.body;
@@ -61,8 +62,8 @@ router.put('/:key', async (req, res) => {
   }
 });
 
-// Create new setting
-router.post('/', async (req, res) => {
+// Create new setting — admin only
+router.post('/', requireRole('admin'), async (req, res) => {
   try {
     const { setting_key, setting_value, setting_type, description, category } = req.body;
     
@@ -80,8 +81,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// Delete setting
-router.delete('/:key', async (req, res) => {
+// Delete setting — admin only
+router.delete('/:key', requireRole('admin'), async (req, res) => {
   try {
     const { key } = req.params;
     
