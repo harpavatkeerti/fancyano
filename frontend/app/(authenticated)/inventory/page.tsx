@@ -259,12 +259,13 @@ export default function InventoryPage() {
       return matchesSearch && matchesProductType && matchesCategory && matchesSize && matchesTrackingStatus && matchesStatus;
     })
     .sort((a, b) => {
-      // Sort: out-of-house products first, then by name
+      // Sort: out-of-house products first, then by newest product (highest id = newest)
       const aOut = a.tracking_status && a.tracking_status !== 'in_house';
       const bOut = b.tracking_status && b.tracking_status !== 'in_house';
       if (aOut && !bOut) return -1;
       if (!aOut && bOut) return 1;
-      return a.name.localeCompare(b.name);
+      // Use id as reliable newest-first sort (auto-increment, higher = newer)
+      return b.id - a.id;
     });
 
   if (loading) {

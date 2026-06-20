@@ -56,7 +56,7 @@ class ProductService {
       params.push(category);
     }
 
-    query += ' ORDER BY p.created_at DESC';
+    query += ' ORDER BY p.id DESC';
 
     const result = await pool.query(query, params);
     return result.rows.map(product => this._parseProductImages(product));
