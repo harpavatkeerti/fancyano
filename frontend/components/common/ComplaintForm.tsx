@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { complaintsApi, CreateComplaintData } from '@/lib/api';
+import { useState, useEffect, useRef } from 'react';
+import { complaintsApi, bookingsApi, CreateComplaintData } from '@/lib/api';
 import { toast } from '@/lib/toast';
 
 interface ComplaintFormProps {
@@ -20,9 +20,70 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
   });
   const [submitting, setSubmitting] = useState(false);
 
+  // Booking search state (only used when bookingId is not pre-provided)
+  const [bookings, setBookings] = useState<any[]>([]);
+  const [bookingSearch, setBookingSearch] = useState('');
+  const [loadingBookings, setLoadingBookings] = useState(false);
+  const [bookingError, setBookingError] = useState('');
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedBookingLabel, setSelectedBookingLabel] = useState('');
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!bookingId) {
+      setLoadingBookings(true);
+      setBookingError('');
+      bookingsApi
+        .getAll()
+        .then((res) => {
+          const data = Array.isArray(res.data) ? res.data : [];
+          console.log('[ComplaintForm] Loaded bookings:', data.length);
+          setBookings(data);
+        })
+        .catch((err) => {
+          console.error('[ComplaintForm] Failed to load bookings:', err);
+          setBookingError('Could not load bookings. Enter the Booking ID manually below.');
+        })
+        .finally(() => setLoadingBookings(false));
+    }
+  }, [bookingId]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const q = bookingSearch.toLowerCase().trim();
+  const filteredBookings = q
+    ? bookings.filter(
+        (b) =>
+          String(b.id).includes(q) ||
+          (b.customer_name || '').toLowerCase().includes(q) ||
+          (b.customer_phone || '').toLowerCase().includes(q)
+      )
+    : bookings;
+
+  const handleSelectBooking = (b: any) => {
+    setFormData({ ...formData, booking_id: b.id });
+    setSelectedBookingLabel(`#${b.id} · ${b.customer_name}${b.customer_phone ? ` · ${b.customer_phone}` : ''}`);
+    setBookingSearch('');
+    setShowDropdown(false);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
+    if (!formData.booking_id) {
+      toast.error('Please select an associated booking');
+      return;
+    }
+
     if (!formData.title.trim()) {
       toast.error('Please enter a title');
       return;
@@ -63,10 +124,11 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
             <p className="text-sm text-gray-900 mt-0.5">{formData.raised_by}</p>
           </div>
 
-          {bookingId && (
+          {/* Booking ID */}
+          {bookingId ? (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Booking ID
+                Booking ID*
               </label>
               <input
                 type="text"
@@ -74,6 +136,79 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
                 disabled
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-gray-100 cursor-not-allowed"
               />
+            </div>
+          ) : (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Associated Booking*
+              </label>
+
+              {/* Selected booking pill */}
+              {formData.booking_id && (
+                <div className="mb-2 flex items-center gap-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg">
+                  <span className="text-sm font-semibold text-red-700">{selectedBookingLabel}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormData({ ...formData, booking_id: undefined });
+                      setSelectedBookingLabel('');
+                    }}
+                    className="ml-auto text-red-400 hover:text-red-600 text-lg leading-none"
+                    title="Clear selection"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
+              {!formData.booking_id && (
+                <div ref={dropdownRef} className="relative">
+                  <input
+                    type="text"
+                    value={bookingSearch}
+                    onChange={(e) => {
+                      setBookingSearch(e.target.value);
+                      setShowDropdown(true);
+                    }}
+                    onFocus={() => setShowDropdown(true)}
+                    placeholder={
+                      loadingBookings
+                        ? 'Loading bookings…'
+                        : 'Search by booking ID, customer name or phone…'
+                    }
+                    disabled={loadingBookings}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  />
+
+                  {showDropdown && !loadingBookings && (
+                    <div className="absolute z-30 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-56 overflow-y-auto">
+                      {filteredBookings.length === 0 ? (
+                        <p className="px-4 py-3 text-sm text-gray-400">
+                          {bookingError || (q ? 'No bookings match your search.' : 'No bookings found.')}
+                        </p>
+                      ) : (
+                        filteredBookings.map((b) => (
+                          <button
+                            key={b.id}
+                            type="button"
+                            onClick={() => handleSelectBooking(b)}
+                            className="w-full text-left px-4 py-2.5 text-sm hover:bg-red-50 transition-colors border-b border-gray-100 last:border-0"
+                          >
+                            <span className="font-semibold text-red-700 mr-2">#{b.id}</span>
+                            <span className="text-gray-800">{b.customer_name}</span>
+                            {b.customer_phone && (
+                              <span className="text-gray-500 ml-2">{b.customer_phone}</span>
+                            )}
+                            {b.status && (
+                              <span className="ml-2 text-xs text-gray-400 capitalize">[{b.status.replace('_', ' ')}]</span>
+                            )}
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
@@ -126,4 +261,3 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
     </div>
   );
 }
-

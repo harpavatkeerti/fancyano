@@ -208,6 +208,7 @@ export default function ComplaintsPage() {
       case 'description': return (item.description || '').toLowerCase();
       case 'status':      return (item.status || '').toLowerCase();
       case 'rating':      return item.rating ?? 0;
+      case 'bookingId':   return item.booking_id ?? 0;
       default:            return '';
     }
   };
@@ -231,7 +232,8 @@ export default function ComplaintsPage() {
       const matchSearch = !q ||
         (c.raised_by || '').toLowerCase().includes(q) ||
         (c.title || '').toLowerCase().includes(q) ||
-        (c.description || '').toLowerCase().includes(q);
+        (c.description || '').toLowerCase().includes(q) ||
+        String(c.booking_id ?? '').includes(q);
       const matchRaisedBy = filterRaisedBy.length === 0 || filterRaisedBy.includes(c.raised_by || '');
       const matchStatus   = filterStatus.length === 0   || filterStatus.includes(c.status || '');
       return matchSearch && matchRaisedBy && matchStatus;
@@ -242,7 +244,8 @@ export default function ComplaintsPage() {
     feedback.filter(f => {
       const matchSearch = !q ||
         (f.feedback_by || '').toLowerCase().includes(q) ||
-        (f.description || '').toLowerCase().includes(q);
+        (f.description || '').toLowerCase().includes(q) ||
+        String(f.booking_id ?? '').includes(q);
       const matchRaisedBy = filterRaisedBy.length === 0 || filterRaisedBy.includes(f.feedback_by || '');
       return matchSearch && matchRaisedBy;
     })
@@ -473,6 +476,9 @@ export default function ComplaintsPage() {
                         <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('raisedOn')}>
                           Raised on {getSortIcon('raisedOn')}
                         </th>
+                        <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('bookingId')}>
+                          Booking ID {getSortIcon('bookingId')}
+                        </th>
                         <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('title')}>
                           Title {getSortIcon('title')}
                         </th>
@@ -492,6 +498,9 @@ export default function ComplaintsPage() {
                         <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('date')}>
                           Date {getSortIcon('date')}
                         </th>
+                        <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('bookingId')}>
+                          Booking ID {getSortIcon('bookingId')}
+                        </th>
                         <th className="px-4 py-3 text-left text-black font-bold cursor-pointer hover:bg-red-200 transition-colors" onClick={() => handleSort('rating')}>
                           Rating {getSortIcon('rating')}
                         </th>
@@ -508,7 +517,7 @@ export default function ComplaintsPage() {
                   {activeTab === 'complaints' && (
                     filteredComplaints.length === 0 ? (
                       <tr>
-                        <td colSpan={7} className="px-4 py-12 text-center text-gray-400">No complaints match your search or filters.</td>
+                        <td colSpan={8} className="px-4 py-12 text-center text-gray-400">No complaints match your search or filters.</td>
                       </tr>
                     ) : filteredComplaints.map((complaint: any) => (
                       <tr key={complaint.id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors">
@@ -517,6 +526,11 @@ export default function ComplaintsPage() {
                         </td>
                         <td className="px-4 py-4 text-sm text-gray-900">{complaint.raised_by}</td>
                         <td className="px-4 py-4 text-sm text-gray-900 whitespace-nowrap">{formatDate(complaint.created_at)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">
+                          {complaint.booking_id
+                            ? <a href={`/bookings/${complaint.booking_id}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-2 py-0.5 rounded bg-red-50 text-red-700 font-mono text-xs font-semibold hover:bg-red-100 hover:underline">#{complaint.booking_id}</a>
+                            : <span className="text-gray-400">—</span>}
+                        </td>
                         <td className="px-4 py-4 text-sm font-medium text-gray-900">{complaint.title}</td>
                         <td className="px-4 py-4 text-sm text-gray-600 max-w-xs">
                           {complaint.description && complaint.description.length > 80
@@ -536,7 +550,7 @@ export default function ComplaintsPage() {
                   {activeTab === 'feedback' && (
                     filteredFeedback.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="px-4 py-12 text-center text-gray-400">No feedback matches your search or filters.</td>
+                        <td colSpan={7} className="px-4 py-12 text-center text-gray-400">No feedback matches your search or filters.</td>
                       </tr>
                     ) : filteredFeedback.map((item: any) => (
                       <tr key={item.id} className="border-b border-gray-200 hover:bg-gray-50 transition-colors">
@@ -545,6 +559,11 @@ export default function ComplaintsPage() {
                         </td>
                         <td className="px-4 py-4 text-sm text-gray-900">{item.feedback_by}</td>
                         <td className="px-4 py-4 text-sm text-gray-900 whitespace-nowrap">{formatDate(item.created_at)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">
+                          {item.booking_id
+                            ? <a href={`/bookings/${item.booking_id}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center px-2 py-0.5 rounded bg-red-50 text-red-700 font-mono text-xs font-semibold hover:bg-red-100 hover:underline">#{item.booking_id}</a>
+                            : <span className="text-gray-400">—</span>}
+                        </td>
                         <td className="px-4 py-4 text-sm text-gray-900">
                           <div className="flex items-center gap-1">
                             <span>{item.rating}</span>
@@ -595,8 +614,27 @@ export default function ComplaintsPage() {
                 </div>
                 {selectedComplaint.booking_id && (
                   <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium text-gray-600">Booking ID:</span>
-                    <span className="text-sm font-semibold text-gray-900">{selectedComplaint.booking_id}</span>
+                    <span className="text-sm font-medium text-gray-600">Booking:</span>
+                    <a
+                      href={`/bookings/${selectedComplaint.booking_id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-sm font-semibold text-red-600 hover:text-red-700 hover:underline"
+                    >
+                      #{selectedComplaint.booking_id}
+                    </a>
+                  </div>
+                )}
+                {selectedComplaint.customer_name && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-gray-600">Customer:</span>
+                    <span className="text-sm font-semibold text-gray-900">{selectedComplaint.customer_name}</span>
+                  </div>
+                )}
+                {selectedComplaint.customer_phone && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm font-medium text-gray-600">Mobile:</span>
+                    <span className="text-sm font-semibold text-gray-900">{selectedComplaint.customer_phone}</span>
                   </div>
                 )}
                 <div className="border-t border-gray-200 pt-4 mt-4" />
@@ -707,8 +745,27 @@ export default function ComplaintsPage() {
               </div>
               {selectedFeedback.booking_id && (
                 <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-gray-600">Booking ID:</span>
-                  <span className="text-sm font-semibold text-gray-900">{selectedFeedback.booking_id}</span>
+                  <span className="text-sm font-medium text-gray-600">Booking:</span>
+                  <a
+                    href={`/bookings/${selectedFeedback.booking_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm font-semibold text-red-600 hover:text-red-700 hover:underline"
+                  >
+                    #{selectedFeedback.booking_id}
+                  </a>
+                </div>
+              )}
+              {selectedFeedback.customer_name && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-gray-600">Customer:</span>
+                  <span className="text-sm font-semibold text-gray-900">{selectedFeedback.customer_name}</span>
+                </div>
+              )}
+              {selectedFeedback.customer_phone && (
+                <div className="flex justify-between items-center">
+                  <span className="text-sm font-medium text-gray-600">Mobile:</span>
+                  <span className="text-sm font-semibold text-gray-900">{selectedFeedback.customer_phone}</span>
                 </div>
               )}
               <div className="flex justify-between items-center">

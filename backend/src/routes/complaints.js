@@ -21,9 +21,11 @@ pool.query(`
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT c.*, u.name as assigned_to_name 
-       FROM complaints c 
-       LEFT JOIN users u ON c.assigned_to = u.id 
+      `SELECT c.*, u.name as assigned_to_name,
+              b.customer_name, b.customer_phone
+       FROM complaints c
+       LEFT JOIN users u ON c.assigned_to = u.id
+       LEFT JOIN bookings b ON c.booking_id = b.id
        ORDER BY c.created_at DESC`
     );
     res.json(result.rows);
@@ -38,17 +40,19 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      `SELECT c.*, u.name as assigned_to_name 
-       FROM complaints c 
-       LEFT JOIN users u ON c.assigned_to = u.id 
+      `SELECT c.*, u.name as assigned_to_name,
+              b.customer_name, b.customer_phone
+       FROM complaints c
+       LEFT JOIN users u ON c.assigned_to = u.id
+       LEFT JOIN bookings b ON c.booking_id = b.id
        WHERE c.id = $1`,
       [id]
     );
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Complaint not found' });
     }
-    
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching complaint:', error);
@@ -63,6 +67,10 @@ router.post('/', async (req, res) => {
     
     if (!raised_by || !title) {
       return res.status(400).json({ error: 'raised_by and title are required' });
+    }
+
+    if (!booking_id) {
+      return res.status(400).json({ error: 'booking_id is required' });
     }
     
     const result = await pool.query(

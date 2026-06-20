@@ -6,7 +6,10 @@ const pool = require('../database/connection');
 router.get('/', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM feedback ORDER BY created_at DESC'
+      `SELECT f.*, b.customer_name, b.customer_phone
+       FROM feedback f
+       LEFT JOIN bookings b ON f.booking_id = b.id
+       ORDER BY f.created_at DESC`
     );
     res.json(result.rows);
   } catch (error) {
@@ -20,14 +23,17 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     const result = await pool.query(
-      'SELECT * FROM feedback WHERE id = $1',
+      `SELECT f.*, b.customer_name, b.customer_phone
+       FROM feedback f
+       LEFT JOIN bookings b ON f.booking_id = b.id
+       WHERE f.id = $1`,
       [id]
     );
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Feedback not found' });
     }
-    
+
     res.json(result.rows[0]);
   } catch (error) {
     console.error('Error fetching feedback:', error);
@@ -42,6 +48,10 @@ router.post('/', async (req, res) => {
     
     if (!feedback_by || !rating) {
       return res.status(400).json({ error: 'feedback_by and rating are required' });
+    }
+
+    if (!booking_id) {
+      return res.status(400).json({ error: 'booking_id is required' });
     }
     
     if (rating < 1 || rating > 5) {
