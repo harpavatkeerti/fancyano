@@ -5,9 +5,9 @@ import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, setti
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput } from '@/components/common';
-import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
+import { useAuth } from '@/lib/authContext';
 
 import dynamic from 'next/dynamic';
 
@@ -21,6 +21,9 @@ const QRScanner = dynamic(
 );
 
 export default function BookingsPage() {
+  const auth = useAuth();
+  if (!auth.user) return null;
+  const currentUser = auth.user;
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
@@ -480,14 +483,14 @@ export default function BookingsPage() {
         const amount = parseFloat(creditNoteData.amount);
         if (amount > 0) {
           try {
-            const adminName = localStorage.getItem('admin_name') || 'Admin';
+            const issuedBy = currentUser.name;
             await creditNotesApi.create({
               booking_id: bookingToCancel.id,
               customer_name: bookingToCancel.customer_name,
               customer_phone: bookingToCancel.customer_phone,
               amount: amount,
               valid_until: creditNoteData.validity,
-              issued_by: adminName,
+              issued_by: issuedBy,
               notes: `Credit note issued for cancelled booking #${bookingToCancel.id}`,
             });
             toast.success('Booking cancelled and credit note issued successfully');

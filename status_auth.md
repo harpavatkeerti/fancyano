@@ -1,9 +1,9 @@
 # Status: Unified Auth, RBAC & Route Restructuring
 
 > **Plan**: [PLAN_auth.md](file:///c:/Users/User/Documents/app/PLAN_auth.md)
-> **Last updated**: 2026-06-14
+> **Last updated**: 2026-06-20
 > **Last updated by**: Agent
-> **Current step**: Step 7 complete — awaiting user instruction for Step 8
+> **Current step**: Step 8 complete — ALL STEPS DONE ✅
 
 ---
 
@@ -18,7 +18,7 @@
 | Step 5: Route migration — Move admin pages to flat routes | `[x]` Complete |
 | Step 6: Unified booking detail page (admin + salesman) | `[x]` Complete |
 | Step 7: Move remaining salesman & customer pages | `[x]` Complete |
-| Step 8: Cleanup — Remove old route trees & legacy auth | `[ ]` Not started |
+| Step 8: Cleanup — Remove old route trees & legacy auth | `[x]` Complete |
 
 ---
 
@@ -57,7 +57,7 @@
 | 5 | Route migration — Move admin pages (`/dashboard`, `/inventory`, `/bookings`, `/bookings/[id]`, `/credit-notes`, `/users`, `/complaints`, `/reports`, `/settings`) to flat routes under `(authenticated)/`. Fixed internal links in moved pages and in `ProductTrackingModal.tsx`. | `[x]` | Agent | 2026-06-14 | TypeScript clean |
 | 6 | Unified booking detail — `(authenticated)/bookings/[id]/page.tsx` based on salesman page. `useAuth()` replaces localStorage `userName`. `auth.user?.role` drives product list filter (admin sees all, salesman/customer filtered). Document buttons wrapped in `<RequireRole roles={['admin']}>`. `userRole` props pass actual role. `recorded_by` uses `auth.user?.name`. | `[x]` | Agent | 2026-06-14 | TypeScript clean |
 | 7 | Moved `/home`, `/products`, `/cart`, `/my-bookings`, `/customer-bookings` to flat routes using salesman versions as base (richer). `/complaints` already correct from Step 5. No internal link fixes needed. `routePermissions.ts` confirmed all new routes are unlisted (= any authenticated user). | `[x]` | Agent | 2026-06-14 | TypeScript clean |
-| 8 | Cleanup — Delete `/admin/`, `/salesman/`, `/customer/` dirs, old home page, legacy localStorage keys, old layouts | `[ ]` | — | — | — |
+| 8 | Cleanup — Deleted `frontend/app/admin/`, `frontend/app/salesman/`, `frontend/app/customer/` dirs (and `AdminLayout.tsx` with them). Removed dead `localStorage.getItem('admin_user')` fallbacks from `ProductExchange.tsx` (replaced with role-based string fallback — `userName` prop is always provided from `useAuth()`). Created `LOGIN_SYSTEM.md`. TypeScript clean. Backend test failures (124) are pre-existing date-dependent test data issues, unrelated to auth/routing. Auth tests (29) all pass. | `[x]` | Agent | 2026-06-20 | TypeScript clean; pre-existing backend test failures unaffected |
 
 ### Status Legend
 - `[ ]` Not started

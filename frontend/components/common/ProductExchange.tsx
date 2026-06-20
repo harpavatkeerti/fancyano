@@ -12,8 +12,8 @@ interface ProductExchangeProps {
   bookingDate: string;
   currentProducts: any[];
   onExchangeComplete?: () => void;
-  userRole?: 'admin' | 'salesman';
-  userName?: string;
+  userRole: 'admin' | 'salesman' | 'customer';
+  userName: string;
   bookingStatus?: string;
   securityPaidByProduct?: Record<number, number>; // bookingProductId → security paid amount
 }
@@ -23,7 +23,7 @@ export function ProductExchange({
   bookingDate,
   currentProducts,
   onExchangeComplete,
-  userRole = 'admin',
+  userRole,
   userName,
   bookingStatus,
   securityPaidByProduct = {}
@@ -290,22 +290,7 @@ export function ProductExchange({
     try {
       setLoading(true);
 
-      let exchangeBy = userName;
-      if (!exchangeBy) {
-        if (userRole === 'admin') {
-          const adminData = localStorage.getItem('admin_user');
-          if (adminData) {
-            const admin = JSON.parse(adminData);
-            exchangeBy = admin.name || 'Admin';
-          }
-        } else {
-          const salesmanData = localStorage.getItem('salesman_user') || localStorage.getItem('user');
-          if (salesmanData) {
-            const salesman = JSON.parse(salesmanData);
-            exchangeBy = salesman.name || 'Salesman';
-          }
-        }
-      }
+      const exchangeBy = userName;
 
       // Validate dates for all products
       const mainProductDates = productDates[selectedExchangedProduct];
@@ -432,22 +417,7 @@ export function ProductExchange({
       setLoading(true);
 
       // Prepare exchange by name
-      let exchangeBy = pendingExchangeData.exchanged_by;
-      if (!exchangeBy) {
-        if (userRole === 'admin') {
-          const adminData = localStorage.getItem('admin_user');
-          if (adminData) {
-            const admin = JSON.parse(adminData);
-            exchangeBy = admin.name || 'Admin';
-          }
-        } else {
-          const salesmanData = localStorage.getItem('salesman_user') || localStorage.getItem('user');
-          if (salesmanData) {
-            const salesman = JSON.parse(salesmanData);
-            exchangeBy = salesman.name || 'Salesman';
-          }
-        }
-      }
+      const exchangeBy = userName;
 
       // Get main product dates
       const mainProductDates = pendingExchangeData.exchanged_product_dates ||
@@ -507,7 +477,7 @@ export function ProductExchange({
         // Payment params — processed atomically with the exchange
         payment_amount: Math.max(0, parseFloat(totalPaymentDue.toString()) || 0),
         payment_method: paymentMethod.trim(),
-        payment_recorded_by: userName || (userRole === 'admin' ? 'Admin' : 'Salesman'),
+        payment_recorded_by: userName,
         payment_notes: detailedNarration,
       });
 
@@ -591,7 +561,7 @@ export function ProductExchange({
             type: 'refund',
             method: 'lapsed_refund',
             notes: `ONE-TIME LAPSED AMOUNT REFUND: Refund of ₹${refundAmountValue.toFixed(2)} for cancelled exchange (Exchange ID: ${exchangeId}). This refund does not affect rent/security calculations.`,
-            recorded_by: userName || 'admin'
+            recorded_by: userName
           });
           toast.success(`Exchange deleted and ₹${refundAmountValue.toFixed(2)} refunded successfully`);
         } catch (refundError) {

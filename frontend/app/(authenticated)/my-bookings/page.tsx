@@ -7,9 +7,13 @@ import { getImageUrl } from '@/lib/imageHelper';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
+import { useAuth } from '@/lib/authContext';
 
 export default function MyBookingsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const auth = useAuth();
+  if (!auth.user) return null;
+  const currentUser = auth.user;
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [allBookings, setAllBookings] = useState<Booking[]>([]); // All bookings for comparison
   const [loading, setLoading] = useState(true);
@@ -154,20 +158,8 @@ export default function MyBookingsPage() {
       // Store ALL bookings for urgent checking
       setAllBookings(response.data);
 
-      // Get logged-in salesman name from localStorage (same logic as cart page)
-      const userData = localStorage.getItem('user');
-      let salesmanName = '';
-
-      if (userData) {
-        try {
-          const user = JSON.parse(userData);
-          salesmanName = user.name || user.userName || '';
-        } catch (e) {
-          salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
-        }
-      } else {
-        salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || '';
-      }
+      // Identify current user from auth context — always reliable
+      const createdBy = currentUser.name.trim();
 
       // Normalize names for comparison (trim whitespace, case-insensitive)
       const normalizeName = (name: string | null | undefined): string => {
@@ -175,12 +167,12 @@ export default function MyBookingsPage() {
         return name.trim().toLowerCase();
       };
 
-      const normalizedSalesmanName = normalizeName(salesmanName);
+      const normalizedCreatedBy = normalizeName(createdBy);
 
-      // Filter for salesman's own bookings (where created_by matches logged-in salesman)
+      // Filter for current user's own bookings (where created_by matches logged-in user)
       const filteredBookings = response.data.filter((booking: Booking) => {
         const bookingCreatedBy = normalizeName(booking.created_by);
-        return normalizedSalesmanName && bookingCreatedBy && bookingCreatedBy === normalizedSalesmanName;
+        return normalizedCreatedBy && bookingCreatedBy && bookingCreatedBy === normalizedCreatedBy;
       });
 
       setBookings(filteredBookings);

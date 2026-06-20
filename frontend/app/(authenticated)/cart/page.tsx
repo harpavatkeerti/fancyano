@@ -20,7 +20,10 @@ interface CartItem {
 
 export default function CartPage() {
   const router = useRouter();
-  const { isAdmin } = useAuth();
+  const auth = useAuth();
+  if (!auth.user) return null;
+  const { isAdmin } = auth;
+  const currentUser = auth.user;
   const [cartItems, setCartItems] = useState<CartItem[]>([]);
   const [transportationRequired, setTransportationRequired] = useState<'yes' | 'no'>('no');
   const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
@@ -440,25 +443,7 @@ export default function CartPage() {
       // Calculate total security deposit from all products
       const totalSecurityDeposit = calculateSecurityDeposit();
 
-      // Get logged-in salesman name from localStorage
-      // Try multiple possible keys where user name might be stored
-      const userData = localStorage.getItem('user');
-      let salesmanName = 'Salesman';
-
-      if (userData) {
-        try {
-          const user = JSON.parse(userData);
-          salesmanName = user.name || user.userName || salesmanName;
-        } catch (e) {
-          // If parsing fails, try direct keys
-          salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
-        }
-      } else {
-        salesmanName = localStorage.getItem('salesman_name') || localStorage.getItem('user_name') || localStorage.getItem('name') || 'Salesman';
-      }
-
-      // Trim whitespace to ensure consistent matching
-      salesmanName = salesmanName.trim();
+      const createdBy = currentUser.name.trim();
 
       // Create one booking with all products
       const discountAmount = calculateDiscount();
@@ -482,7 +467,7 @@ export default function CartPage() {
         discount_amount: bookingPreview?.booking_discount_amount || 0,
         status: 'pending', // Will be updated to 'confirmed' when payment is recorded
         special_requirements: '',
-        created_by: salesmanName, // Store salesman name who created the booking
+        created_by: createdBy,
       } as any);
 
       // Clear cart and reset timer

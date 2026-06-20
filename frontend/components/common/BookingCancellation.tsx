@@ -64,8 +64,8 @@ interface BookingCancellationProps {
   bookingId: number;
   bookingStatus: string;
   onCancellationComplete: () => void;
-  userRole?: 'admin' | 'salesman';
-  userName?: string;
+  userRole: 'admin' | 'salesman' | 'customer';
+  userName: string;
   canCancel?: boolean;
   autoOpen?: boolean;
 }
@@ -74,7 +74,7 @@ export function BookingCancellation({
   bookingId,
   bookingStatus,
   onCancellationComplete,
-  userRole = 'admin',
+  userRole,
   userName,
   canCancel = true,
   autoOpen = false
@@ -317,7 +317,7 @@ export function BookingCancellation({
         booking_product_ids: selectedProducts,
         cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
         cancellation_reason: cancellationReason,
-        cancelled_by: userName || 'system',
+        cancelled_by: userName,
         settlement_action: settlementAction,
         payment_method: (settlementAction === 'adjust' || settlementAction === 'collect') ? refundMethod : undefined,
         settlement_notes: extraRefundNote || undefined,
