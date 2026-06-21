@@ -184,6 +184,36 @@ router.put('/:id/confirm', async (req, res) => {
   }
 });
 
+// POST apply final settlement discount to a booking
+router.post('/:id/final-discount', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { discount_amount, reason, applied_by } = req.body;
+
+    if (discount_amount === undefined || discount_amount === null) {
+      return res.status(400).json({ error: 'discount_amount is required' });
+    }
+
+    const result = await bookingService.applyFinalSettlementDiscount(
+      parseInt(id),
+      discount_amount,
+      reason || '',
+      applied_by || 'system'
+    );
+
+    res.json({ message: 'Final settlement discount applied', discount_details: result });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message.includes('already has') || error.message.includes('discount_amount')) {
+      return res.status(400).json({ error: error.message });
+    }
+    console.error('Error applying final settlement discount:', error);
+    res.status(500).json({ error: 'Failed to apply discount', details: error.message });
+  }
+});
+
 // POST finalize booking with optional final discount
 router.post('/:id/finalize', async (req, res) => {
   try {

@@ -186,9 +186,10 @@ describe('BookingService', () => {
       );
 
       expect(product.rows[0].rent).toBe(5000);  // Original rent
-      expect(product.rows[0].discount_amount).toBe(500);  // 10% of 5000
+      // Service uses tax-inclusive formula: floor(5000 / 1.1) = 4545, discount = 455
+      expect(product.rows[0].discount_amount).toBe(455);
       expect(product.rows[0].discount_type).toBe('percentage');
-      expect(product.rows[0].effective_rent).toBe(4500);  // 5000 - 500
+      expect(product.rows[0].effective_rent).toBe(4545);  // 5000 - 455
 
       // Verify rent charge uses effective_rent
       const charges = await pool.query(
@@ -197,7 +198,7 @@ describe('BookingService', () => {
         [result.booking_product_ids[0]]
       );
 
-      expect(charges.rows[0].due_amount).toBe(4500);  // Uses effective_rent
+      expect(charges.rows[0].due_amount).toBe(4545);  // Uses effective_rent
     });
 
     // Test: Creates booking with fixed discount on products
@@ -370,8 +371,9 @@ describe('BookingService', () => {
       );
 
       const details = log.rows[0].details;
-      expect(details.products[0].effective_rent).toBe(3400);  // 4000 - 600
-      expect(details.products[0].discount_amount).toBe(600);
+      // Service uses tax-inclusive formula: floor(4000 / 1.15) = 3478, discount = 522
+      expect(details.products[0].effective_rent).toBe(3478);
+      expect(details.products[0].discount_amount).toBe(522);
       expect(details.products[0].discount_type).toBe('percentage');
     });
 

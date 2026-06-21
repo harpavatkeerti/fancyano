@@ -76,7 +76,7 @@ describe('Product Tracking Routes', () => {
         });
 
       expect(response.status).toBe(400);
-      expect(response.body.error).toMatch(/work_description/i);
+      expect(response.body.error).toMatch(/notes/i);
     });
 
     it('should reject if tracking_status is missing', async () => {

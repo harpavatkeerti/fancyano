@@ -7,6 +7,8 @@ const policyService = require('../services/policyService');
 // Create express app for testing
 const app = express();
 app.use(express.json());
+// Mock auth: tests run as admin so checkSalesmanPermission always passes
+app.use((req, res, next) => { req.user = { role: 'admin', id: 'test-user' }; next(); });
 app.use('/cancellation', require('./bookingCancellation'));
 
 describe('Booking Cancellation Routes', () => {

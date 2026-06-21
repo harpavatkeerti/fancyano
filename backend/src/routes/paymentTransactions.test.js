@@ -407,9 +407,8 @@ describe('Payment Transactions Routes', () => {
 
       // Get updated summary
       const updatedSummary = await request(app).get(`/payments/summary/${testBookingId}`);
-      const updatedBalance = updatedSummary.body.totals.balance;
-
-      expect(updatedBalance).toBe(initialBalance - 10000);
+      // Adjustment reduces outstanding_balance (charge-based), not balance (transaction-based)
+      expect(updatedSummary.body.totals.outstanding_balance).toBe(initialSummary.body.totals.outstanding_balance - 10000);
     });
   });
 

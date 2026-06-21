@@ -7,6 +7,8 @@ const chargeAccountingService = require('../services/chargeAccountingService');
 // Create express app for testing
 const app = express();
 app.use(express.json());
+// Inject mock req.user so requireRole middleware passes
+app.use((req, res, next) => { req.user = { role: 'admin', id: 'test-user' }; next(); });
 app.use('/bookings', require('./bookings'));
 
 describe('Bookings Routes', () => {
@@ -52,12 +54,12 @@ describe('Bookings Routes', () => {
           customer_phone: 'TEST-ROUTE',
           customer_email: 'test@example.com',
           customer_address: '123 Test St',
-          booking_date: '2024-01-01',
+          booking_date: '2027-01-01',
           products: [
             {
               id: testProductId,
-              booked_from: '2024-02-01',
-              booked_to: '2024-02-05',
+              booked_from: '2027-02-01',
+              booked_to: '2027-02-05',
               rent: 50000,
               security_deposit: 20000
             }
@@ -79,15 +81,15 @@ describe('Bookings Routes', () => {
         .post('/bookings')
         .send({
           customer_name: 'Discount Test Customer',
-          customer_phone: 'TEST-DISCOUNT',
+          customer_phone: 'TEST-ROUTE',
           customer_email: 'discount@example.com',
           customer_address: '123 Test St',
-          booking_date: '2024-01-01',
+          booking_date: '2027-01-01',
           products: [
             {
               id: testProductId,
-              booked_from: '2024-02-01',
-              booked_to: '2024-02-05',
+              booked_from: '2027-03-01',
+              booked_to: '2027-03-05',
               discountType: 'percentage',
               discountValue: 10
             }
@@ -109,15 +111,15 @@ describe('Bookings Routes', () => {
         .post('/bookings')
         .send({
           customer_name: 'Fixed Discount Customer',
-          customer_phone: 'TEST-FIXED-DISCOUNT',
+          customer_phone: 'TEST-ROUTE',
           customer_email: 'fixed@example.com',
           customer_address: '123 Test St',
-          booking_date: '2024-01-01',
+          booking_date: '2027-01-01',
           products: [
             {
               id: testProductId,
-              booked_from: '2024-02-01',
-              booked_to: '2024-02-05',
+              booked_from: '2027-04-01',
+              booked_to: '2027-04-05',
               discountType: 'fixed',
               discountValue: 5000
             }
@@ -137,15 +139,15 @@ describe('Bookings Routes', () => {
         .post('/bookings')
         .send({
           customer_name: 'Auto Fetch Customer',
-          customer_phone: 'TEST-AUTO-FETCH',
+          customer_phone: 'TEST-ROUTE',
           customer_email: 'autofetch@example.com',
           customer_address: '123 Test St',
-          booking_date: '2024-01-01',
+          booking_date: '2027-01-01',
           products: [
             {
               id: testProductId,
-              booked_from: '2024-02-01',
-              booked_to: '2024-02-05'
+              booked_from: '2027-05-01',
+              booked_to: '2027-05-05'
             }
           ],
           transport_charge: 0,
@@ -165,12 +167,12 @@ describe('Bookings Routes', () => {
           customer_phone: 'TEST-NOT-FOUND',
           customer_email: 'test@example.com',
           customer_address: '123 Test St',
-          booking_date: '2024-01-01',
+          booking_date: '2027-01-01',
           products: [
             {
               id: 999999,
-              booked_from: '2024-02-01',
-              booked_to: '2024-02-05'
+              booked_from: '2027-02-01',
+              booked_to: '2027-02-05'
             }
           ],
           transport_charge: 0,
@@ -201,12 +203,12 @@ describe('Bookings Routes', () => {
         customerName: 'Test Customer',
         customerPhone: 'TEST-ROUTE',
         customerEmail: 'test@example.com',
-        bookingDate: '2024-01-01',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-02-01',
+            bookedTo: '2027-02-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -247,12 +249,12 @@ describe('Bookings Routes', () => {
       const result = await bookingService.createBooking({
         customerName: 'Test Customer',
         customerPhone: 'TEST-ROUTE',
-        bookingDate: '2024-01-01',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-02-01',
+            bookedTo: '2027-02-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -286,12 +288,12 @@ describe('Bookings Routes', () => {
       const result = await bookingService.createBooking({
         customerName: 'Test Customer',
         customerPhone: 'TEST-ROUTE',
-        bookingDate: '2024-01-01',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-02-01',
+            bookedTo: '2027-02-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -330,12 +332,12 @@ describe('Bookings Routes', () => {
       const result = await bookingService.createBooking({
         customerName: 'Test Customer',
         customerPhone: 'TEST-ROUTE',
-        bookingDate: '2024-01-01',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-02-01',
+            bookedTo: '2027-02-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -360,12 +362,12 @@ describe('Bookings Routes', () => {
       const result = await bookingService.createBooking({
         customerName: 'Test Customer',
         customerPhone: 'TEST-ROUTE',
-        bookingDate: '2024-01-01',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-02-01',
+            bookedTo: '2027-02-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -398,13 +400,13 @@ describe('Bookings Routes', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
         customerName: 'Test Customer',
-        customerPhone: 'TEST-BOOKING-ROUTE',
-        bookingDate: '2024-01-01',
+        customerPhone: 'TEST-ROUTE',
+        bookingDate: '2027-01-01',
         products: [
           {
             productId: testProductId,
-            bookedFrom: '2024-02-01',
-            bookedTo: '2024-02-05',
+            bookedFrom: '2027-07-01',
+            bookedTo: '2027-07-05',
             rent: 50000,
             securityDeposit: 20000
           }
@@ -486,7 +488,10 @@ describe('Bookings Routes', () => {
     let finalizeTestProductId;
 
     beforeEach(async () => {
-      // Create a booking for finalization tests
+      // Use dates far in the future and non-overlapping with other test ranges
+      const futureFrom = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+      const futureTo   = new Date(Date.now() + 65 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+
       const booking = await bookingService.createBooking({
         customerName: 'Finalize Test Customer',
         customerPhone: 'TEST-ROUTE',
@@ -494,8 +499,8 @@ describe('Bookings Routes', () => {
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
           productId: testProductId,
-          bookedFrom: new Date().toISOString().split('T')[0],
-          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          bookedFrom: futureFrom,
+          bookedTo: futureTo,
           rent: 50000,
           securityDeposit: 20000
         }],
@@ -522,11 +527,14 @@ describe('Bookings Routes', () => {
     });
 
     // Test: Finalize with balance due (customer owes money)
+    // Note: security is EXCLUDED from total_due for 'completed' products
+    // (handled separately via processSecurityReturn). So:
+    // total_due = rent(50000) + transport(5000) = 55000
     it('should finalize booking with balance due (collect scenario)', async () => {
-      // Pay partial amount (only rent 50000, leaving transport 5000 + security 20000)
+      // Pay 25000 (= 50% minimum of rent 50000), leaving 30000 unpaid (out of 55000 total due)
       await chargeAccountingService.applyPayment(
         finalizeTestBookingId,
-        50000,
+        25000,
         'Cash',
         'test-user',
         'Partial payment'
@@ -543,8 +551,8 @@ describe('Bookings Routes', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.settlement.action).toBe('collect');
       expect(response.body.settlement.final_discount).toBe(5000);
-      // Balance = (50000 + 5000 + 20000) - 50000 - 5000 = 20000 to collect
-      expect(response.body.settlement.amount).toBe(20000);
+      // rawBalance = 55000 - 25000 = 30000; finalAmount = 30000 - 5000 = 25000
+      expect(response.body.settlement.amount).toBe(25000);
 
       // Verify booking status updated to completed
       const bookingCheck = await pool.query(
@@ -555,15 +563,15 @@ describe('Bookings Routes', () => {
       expect(bookingCheck.rows[0].final_discount).toBe(5000);
     });
 
-    // Test: Finalize with discount creating a refund (discount exceeds balance)
+    // Test: Finalize with discount creating a refund (customer overpaid)
     it('should finalize booking with discount creating refund scenario', async () => {
-      // Pay exact total due
+      // Overpay: pay 60000 when only 55000 is due (rent+transport, security excluded)
       await chargeAccountingService.applyPayment(
         finalizeTestBookingId,
-        75000, // Exact total: 50000 rent + 5000 transport + 20000 security
+        60000,
         'Cash',
         'test-user',
-        'Full payment'
+        'Overpayment'
       );
 
       const response = await request(app)
@@ -577,21 +585,19 @@ describe('Bookings Routes', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.settlement.action).toBe('refund');
       expect(response.body.settlement.final_discount).toBe(8000);
-
-      // TODO: FIX THIS - where did discount come into the picture from??? 
-      // Refund = discount amount since fully paid
-      expect(response.body.settlement.amount).toBe(8000);
+      // rawBalance = 55000 - 60000 = -5000; finalAmount = -5000 - 8000 = -13000 → refund 13000
+      expect(response.body.settlement.amount).toBe(13000);
     });
 
     // Test: Finalize with perfect balance (none scenario)
     it('should finalize booking with perfect balance', async () => {
-      // Pay exact amount
+      // Pay exactly total_due = rent(50000) + transport(5000) = 55000 (security excluded for completed)
       await chargeAccountingService.applyPayment(
         finalizeTestBookingId,
-        75000, // Exact total: 50000 rent + 5000 transport + 20000 security
+        55000,
         'Cash',
         'test-user',
-        'Full payment'
+        'Exact payment'
       );
 
       const response = await request(app)
@@ -603,22 +609,23 @@ describe('Bookings Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
+      // rawBalance = 55000 - 55000 = 0; finalAmount = 0 - 0 = 0 → none
       expect(response.body.settlement.action).toBe('none');
       expect(response.body.settlement.amount).toBe(0);
     });
 
-    // Test: Finalize with discount turning balance to refund
+    // Test: Finalize with discount turning zero balance into refund
     it('should finalize with discount converting balance due to refund', async () => {
-      // Pay exact amount
+      // Pay exact amount (55000 = rent + transport, security excluded)
       await chargeAccountingService.applyPayment(
         finalizeTestBookingId,
-        75000,
+        55000,
         'Cash',
         'test-user',
-        'Full payment'
+        'Exact payment'
       );
 
-      // Apply discount larger than 0 balance
+      // Apply discount on top of zero balance → refund
       const response = await request(app)
         .post(`/bookings/${finalizeTestBookingId}/finalize`)
         .send({
@@ -627,6 +634,7 @@ describe('Bookings Routes', () => {
         });
 
       expect(response.status).toBe(200);
+      // rawBalance = 55000 - 55000 = 0; finalAmount = 0 - 5000 = -5000 → refund 5000
       expect(response.body.settlement.action).toBe('refund');
       expect(response.body.settlement.amount).toBe(5000);
     });
@@ -685,13 +693,13 @@ describe('Bookings Routes', () => {
       // Create a booking using the service (which properly initializes charges)
       const booking = await bookingService.createBooking({
         customerName: 'Activity Log Test',
-        customerPhone: '1234567890',
+        customerPhone: 'TEST-ROUTE',
         customerEmail: 'activitylog@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
           productId: testProductId,
-          bookedFrom: '2024-05-01',
-          bookedTo: '2024-05-05',
+          bookedFrom: '2027-09-01',
+          bookedTo: '2027-09-05',
           rent: 10000,
           securityDeposit: 5000
         }],
@@ -765,7 +773,7 @@ describe('Bookings Routes', () => {
       // Create a booking without any activity log entries
       const emptyBookingResult = await pool.query(
         `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Empty Activity Test', '9876543210', CURRENT_DATE, 'pending', 'test-user')
+         VALUES ('Empty Activity Test', 'TEST-ROUTE', CURRENT_DATE, 'pending', 'test-user')
          RETURNING id`
       );
       const emptyBookingId = emptyBookingResult.rows[0].id;
@@ -778,6 +786,7 @@ describe('Bookings Routes', () => {
       expect(response.body.activities).toBeInstanceOf(Array);
       expect(response.body.activities.length).toBe(0);
       expect(response.body.count).toBe(0);
+      // Cleanup handled by afterEach (TEST-ROUTE phone)
     });
   });
 });

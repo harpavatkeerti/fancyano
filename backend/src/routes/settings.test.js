@@ -4,6 +4,8 @@ const pool = require('../database/connection');
 
 const app = express();
 app.use(express.json());
+// Mock auth: tests run as admin so requireRole checks always pass
+app.use((req, res, next) => { req.user = { role: 'admin', id: 'test-user' }; next(); });
 app.use('/settings', require('./settings'));
 
 describe('Settings Routes', () => {

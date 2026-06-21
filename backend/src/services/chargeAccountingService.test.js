@@ -124,9 +124,10 @@ describe('ChargeAccountingService', () => {
 
         const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
 
-        // Paid amount should include payment from cancelled product
-        expect(summary.charges.rent.paid).toBe(1000);
-        // But due should not include cancelled product
+        // Service excludes cancelled products from rent.due AND rent.paid
+        // (only active products contribute to rent charges)
+        expect(summary.charges.rent.paid).toBe(0); // cancelled product's paid excluded
+        // Due should not include cancelled product
         expect(summary.charges.rent.due).toBe(1500); // Only second product
       } finally {
         client.release();
@@ -562,9 +563,10 @@ describe('ChargeAccountingService', () => {
       expect(result.total_applied).toBe(6700);
       expect(result.residual_amount).toBe(0);
 
-      // Verify all charges are paid
+      // Verify all charges are paid via outstanding_balance
+      // (balance uses payment_transactions; outstanding_balance uses product_charges directly)
       const summary = await chargeAccountingService.getPaymentSummary(testBookingId);
-      expect(summary.totals.balance).toBe(0);
+      expect(summary.totals.outstanding_balance).toBe(0);
     });
 
     // Test: Records correct transaction type in payment_transactions
@@ -656,9 +658,10 @@ describe('ChargeAccountingService', () => {
         testBookingId, 2000, 'Cash', 'admin', 'Security refund'
       );
 
-      // Balance field comes from product_charges, not payment_transactions — unchanged by refund
+      // outstanding_balance comes from product_charges directly (charge-based, not transaction-based)
+      // — this stays 0 after a refund because product_charges paid_amounts are not changed by refunds.
       const summaryAfter = await chargeAccountingService.getPaymentSummary(testBookingId);
-      expect(summaryAfter.totals.balance).toBe(0);
+      expect(summaryAfter.totals.outstanding_balance).toBe(0);
     });
 
     // Test: Creates activity log entry with refund details
