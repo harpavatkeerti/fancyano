@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi } from '@/lib/api';
+import { useEffect, useState, useCallback, useRef } from 'react';
+import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi } from '@/lib/api';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
-import { Booking, Product } from '@/types';
-import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput } from '@/components/common';
+import { Booking, Product, User } from '@/types';
+import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput, FlagIcon } from '@/components/common';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
 import { useAuth } from '@/lib/authContext';
+import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 
 import dynamic from 'next/dynamic';
 
@@ -40,20 +41,18 @@ export default function BookingsPage() {
     customer_name: '',
     customer_phone: '',
     customer_address: '',
-    booked_from: '',
-    booked_to: '',
     status: 'pending' as const,
   });
   const [addFormData, setAddFormData] = useState({
+    // User-linked fields (displayed, editable, used to create/update user)
     customer_name: '',
     customer_phone: '',
-    customer_phone_country: 'IN', // ISO code
+    customer_phone_country: 'IN',
     alternate_phone: '',
-    alternate_phone_country: 'IN', // ISO code
+    alternate_phone_country: 'IN',
     customer_address: '',
+    // Booking fields
     booking_date: new Date().toISOString().split('T')[0],
-    booked_from: '', // Not used anymore, kept for compatibility
-    booked_to: '', // Not used anymore, kept for compatibility
     products: [] as {
       id: number;
       name: string;
@@ -69,6 +68,17 @@ export default function BookingsPage() {
     discount_type: null as 'percentage' | 'amount' | null,
     discount_value: 0,
   });
+  // Phone search state
+  const [phoneSearchResults, setPhoneSearchResults] = useState<User[]>([]);
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showPhoneDropdown, setShowPhoneDropdown] = useState(false);
+  // User-change confirm dialog
+  const [showUserConfirmDialog, setShowUserConfirmDialog] = useState(false);
+  const [userConfirmDiff, setUserConfirmDiff] = useState<{ field: string; old: string; new: string }[]>([]);
+  const [pendingUserUpdate, setPendingUserUpdate] = useState<{ userId: number; data: Partial<User> } | null>(null);
+  const [pendingBookingAfterConfirm, setPendingBookingAfterConfirm] = useState<any>(null);
+  const phoneSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [lastProductDates, setLastProductDates] = useState<{ from: string; to: string } | null>(null);
   const [showDateConfirmModal, setShowDateConfirmModal] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<any>(null);
@@ -364,11 +374,9 @@ export default function BookingsPage() {
   async function handleModify(booking: Booking) {
     setSelectedBooking(booking);
     setFormData({
-      customer_name: booking.customer_name,
-      customer_phone: booking.customer_phone || '',
-      customer_address: booking.customer_address || '',
-      booked_from: booking.booked_from.split('T')[0],
-      booked_to: booking.booked_to.split('T')[0],
+      customer_name: booking.user.name,
+      customer_phone: booking.user.phone,
+      customer_address: booking.user.address || '',
       status: booking.status as any,
     });
 
@@ -388,8 +396,7 @@ export default function BookingsPage() {
         const bookings = (response.data || []).filter((b: any) => b.id !== booking.id).map((b: any) => ({
           booked_from: b.booked_from,
           booked_to: b.booked_to,
-          customer_name: b.customer_name,
-          customer_phone: b.customer_phone,
+          user: { name: b.user.name, phone: b.user.phone },
         }));
         bookingsMap[product.id] = bookings;
       } catch (error) {
@@ -486,8 +493,8 @@ export default function BookingsPage() {
             const issuedBy = currentUser.name;
             await creditNotesApi.create({
               booking_id: bookingToCancel.id,
-              customer_name: bookingToCancel.customer_name,
-              customer_phone: bookingToCancel.customer_phone,
+              customer_name: bookingToCancel.user.name,
+              customer_phone: bookingToCancel.user.phone,
               amount: amount,
               valid_until: creditNoteData.validity,
               issued_by: issuedBy,
@@ -550,21 +557,60 @@ export default function BookingsPage() {
     setAddFormData({
       customer_name: '',
       customer_phone: '',
-      customer_phone_country: 'IN', // ISO code
+      customer_phone_country: 'IN',
       alternate_phone: '',
-      alternate_phone_country: 'IN', // ISO code
+      alternate_phone_country: 'IN',
       customer_address: '',
       booking_date: new Date().toISOString().split('T')[0],
-      booked_from: '',
-      booked_to: '',
       products: [],
       transport_charge: 0,
       discount_type: null,
       discount_value: 0,
     });
+    setSelectedUser(null);
+    setPhoneSearchResults([]);
+    setShowPhoneDropdown(false);
     setPhoneNumberError('');
     setProductSearchCode('');
     setShowAddModal(true);
+  }
+
+  // Debounced phone search — fires 350ms after last keystroke, min 3 digits
+  function handlePhoneSearch(digits: string) {
+    if (phoneSearchTimerRef.current) clearTimeout(phoneSearchTimerRef.current);
+    if (digits.length < 3) {
+      setPhoneSearchResults([]);
+      setShowPhoneDropdown(false);
+      return;
+    }
+    phoneSearchTimerRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const response = await usersApi.search(digits);
+        setPhoneSearchResults(response.data || []);
+        setShowPhoneDropdown((response.data || []).length > 0);
+      } catch {
+        setPhoneSearchResults([]);
+        setShowPhoneDropdown(false);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 350);
+  }
+
+  // Auto-fill form when user is selected from the dropdown
+  function handleUserSelect(user: User) {
+    setSelectedUser(user);
+    setShowPhoneDropdown(false);
+    setAddFormData(prev => ({
+      ...prev,
+      customer_phone: user.phone,
+      customer_phone_country: user.phone_country,
+      customer_name: user.name,
+      alternate_phone: user.alternate_phone,
+      alternate_phone_country: user.alternate_phone_country,
+      customer_address: user.address || '',
+    }));
   }
 
   async function handleAddProduct(product: Product) {
@@ -936,6 +982,26 @@ export default function BookingsPage() {
     }
   }
 
+  // Helper: actually call POST /bookings with user_id
+  async function postBookingWithUserId(userId: number) {
+    const finalTotal = calculateTotal();
+    const discountAmount = calculateDiscount();
+    setPendingBookingData({
+      user_id: userId,
+      booking_date: addFormData.booking_date,
+      products: addFormData.products,
+      finalTotal,
+      transport_charge: addFormData.transport_charge,
+      discount_type: addFormData.discount_type,
+      discount_value: addFormData.discount_value,
+      discount_amount: discountAmount,
+    });
+    setPaymentAmount('');
+    setPaymentMethod('Cash');
+    setPaymentNotes('');
+    setShowPaymentModal(true);
+  }
+
   async function handleCreateBooking() {
     // Basic required field validation
     if (!addFormData.customer_name || !addFormData.customer_phone || !addFormData.alternate_phone || addFormData.products.length === 0) {
@@ -950,41 +1016,27 @@ export default function BookingsPage() {
       return;
     }
 
-    // Validate mobile numbers using the library function
+    // Validate mobile numbers
     if (!isValidPhoneNumber(addFormData.customer_phone, addFormData.customer_phone_country)) {
       toast.warning('Please enter a valid Mobile Number');
       return;
     }
-
     if (!isValidPhoneNumber(addFormData.alternate_phone, addFormData.alternate_phone_country)) {
       toast.warning('Please enter a valid Alternate Mobile Number');
       return;
     }
 
-    // Get calling codes for submission
-    const country1 = getCountryByCode(addFormData.customer_phone_country);
-    const country2 = getCountryByCode(addFormData.alternate_phone_country);
-
-    if (!country1 || !country2) {
-      toast.error('Invalid country selection');
+    // Check both phones are not the same
+    const c1 = getCountryByCode(addFormData.customer_phone_country);
+    const c2 = getCountryByCode(addFormData.alternate_phone_country);
+    if (!c1 || !c2) { toast.error('Invalid country selection'); return; }
+    if (`${c1.callingCode}${addFormData.customer_phone}` === `${c2.callingCode}${addFormData.alternate_phone}`) {
+      toast.warning('Mobile Number and Alternate Mobile Number cannot be the same.');
       return;
     }
+    if (phoneNumberError) { toast.error(phoneNumberError); return; }
 
-    // Check if both numbers are the same
-    const fullPhone1 = `${country1.callingCode}${addFormData.customer_phone}`;
-    const fullPhone2 = `${country2.callingCode}${addFormData.alternate_phone}`;
-    if (fullPhone1 === fullPhone2) {
-      toast.warning('Mobile Number and Alternate Mobile Number cannot be the same. Please enter a different number.');
-      return;
-    }
-
-    // Check if there's a phone number error
-    if (phoneNumberError) {
-      toast.error(phoneNumberError);
-      return;
-    }
-
-    // Check for tight schedule (bookings within 2 days)
+    // Tight schedule check
     const tightScheduleCheck = await checkTightSchedule();
     if (tightScheduleCheck.hasTightSchedule) {
       setWarningMessage(tightScheduleCheck.message);
@@ -992,85 +1044,80 @@ export default function BookingsPage() {
       return;
     }
 
-    // All validations passed - show payment collection modal
-    const finalTotal = calculateTotal();
-    const discountAmount = calculateDiscount();
-    setPendingBookingData({
-      customer_name: addFormData.customer_name,
-      fullPhone1,
-      fullPhone2,
-      customer_address: addFormData.customer_address,
-      booking_date: addFormData.booking_date,
-      products: addFormData.products,
-      finalTotal,
-      transport_charge: addFormData.transport_charge,
-      discount_type: addFormData.discount_type,
-      discount_value: addFormData.discount_value,
-      discount_amount: discountAmount,
-    });
-    setPaymentAmount(''); // Reset payment amount
-    setPaymentMethod('Cash');
-    setPaymentNotes(''); // Empty notes field
-    setShowPaymentModal(true);
+    // ── Path A: returning user selected from search ──
+    if (selectedUser) {
+      // Fetch fresh user data to detect changes
+      let freshUser: User;
+      try {
+        const res = await usersApi.getById(selectedUser.id);
+        freshUser = res.data;
+      } catch {
+        toast.error('Could not verify customer details. Please try again.');
+        return;
+      }
+
+      // Compute diff between form values and DB values
+      const diff: { field: string; old: string; new: string }[] = [];
+      if (addFormData.customer_name !== freshUser.name)
+        diff.push({ field: 'Name', old: freshUser.name, new: addFormData.customer_name });
+      if (addFormData.alternate_phone !== freshUser.alternate_phone)
+        diff.push({ field: 'Alternate Mobile', old: freshUser.alternate_phone, new: addFormData.alternate_phone });
+      if (addFormData.alternate_phone_country !== freshUser.alternate_phone_country)
+        diff.push({ field: 'Alternate Mobile Country', old: freshUser.alternate_phone_country, new: addFormData.alternate_phone_country });
+      if ((addFormData.customer_address || '') !== (freshUser.address || ''))
+        diff.push({ field: 'Address', old: freshUser.address || '(none)', new: addFormData.customer_address || '(none)' });
+
+      if (diff.length > 0) {
+        // Show confirm dialog — user must accept before we update
+        setUserConfirmDiff(diff);
+        setPendingUserUpdate({
+          userId: freshUser.id,
+          data: {
+            name: addFormData.customer_name,
+            alternate_phone: addFormData.alternate_phone,
+            alternate_phone_country: addFormData.alternate_phone_country,
+            address: addFormData.customer_address || undefined,
+          },
+        });
+        setPendingBookingAfterConfirm({ userId: freshUser.id });
+        setShowUserConfirmDialog(true);
+        return;
+      }
+
+      // No diff — go straight to payment
+      await postBookingWithUserId(freshUser.id);
+      return;
+    }
+
+    // ── Path B: new customer — create user first ──
+    try {
+      const createRes = await usersApi.create({
+        name: addFormData.customer_name,
+        phone: addFormData.customer_phone,
+        phone_country: addFormData.customer_phone_country,
+        alternate_phone: addFormData.alternate_phone,
+        alternate_phone_country: addFormData.alternate_phone_country,
+        email: '',
+        address: addFormData.customer_address,
+        role: 'customer',
+      } as any);
+      await postBookingWithUserId(createRes.data.id);
+    } catch (error: any) {
+      if (error?.response?.status === 409) {
+        toast.error('This phone number is already registered. Search and select the existing customer from the dropdown.');
+      } else {
+        toast.error(error?.response?.data?.error || 'Failed to create customer');
+      }
+    }
   }
 
   async function createBookingConfirmed() {
-    if (!pendingBookingData) {
-      // Fallback to old method if no pending data
-      try {
-        const country1 = getCountryByCode(addFormData.customer_phone_country);
-        const country2 = getCountryByCode(addFormData.alternate_phone_country);
-        const fullPhone1 = `${country1?.callingCode}${addFormData.customer_phone}`;
-        const fullPhone2 = `${country2?.callingCode}${addFormData.alternate_phone}`;
-        const finalTotal = calculateTotal();
-        const discountAmount = calculateDiscount();
-
-        await bookingsApi.create({
-          customer_name: addFormData.customer_name,
-          customer_phone: fullPhone1,
-          alternate_phone: fullPhone2,
-          customer_address: addFormData.customer_address,
-          booking_date: addFormData.booking_date,
-          booked_from: addFormData.booked_from || '',
-          booked_to: addFormData.booked_to || '',
-          products: addFormData.products.map(p => ({
-            id: p.id,
-            booked_from: p.booked_from,
-            booked_to: p.booked_to,
-            discountType: p.discountType || null,
-            discountValue: p.discountValue || 0
-          })),
-          transport_charge: addFormData.transport_charge,
-          discount_type: addFormData.discount_type,
-          discount_value: addFormData.discount_value,
-          discount_amount: discountAmount,
-          status: 'pending',
-        } as any);
-
-        await fetchBookings();
-        setShowAddModal(false);
-        setProductSearchCode('');
-        setTransportationSelected(false);
-        setCustomTransportationCharge('');
-        setTransportationCharge(0);
-        toast.success(`Booking created successfully! Total: ₹${Math.floor(finalTotal)}`);
-        return;
-      } catch (error) {
-        console.error('Error creating booking:', error);
-        toast.error('Error creating booking');
-        return;
-      }
-    }
+    if (!pendingBookingData) return;
 
     try {
       const response = await bookingsApi.create({
-        customer_name: pendingBookingData.customer_name,
-        customer_phone: pendingBookingData.fullPhone1,
-        alternate_phone: pendingBookingData.fullPhone2,
-        customer_address: pendingBookingData.customer_address,
+        user_id: pendingBookingData.user_id,
         booking_date: pendingBookingData.booking_date,
-        booked_from: '', // Not used anymore, kept for compatibility
-        booked_to: '', // Not used anymore, kept for compatibility
         products: pendingBookingData.products.map((p: any) => ({
           id: p.id,
           booked_from: p.booked_from,
@@ -1090,24 +1137,18 @@ export default function BookingsPage() {
       // If payment amount is provided, record it
       if (paymentAmount && parseFloat(paymentAmount) > 0) {
         try {
-          const paymentData = {
+          await paymentTransactionsApi.create({
             booking_id: newBookingId,
             amount: parseFloat(paymentAmount),
             type: 'payment',
             method: paymentMethod,
             notes: paymentNotes || 'Initial payment recorded',
             recorded_by: 'admin'
-          };
-
-          await paymentTransactionsApi.create(paymentData);
-
-          // Let backend calculate and update booking status based on payment
+          });
           await bookingsApi.updateStatus(newBookingId);
         } catch (paymentError: any) {
-          console.error('❌ Error recording payment:', paymentError);
-          console.error('Error response:', paymentError.response?.data);
-          const message = paymentError.response?.data?.details || paymentError.response?.data?.error || 'Failed to record payment';
-          toast.error(message);
+          console.error('Error recording payment:', paymentError);
+          toast.error(paymentError.response?.data?.details || paymentError.response?.data?.error || 'Failed to record payment');
         }
       }
 
@@ -1115,6 +1156,7 @@ export default function BookingsPage() {
       setShowAddModal(false);
       setShowPaymentModal(false);
       setPendingBookingData(null);
+      setSelectedUser(null);
       setPaymentAmount('');
       setPaymentMethod('Cash');
       setPaymentNotes('');
@@ -1124,9 +1166,9 @@ export default function BookingsPage() {
       setTransportationCharge(0);
 
       if (paymentAmount && parseFloat(paymentAmount) > 0) {
-        toast.success(`Booking created successfully! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. Payment of ₹${paymentAmount} recorded.`);
+        toast.success(`Booking created! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. Payment of ₹${paymentAmount} recorded.`);
       } else {
-        toast.success(`Booking created successfully! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. No payment recorded - dates are free until payment.`);
+        toast.success(`Booking created! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. No payment recorded.`);
       }
     } catch (error) {
       console.error('Error creating booking:', error);
@@ -1135,9 +1177,9 @@ export default function BookingsPage() {
   }
 
   const filteredBookings = bookings.filter((b) => {
-    // Search filter
-    const matchesSearch = b.customer_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (b.customer_phone && b.customer_phone.includes(searchTerm));
+    // Search filter — use nested user object
+    const matchesSearch = b.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      b.user.phone.includes(searchTerm.replace(/\D/g, ''));
 
     // Status filter
     const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
@@ -1350,7 +1392,7 @@ export default function BookingsPage() {
                   </td>
                   <td className="px-3 py-3 text-sm font-medium text-gray-900">
                     <div className="flex items-center gap-1 max-w-[200px]">
-                      <span className="truncate">{booking.customer_name}</span>
+                      <span className="truncate">{booking.user.name}</span>
                       {isUrgent && (
                         <button
                           onClick={() => toast.info(urgentReason)}
@@ -1451,7 +1493,7 @@ export default function BookingsPage() {
                       {/* Cancel Icon Button */}
                       {booking.status !== 'cancelled' && (
                         <button
-                          onClick={() => handleCancelClick(booking.id, booking.customer_name)}
+                          onClick={() => handleCancelClick(booking.id, booking.user.name)}
                           className="text-red-600 hover:text-red-900 transition-colors p-1.5 rounded hover:bg-red-50"
                           title="Cancel Booking"
                         >
@@ -1492,29 +1534,32 @@ export default function BookingsPage() {
                 onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
                 required
               />
-              <Input
-                label="Mobile Number (with country code)"
-                value={formData.customer_phone}
-                onChange={(e) => setFormData({ ...formData, customer_phone: e.target.value })}
-                placeholder="e.g., +911234567890"
-              />
 
-              <h3 className="text-lg font-semibold mt-6">Add Address</h3>
-              <Input
-                label="House Number*"
-                onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
-              />
-              <Input
-                label="Street Address*"
-                value={formData.customer_address}
-                onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
-              />
-              <div className="grid grid-cols-2 gap-4">
-                <Input label="Town/City*" />
-                <Input label="Pincode*" />
+              {/* Phone — read-only with country flag (phone is immutable per backend) */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
+                <div className="flex items-center gap-3 px-4 py-2 border border-gray-200 rounded-lg bg-gray-50">
+                  {selectedBooking?.user.phone_country && (
+                    <FlagIcon
+                      countryCode={selectedBooking.user.phone_country}
+                      className="w-5 h-3.5 rounded-sm flex-shrink-0"
+                    />
+                  )}
+                  <span className="text-gray-700 font-medium">{formData.customer_phone}</span>
+                  <span className="ml-auto text-xs text-gray-400 italic">cannot be changed</span>
+                </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <Input label="State*" />
+
+              <h3 className="text-lg font-semibold mt-6">Address</h3>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Address <span className="text-gray-400 font-normal">(optional)</span></label>
+                <textarea
+                  value={formData.customer_address}
+                  onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
+                  rows={3}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                  placeholder="Customer's address"
+                />
               </div>
 
               {/* Products List */}
@@ -1932,21 +1977,21 @@ export default function BookingsPage() {
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <p className="text-sm text-gray-600">Name</p>
-                        <p className="text-base font-semibold text-gray-900">{viewingBooking.customer_name}</p>
+                        <p className="text-base font-semibold text-gray-900">{viewingBooking.user.name}</p>
                       </div>
                       <div>
                         <p className="text-sm text-gray-600">Phone</p>
-                        <p className="text-base font-semibold text-gray-900">{viewingBooking.customer_phone || 'N/A'}</p>
+                        <p className="text-base font-semibold text-gray-900">{viewingBooking.user.phone || 'N/A'}</p>
                       </div>
-                      {viewingBooking.alternate_phone && (
+                      {viewingBooking.user.alternate_phone && (
                         <div className="col-span-2">
                           <p className="text-sm text-gray-600">Alternate Phone</p>
-                          <p className="text-base font-semibold text-gray-900">{viewingBooking.alternate_phone}</p>
+                          <p className="text-base font-semibold text-gray-900">{viewingBooking.user.alternate_phone}</p>
                         </div>
                       )}
                       <div className="col-span-2">
                         <p className="text-sm text-gray-600">Address</p>
-                        <p className="text-base font-semibold text-gray-900">{viewingBooking.customer_address || 'N/A'}</p>
+                        <p className="text-base font-semibold text-gray-900">{viewingBooking.user.address || 'N/A'}</p>
                       </div>
                     </div>
                   </div>
@@ -2455,27 +2500,33 @@ export default function BookingsPage() {
                   Cancel
                 </button>
                 <button
-                  onClick={() => {
+                  onClick={async () => {
                     setShowWarningModal(false);
-                    // Show payment modal after warning is accepted
-                    const finalTotal = calculateTotal();
-                    setPendingBookingData({
-                      customer_name: addFormData.customer_name,
-                      fullPhone1: `${getCountryByCode(addFormData.customer_phone_country)?.callingCode}${addFormData.customer_phone}`,
-                      fullPhone2: `${getCountryByCode(addFormData.alternate_phone_country)?.callingCode}${addFormData.alternate_phone}`,
-                      customer_address: addFormData.customer_address,
-                      booking_date: addFormData.booking_date,
-                      products: addFormData.products,
-                      finalTotal,
-                      transport_charge: addFormData.transport_charge,
-                      discount_type: addFormData.discount_type,
-                      discount_value: addFormData.discount_value,
-                      discount_amount: calculateDiscount(),
-                    });
-                    setPaymentAmount('');
-                    setPaymentMethod('Cash');
-                    setPaymentNotes(''); // Empty notes field
-                    setShowPaymentModal(true);
+                    // Re-run the booking creation flow (tight schedule was just the blocker)
+                    if (selectedUser) {
+                      await postBookingWithUserId(selectedUser.id);
+                    } else {
+                      // Path B — create user then proceed
+                      try {
+                        const createRes = await usersApi.create({
+                          name: addFormData.customer_name,
+                          phone: addFormData.customer_phone,
+                          phone_country: addFormData.customer_phone_country,
+                          alternate_phone: addFormData.alternate_phone,
+                          alternate_phone_country: addFormData.alternate_phone_country,
+                          email: '',
+                          address: addFormData.customer_address,
+                          role: 'customer',
+                        } as any);
+                        await postBookingWithUserId(createRes.data.id);
+                      } catch (error: any) {
+                        if (error?.response?.status === 409) {
+                          toast.error('This phone number is already registered. Search and select the existing customer from the dropdown.');
+                        } else {
+                          toast.error(error?.response?.data?.error || 'Failed to create customer');
+                        }
+                      }
+                    }
                   }}
                   className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
                 >
@@ -2501,7 +2552,7 @@ export default function BookingsPage() {
                 <div className="flex-1">
                   <h2 className="text-xl font-bold text-gray-900 mb-2">Cancel Booking</h2>
                   <p className="text-gray-600">
-                    Are you sure you want to cancel the booking with name <span className="font-semibold text-red-600">&quot;{bookingToCancel.customer_name}&quot;</span>. This action cannot be undone.
+                    Are you sure you want to cancel the booking with name <span className="font-semibold text-red-600">&quot;{bookingToCancel.user.name}&quot;</span>. This action cannot be undone.
                   </p>
                 </div>
               </div>

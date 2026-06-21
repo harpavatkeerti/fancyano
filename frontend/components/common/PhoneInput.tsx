@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { SORTED_COUNTRIES, getCountryByCode, isValidPhoneNumber, getExpectedLength, getCountryInfo } from '@/lib/countryCodes';
+import FlagIcon from './FlagIcon';
 
 interface PhoneInputProps {
   label: string;
@@ -10,6 +11,7 @@ interface PhoneInputProps {
   onValueChange: (value: string) => void;
   onCountryCodeChange: (code: string) => void;
   required?: boolean;
+  disabled?: boolean;
   placeholder?: string;
 }
 
@@ -20,6 +22,7 @@ export default function PhoneInput({
   onValueChange,
   onCountryCodeChange,
   required = false,
+  disabled = false,
   placeholder,
 }: PhoneInputProps) {
   const [error, setError] = useState<string>('');
@@ -104,10 +107,6 @@ export default function PhoneInput({
     return 'Mobile number';
   };
 
-  // Get flag URL from flagcdn
-  const getFlagUrl = (countryIsoCode: string) => {
-    return `https://flagcdn.com/w20/${countryIsoCode.toLowerCase()}.png`;
-  };
 
   // Filter countries based on search
   const filteredCountries = searchQuery
@@ -130,17 +129,18 @@ export default function PhoneInput({
         <div className="relative" ref={dropdownRef}>
           <button
             type="button"
-            onClick={() => setIsOpen(!isOpen)}
-            className="w-36 px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm flex items-center justify-between"
+            onClick={() => !disabled && setIsOpen(!isOpen)}
+            disabled={disabled}
+            className={`w-36 px-3 py-2 border border-gray-300 rounded-lg text-gray-900 text-sm flex items-center justify-between ${
+              disabled
+                ? 'bg-gray-100 cursor-not-allowed opacity-60'
+                : 'bg-white focus:outline-none focus:ring-2 focus:ring-blue-500'
+            }`}
           >
             <div className="flex items-center space-x-2">
               {country && (
                 <>
-                  <img
-                    src={getFlagUrl(country.code)}
-                    alt={`${country.name} flag`}
-                    className="w-5 h-3.5 object-cover rounded-sm"
-                  />
+                  <FlagIcon countryCode={country.code} className="w-5 h-3.5 rounded-sm flex-shrink-0" />
                   <span>{country.callingCode}</span>
                 </>
               )}
@@ -184,10 +184,9 @@ export default function PhoneInput({
                       c.code === countryCode ? 'bg-blue-100' : ''
                     }`}
                   >
-                    <img
-                      src={getFlagUrl(c.code)}
-                      alt={`${c.name} flag`}
-                      className="w-6 h-4 object-cover rounded-sm flex-shrink-0 pointer-events-none"
+                    <FlagIcon
+                      countryCode={c.code}
+                      className="w-6 h-4 rounded-sm flex-shrink-0 pointer-events-none"
                     />
                     <span className="flex-1 text-sm truncate pointer-events-none">{c.name}</span>
                     <span className="text-sm text-gray-500 flex-shrink-0 pointer-events-none">{c.callingCode}</span>
@@ -211,8 +210,13 @@ export default function PhoneInput({
             onChange={(e) => handlePhoneChange(e.target.value)}
             placeholder={getPlaceholder()}
             required={required}
-            className={`w-full px-4 py-2 border rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 ${
-              error ? 'border-red-500 focus:ring-red-500' : 'border-gray-300 focus:ring-blue-500'
+            disabled={disabled}
+            className={`w-full px-4 py-2 border rounded-lg text-gray-900 focus:outline-none focus:ring-2 ${
+              disabled
+                ? 'bg-gray-100 cursor-not-allowed opacity-60 border-gray-300'
+                : error
+                  ? 'bg-white border-red-500 focus:ring-red-500'
+                  : 'bg-white border-gray-300 focus:ring-blue-500'
             }`}
           />
           {error && <p className="text-red-500 text-xs mt-1">{error}</p>}

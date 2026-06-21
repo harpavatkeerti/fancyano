@@ -1,97 +1,49 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../database/connection');
+const feedbackService = require('../services/feedbackService');
 
-// Get all feedback
+// GET /feedback
 router.get('/', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT f.*, b.customer_name, b.customer_phone
-       FROM feedback f
-       LEFT JOIN bookings b ON f.booking_id = b.id
-       ORDER BY f.created_at DESC`
-    );
-    res.json(result.rows);
+    const feedback = await feedbackService.listFeedback();
+    res.json(feedback);
   } catch (error) {
     console.error('Error fetching feedback:', error);
-    res.status(500).json({ error: 'Failed to fetch feedback' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch feedback' });
   }
 });
 
-// Get feedback by ID
+// GET /feedback/:id
 router.get('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const result = await pool.query(
-      `SELECT f.*, b.customer_name, b.customer_phone
-       FROM feedback f
-       LEFT JOIN bookings b ON f.booking_id = b.id
-       WHERE f.id = $1`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Feedback not found' });
-    }
-
-    res.json(result.rows[0]);
+    const feedback = await feedbackService.getFeedbackById(req.params.id);
+    res.json(feedback);
   } catch (error) {
     console.error('Error fetching feedback:', error);
-    res.status(500).json({ error: 'Failed to fetch feedback' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch feedback' });
   }
 });
 
-// Create new feedback
+// POST /feedback
 router.post('/', async (req, res) => {
   try {
-    const { booking_id, feedback_by, rating, description } = req.body;
-    
-    if (!feedback_by || !rating) {
-      return res.status(400).json({ error: 'feedback_by and rating are required' });
-    }
-
-    if (!booking_id) {
-      return res.status(400).json({ error: 'booking_id is required' });
-    }
-    
-    if (rating < 1 || rating > 5) {
-      return res.status(400).json({ error: 'Rating must be between 1 and 5' });
-    }
-    
-    const result = await pool.query(
-      `INSERT INTO feedback (booking_id, feedback_by, rating, description)
-       VALUES ($1, $2, $3, $4)
-       RETURNING *`,
-      [booking_id || null, feedback_by, rating, description || null]
-    );
-    
-    res.status(201).json(result.rows[0]);
+    const feedback = await feedbackService.createFeedback(req.body);
+    res.status(201).json(feedback);
   } catch (error) {
     console.error('Error creating feedback:', error);
-    res.status(500).json({ error: 'Failed to create feedback' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to create feedback' });
   }
 });
 
-// Delete feedback
+// DELETE /feedback/:id
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    
-    const result = await pool.query(
-      'DELETE FROM feedback WHERE id = $1 RETURNING *',
-      [id]
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Feedback not found' });
-    }
-    
+    await feedbackService.deleteFeedback(req.params.id);
     res.json({ message: 'Feedback deleted successfully' });
   } catch (error) {
     console.error('Error deleting feedback:', error);
-    res.status(500).json({ error: 'Failed to delete feedback' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to delete feedback' });
   }
 });
 
 module.exports = router;
-

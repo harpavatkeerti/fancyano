@@ -4,6 +4,7 @@ const pool = require('../database/connection');
 /**
  * Finds pending bookings older than 5 minutes with no payment and deletes them.
  * @returns {{ cancelled: Array<{id, customer_name, created_at}> }}
+ * Note: customer_name is obtained via JOIN with users (b.customer_name column no longer exists).
  */
 async function checkAndCancelExpiredBookings() {
   const client = await pool.connect();
@@ -14,8 +15,9 @@ async function checkAndCancelExpiredBookings() {
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
 
     const result = await client.query(
-      `SELECT b.id, b.customer_name, b.created_at 
+      `SELECT b.id, u.name AS customer_name, b.created_at 
        FROM bookings b
+       JOIN users u ON b.user_id = u.id
        LEFT JOIN payment_transactions pt ON pt.booking_id = b.id AND pt.type = 'payment'
        WHERE b.status = 'pending' 
        AND pt.id IS NULL

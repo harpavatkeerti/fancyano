@@ -7,10 +7,7 @@ class BookingService {
   /**
    * Create a new booking with products
    * @param {Object} bookingData - Booking information
-   * @param {string} bookingData.customerName - Customer name
-   * @param {string} bookingData.customerPhone - Customer phone
-   * @param {string} bookingData.customerEmail - Customer email (optional)
-   * @param {string} bookingData.customerAddress - Customer address (optional)
+   * @param {number} bookingData.userId - ID of the customer (users.id FK)
    * @param {Date} bookingData.bookingDate - Booking date
    * @param {Array} bookingData.products - Array of products to book
    * @param {number} bookingData.products[].productId - Product ID
@@ -32,10 +29,7 @@ class BookingService {
       await client.query('BEGIN');
 
       const {
-        customerName,
-        customerPhone,
-        customerEmail,
-        customerAddress,
+        userId,
         bookingDate,
         products,
         transportCharge = 0,
@@ -44,8 +38,17 @@ class BookingService {
       } = bookingData;
 
       // Validate required fields
-      if (!customerName || !customerPhone || !bookingDate || !products || products.length === 0) {
-        throw new Error('Missing required fields: customerName, customerPhone, bookingDate, products');
+      if (!userId || !bookingDate || !products || products.length === 0) {
+        throw new Error('Missing required fields: userId, bookingDate, products');
+      }
+
+      // Verify user exists
+      const userCheck = await client.query(
+        'SELECT id FROM users WHERE id = $1 AND is_deleted = FALSE',
+        [userId]
+      );
+      if (userCheck.rows.length === 0) {
+        throw new Error(`User with id ${userId} not found`);
       }
 
       // Calculate overall booked_from (earliest) and booked_to (latest) from products
@@ -57,16 +60,13 @@ class BookingService {
       // Create booking
       const bookingResult = await client.query(
         `INSERT INTO bookings (
-          customer_name, customer_phone, customer_email, customer_address,
+          user_id,
           booking_date, status, transport_charge, created_by,
           booked_from, booked_to
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING id, created_at`,
         [
-          customerName,
-          customerPhone,
-          customerEmail || null,
-          customerAddress || null,
+          userId,
           bookingDate,
           'pending',
           transportCharge,
@@ -613,9 +613,28 @@ class BookingService {
   async getBookingById(bookingId) {
     const result = await pool.query(
       `SELECT 
-        b.*,
-        COALESCE(b.booked_from, MIN(bp.booked_from)) as booked_from,
-        COALESCE(b.booked_to, MAX(bp.booked_to)) as booked_to,
+        b.id,
+        b.booking_date,
+        b.status,
+        b.transport_charge,
+        b.transport_paid,
+        b.final_discount,
+        b.special_requirements,
+        b.created_by,
+        b.created_at,
+        b.updated_at,
+        COALESCE(b.booked_from, MIN(bp.booked_from)) AS booked_from,
+        COALESCE(b.booked_to, MAX(bp.booked_to)) AS booked_to,
+        json_build_object(
+          'id',                      u.id,
+          'name',                    u.name,
+          'phone',                   u.phone,
+          'phone_country',           u.phone_country,
+          'alternate_phone',         u.alternate_phone,
+          'alternate_phone_country', u.alternate_phone_country,
+          'address',                 u.address,
+          'email',                   u.email
+        ) AS user,
         json_agg(
           json_build_object(
             'id', bp.id,
@@ -637,12 +656,13 @@ class BookingService {
             'picked_up_at', bp.picked_up_at,
             'returned_at', bp.returned_at
           )
-        ) FILTER (WHERE p.id IS NOT NULL) as products
+        ) FILTER (WHERE p.id IS NOT NULL) AS products
        FROM bookings b
+       JOIN users u ON b.user_id = u.id
        LEFT JOIN booking_products bp ON b.id = bp.booking_id
        LEFT JOIN products p ON bp.product_id = p.id
        WHERE b.id = $1
-       GROUP BY b.id`,
+       GROUP BY b.id, u.id`,
       [bookingId]
     );
 
@@ -668,21 +688,28 @@ class BookingService {
     let query = `
       SELECT 
         b.id,
-        b.customer_name,
-        b.customer_phone,
-        b.customer_email,
         b.booking_date,
-        COALESCE(b.booked_from, MIN(bp.booked_from)) as booked_from,
-        COALESCE(b.booked_to, MAX(bp.booked_to)) as booked_to,
+        COALESCE(b.booked_from, MIN(bp.booked_from)) AS booked_from,
+        COALESCE(b.booked_to, MAX(bp.booked_to)) AS booked_to,
         b.status,
         b.transport_charge,
         b.transport_paid,
         b.created_by,
         b.created_at,
-        COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) as product_count,
-        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_rent,
-        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_effective_rent,
-        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER as total_security,
+        json_build_object(
+          'id',                      u.id,
+          'name',                    u.name,
+          'phone',                   u.phone,
+          'phone_country',           u.phone_country,
+          'alternate_phone',         u.alternate_phone,
+          'alternate_phone_country', u.alternate_phone_country,
+          'address',                 u.address,
+          'email',                   u.email
+        ) AS user,
+        COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) AS product_count,
+        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_rent,
+        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_effective_rent,
+        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_security,
         COALESCE((
           SELECT SUM(pc.paid_amount) 
           FROM product_charges pc 
@@ -692,7 +719,7 @@ class BookingService {
             bp2.status NOT IN ('exchanged', 'cancelled')
             OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
           )
-        ), 0)::INTEGER as total_paid,
+        ), 0)::INTEGER AS total_paid,
         json_agg(
           DISTINCT jsonb_build_object(
             'id', bp.id,
@@ -709,8 +736,9 @@ class BookingService {
             'booked_from', bp.booked_from,
             'booked_to', bp.booked_to
           )
-        ) FILTER (WHERE p.id IS NOT NULL) as products
+        ) FILTER (WHERE p.id IS NOT NULL) AS products
       FROM bookings b
+      JOIN users u ON b.user_id = u.id
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
       LEFT JOIN products p ON bp.product_id = p.id
       WHERE 1=1
@@ -727,11 +755,11 @@ class BookingService {
 
     if (search) {
       paramCount++;
-      query += ` AND (b.customer_name ILIKE $${paramCount} OR b.customer_phone ILIKE $${paramCount})`;
+      query += ` AND (u.name ILIKE $${paramCount} OR u.phone ILIKE $${paramCount})`;
       params.push(`%${search}%`);
     }
 
-    query += ` GROUP BY b.id ORDER BY b.created_at DESC`;
+    query += ` GROUP BY b.id, u.id ORDER BY b.created_at DESC`;
 
     paramCount++;
     query += ` LIMIT $${paramCount}`;
@@ -742,7 +770,6 @@ class BookingService {
     params.push(offset);
 
     const result = await pool.query(query, params);
-
     return result.rows;
   }
 
@@ -969,10 +996,15 @@ class BookingService {
     try {
       const result = await pool.query(
         `SELECT b.id, b.booking_date, b.status,
-                b.customer_name, b.customer_phone,
-                bp.id as booking_product_id, bp.status as product_status,
+                json_build_object(
+                  'id',    u.id,
+                  'name',  u.name,
+                  'phone', u.phone
+                ) AS user,
+                bp.id AS booking_product_id, bp.status AS product_status,
                 bp.booked_from, bp.booked_to
          FROM bookings b
+         JOIN users u ON b.user_id = u.id
          JOIN booking_products bp ON bp.booking_id = b.id
          WHERE bp.product_id = $1
            AND bp.status NOT IN ('cancelled', 'exchanged')
@@ -985,6 +1017,53 @@ class BookingService {
       console.error('Error fetching bookings by product:', error);
       throw error;
     }
+  }
+
+  /**
+   * Hard-delete a booking and all its cascaded records (admin only).
+   * Runs inside a transaction so partial deletes never persist.
+   * @param {number} bookingId
+   * @throws {Error} with message 'Booking not found' if id does not exist
+   */
+  async deleteBooking(bookingId) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const check = await client.query(
+        'SELECT id FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+      if (check.rows.length === 0) {
+        await client.query('ROLLBACK');
+        const err = new Error('Booking not found');
+        err.status = 404;
+        throw err;
+      }
+
+      // ON DELETE CASCADE handles booking_products and related records
+      await client.query('DELETE FROM bookings WHERE id = $1', [bookingId]);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Resolve the booking_id for a given booking_product id.
+   * Used by the cancellation flow to look up default penalties.
+   * @param {number} bookingProductId
+   * @returns {number|null} booking_id, or null if record not found
+   */
+  async getBookingIdByBookingProductId(bookingProductId) {
+    const result = await pool.query(
+      'SELECT booking_id FROM booking_products WHERE id = $1',
+      [bookingProductId]
+    );
+    return result.rows[0]?.booking_id ?? null;
   }
 }
 

@@ -5,6 +5,7 @@ export function createUsersApi(api: AxiosInstance) {
   return {
     getAll: () => api.get<User[]>('/users'),
     getById: (id: number) => api.get<User>(`/users/${id}`),
+    search: (phone: string) => api.get<User[]>(`/users/search?phone=${encodeURIComponent(phone)}`),
     create: (data: Omit<User, 'id' | 'created_at' | 'updated_at'>) => 
       api.post<User>('/users', data),
     update: (id: number, data: Partial<User>) => 

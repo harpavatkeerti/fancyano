@@ -18,10 +18,8 @@ const routePermissions = {
   // Route → allowed roles mapping
   // Routes not listed here default to: any authenticated user
   routes: {
-    '/api/users':        ['admin'],
     '/api/policies':     ['admin'],
     '/api/credit-notes': ['admin'],
-    '/api/setup':        ['admin'],
     // Add more role-restricted routes as needed — one-line change to modify access
   },
 
@@ -33,7 +31,6 @@ const routePermissions = {
     '/api/settings':            'settings',
     '/api/policies':            'policies',
     '/api/credit-notes':        'creditNotes',
-    '/api/setup':               'setup',
     // Shared (any authenticated user)
     '/api/products':            'products',
     '/api/bookings':            'bookings',

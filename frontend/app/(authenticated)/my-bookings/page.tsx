@@ -136,10 +136,10 @@ export default function MyBookingsPage() {
       const bookingIdMatch = booking.id.toString().includes(searchTerm);
       
       // Search by Customer Name
-      const customerNameMatch = booking.customer_name?.toLowerCase().includes(searchTerm);
+      const customerNameMatch = booking.user.name.toLowerCase().includes(searchTerm);
       
       // Search by Mobile Number (remove country code and search)
-      const phoneMatch = booking.customer_phone?.replace(/\D/g, '').includes(searchTerm.replace(/\D/g, ''));
+      const phoneMatch = booking.user.phone.replace(/\D/g, '').includes(searchTerm.replace(/\D/g, ''));
       
       return bookingIdMatch || customerNameMatch || phoneMatch;
     });
@@ -492,7 +492,7 @@ export default function MyBookingsPage() {
                         {new Date(booking.booked_to).toLocaleDateString('en-GB')}
                       </p>
                       <p className="text-sm text-gray-600 mt-1">
-                        Customer: {booking.customer_name}
+                        Customer: {booking.user.name}
                       </p>
                       <p className="text-sm text-gray-600">
                         Total: ₹{Math.floor(

@@ -5,8 +5,10 @@ import React, { useState } from 'react';
 interface BookingDateRange {
   booked_from: string;
   booked_to: string;
-  customer_name: string;
-  customer_phone: string;
+  user: {
+    name: string;
+    phone: string;
+  };
 }
 
 interface AvailabilityCalendarProps {
@@ -126,7 +128,7 @@ export default function AvailabilityCalendar({ bookings, onClose, productName }:
                     }
                     ${isToday ? 'ring-2 ring-blue-500' : ''}
                   `}
-                  title={booking ? `Booked: ${booking.customer_name} (${booking.customer_phone})` : 'Available'}
+                  title={booking ? `Booked: ${booking.user.name} (${booking.user.phone})` : 'Available'}
                 >
                   {day}
                 </div>
@@ -159,8 +161,8 @@ export default function AvailabilityCalendar({ bookings, onClose, productName }:
               {bookings.map((booking, index) => (
                 <div key={index} className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm">
                   <div className="flex justify-between">
-                    <span className="font-medium text-gray-800">{booking.customer_name}</span>
-                    <span className="text-gray-600">{booking.customer_phone}</span>
+                    <span className="font-medium text-gray-800">{booking.user.name}</span>
+                    <span className="text-gray-600">{booking.user.phone}</span>
                   </div>
                   <div className="text-red-600 mt-1">
                     {new Date(booking.booked_from).toLocaleDateString('en-GB')} → {new Date(booking.booked_to).toLocaleDateString('en-GB')}

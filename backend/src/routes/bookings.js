@@ -66,10 +66,7 @@ router.get('/:id', async (req, res) => {
 router.post('/', async (req, res) => {
   try {
     const {
-      customer_name,
-      customer_phone,
-      customer_email,
-      customer_address,
+      user_id,
       booking_date,
       products,
       transport_charge = 0,
@@ -78,10 +75,10 @@ router.post('/', async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!customer_name || !customer_phone || !booking_date || !products || products.length === 0) {
+    if (!user_id || !booking_date || !products || products.length === 0) {
       return res.status(400).json({
         error: 'Required fields missing',
-        required: ['customer_name', 'customer_phone', 'booking_date', 'products']
+        required: ['user_id', 'booking_date', 'products']
       });
     }
 
@@ -112,12 +109,9 @@ router.post('/', async (req, res) => {
       };
     });
 
-    // Create booking using service (it will call DiscountCalculator internally)
+    // Create booking using service
     const result = await bookingService.createBooking({
-      customerName: customer_name,
-      customerPhone: customer_phone,
-      customerEmail: customer_email,
-      customerAddress: customer_address,
+      userId: user_id,
       bookingDate: booking_date,
       products: transformedProducts,
       transportCharge: transport_charge,
@@ -269,35 +263,15 @@ router.put('/:id/status', async (req, res) => {
 
 // DELETE booking (admin only)
 router.delete('/:id', requireRole('admin'), async (req, res) => {
-  const pool = require('../database/connection');
-  const client = await pool.connect();
-
   try {
-    await client.query('BEGIN');
-    const { id } = req.params;
-
-    // Verify booking exists
-    const bookingResult = await client.query(
-      'SELECT id FROM bookings WHERE id = $1',
-      [id]
-    );
-
-    if (bookingResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ error: 'Booking not found' });
-    }
-
-    // Delete booking (cascade will handle related records)
-    await client.query('DELETE FROM bookings WHERE id = $1', [id]);
-
-    await client.query('COMMIT');
+    await bookingService.deleteBooking(parseInt(req.params.id));
     res.json({ message: 'Booking deleted successfully' });
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (error.status === 404 || error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
     console.error('Error deleting booking:', error);
     res.status(500).json({ error: 'Failed to delete booking' });
-  } finally {
-    client.release();
   }
 });
 

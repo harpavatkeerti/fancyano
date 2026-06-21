@@ -102,12 +102,8 @@ router.post('/', checkSalesmanPermission('cancellation_allowed'), async (req, re
 
     const results = [];
 
-    // Get the preview to know the policy-based default penalties per product
-    // This ensures that when no manual override is provided, the correct penalty is applied
-    const firstBp = await require('../database/connection').query(
-      'SELECT booking_id FROM booking_products WHERE id = $1', [booking_product_ids[0]]
-    );
-    const previewBookingId = firstBp.rows[0]?.booking_id;
+    // Resolve the booking_id from the first booking_product to fetch default penalties
+    const previewBookingId = await bookingService.getBookingIdByBookingProductId(booking_product_ids[0]);
     let defaultPenalties = {};
     if (previewBookingId) {
       const preview = await productLifecycleService.calculateCancellationPreview(previewBookingId);

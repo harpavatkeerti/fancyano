@@ -1,13 +1,14 @@
 'use client';
 
-import { bookingsApi, settingsApi } from '@/lib/api';
-import { useEffect, useState } from 'react';
+import { bookingsApi, settingsApi, usersApi } from '@/lib/api';
+import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
 import { PhoneInput } from '@/components/common';
 import { toast } from '@/lib/toast';
 import { useAuth } from '@/lib/authContext';
+import type { User } from '@/lib/api';
 
 interface CartItem {
   product: any;
@@ -36,6 +37,21 @@ export default function CartPage() {
   const [customerPhoneCountry, setCustomerPhoneCountry] = useState('IN');
   const [alternatePhone, setAlternatePhone] = useState('');
   const [alternatePhoneCountry, setAlternatePhoneCountry] = useState('IN');
+  const [customerAddress, setCustomerAddress] = useState('');
+
+  // Phone search / user-link state
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [phoneSearchResults, setPhoneSearchResults] = useState<User[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showPhoneDropdown, setShowPhoneDropdown] = useState(false);
+  const phoneSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // User-change confirm dialog
+  const [showUserConfirmDialog, setShowUserConfirmDialog] = useState(false);
+  const [userConfirmDiff, setUserConfirmDiff] = useState<{ field: string; old: string; new: string }[]>([]);
+  const [pendingUserId, setPendingUserId] = useState<number | null>(null);
+  const [pendingUserUpdateData, setPendingUserUpdateData] = useState<Partial<User> | null>(null);
+  const [pendingFreshUser, setPendingFreshUser] = useState<User | null>(null);
 
   // Discount state
   const [discountType, setDiscountType] = useState<'percentage' | 'amount' | null>(null);
@@ -56,6 +72,7 @@ export default function CartPage() {
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
+  const [pendingUserIdForWarning, setPendingUserIdForWarning] = useState<number | null>(null);
 
   // Calculate time remaining before cart expires
   function calculateTimeRemaining(): { minutes: number; seconds: number } | null {
@@ -296,6 +313,42 @@ export default function CartPage() {
     };
   }
 
+  // Debounced phone search — min 3 digits, fires 350ms after last keystroke
+  function handlePhoneSearch(digits: string) {
+    if (phoneSearchTimerRef.current) clearTimeout(phoneSearchTimerRef.current);
+    if (digits.length < 3) {
+      setPhoneSearchResults([]);
+      setShowPhoneDropdown(false);
+      return;
+    }
+    phoneSearchTimerRef.current = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const res = await usersApi.search(digits);
+        const users = res.data || [];
+        setPhoneSearchResults(users);
+        setShowPhoneDropdown(users.length > 0);
+      } catch {
+        setPhoneSearchResults([]);
+        setShowPhoneDropdown(false);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 350);
+  }
+
+  // Auto-fill form when a user is selected from dropdown
+  function handleUserSelect(user: User) {
+    setSelectedUser(user);
+    setShowPhoneDropdown(false);
+    setCustomerPhone(user.phone);
+    setCustomerPhoneCountry(user.phone_country);
+    setCustomerName(user.name);
+    setAlternatePhone(user.alternate_phone || '');
+    setAlternatePhoneCountry(user.alternate_phone_country || 'IN');
+    setCustomerAddress(user.address || '');
+  }
+
   async function handleConfirm() {
     if (!customerName || !customerPhone || !alternatePhone) {
       toast.warning('Please fill in all customer details');
@@ -335,11 +388,94 @@ export default function CartPage() {
     const tightScheduleCheck = await checkTightSchedule();
     if (tightScheduleCheck.hasTightSchedule) {
       setWarningMessage(tightScheduleCheck.message);
+      // ── Path A: existing user ──
+      if (selectedUser) {
+        const freshRes = await usersApi.getById(selectedUser.id).catch(() => null);
+        const freshUser: User | null = freshRes?.data || null;
+        if (!freshUser) { toast.error('Could not verify customer.'); return; }
+        const diff = computeUserDiff(freshUser);
+        if (diff.length > 0) {
+          setPendingUserId(freshUser.id);
+          setPendingFreshUser(freshUser);
+          setPendingUserUpdateData(buildUpdatePayload());
+          setUserConfirmDiff(diff);
+          setPendingUserIdForWarning(freshUser.id);
+          // Show user confirm first; tight-schedule warning will show after
+          setShowUserConfirmDialog(true);
+          return;
+        }
+        setPendingUserIdForWarning(freshUser.id);
+      } else {
+        setPendingUserIdForWarning(null); // Path B — will create user in warning proceed
+      }
       setShowWarningModal(true);
       return;
     }
 
-    await createBooking();
+    // ── Path A: existing user ──
+    if (selectedUser) {
+      const freshRes = await usersApi.getById(selectedUser.id).catch(() => null);
+      const freshUser: User | null = freshRes?.data || null;
+      if (!freshUser) { toast.error('Could not verify customer.'); return; }
+
+      const diff = computeUserDiff(freshUser);
+      if (diff.length > 0) {
+        setPendingUserId(freshUser.id);
+        setPendingFreshUser(freshUser);
+        setPendingUserUpdateData(buildUpdatePayload());
+        setUserConfirmDiff(diff);
+        setWarningMessage(''); // clear any stale tight-schedule warning from a previous attempt
+        setShowUserConfirmDialog(true);
+        return;
+      }
+
+      await createBooking(freshUser.id);
+      return;
+    }
+
+    // ── Path B: new customer ──
+    try {
+      const createRes = await usersApi.create({
+        name: customerName,
+        phone: customerPhone,
+        phone_country: customerPhoneCountry,
+        alternate_phone: alternatePhone,
+        alternate_phone_country: alternatePhoneCountry,
+        email: '',
+        address: customerAddress,
+        role: 'customer',
+      } as any);
+      await createBooking(createRes.data.id);
+    } catch (error: any) {
+      if (error?.response?.status === 409) {
+        toast.error('This phone number is already registered. Search and select the customer from the dropdown.');
+      } else {
+        toast.error(error?.response?.data?.error || 'Failed to create customer');
+      }
+    }
+  }
+
+  // Helper: build the diff of form values vs DB values (only editable fields)
+  function computeUserDiff(freshUser: User): { field: string; old: string; new: string }[] {
+    const diff: { field: string; old: string; new: string }[] = [];
+    if (customerName !== freshUser.name)
+      diff.push({ field: 'Name', old: freshUser.name, new: customerName });
+    if (alternatePhone !== (freshUser.alternate_phone || ''))
+      diff.push({ field: 'Alternate Mobile', old: freshUser.alternate_phone || '(none)', new: alternatePhone });
+    if (alternatePhoneCountry !== (freshUser.alternate_phone_country || 'IN'))
+      diff.push({ field: 'Alt. Country', old: freshUser.alternate_phone_country || 'IN', new: alternatePhoneCountry });
+    if ((customerAddress || '') !== (freshUser.address || ''))
+      diff.push({ field: 'Address', old: freshUser.address || '(none)', new: customerAddress || '(none)' });
+    return diff;
+  }
+
+  function buildUpdatePayload(): Partial<User> {
+    return {
+      name: customerName,
+      alternate_phone: alternatePhone,
+      alternate_phone_country: alternatePhoneCountry,
+      address: customerAddress || undefined,
+    };
   }
 
   async function checkDatabaseAvailability() {
@@ -435,11 +571,8 @@ export default function CartPage() {
     }
   }
 
-  async function createBooking() {
+  async function createBooking(userId: number) {
     try {
-      const country1 = getCountryByCode(customerPhoneCountry);
-      const country2 = getCountryByCode(alternatePhoneCountry);
-
       // Calculate total security deposit from all products
       const totalSecurityDeposit = calculateSecurityDeposit();
 
@@ -448,13 +581,8 @@ export default function CartPage() {
       // Create one booking with all products
       const discountAmount = calculateDiscount();
       const bookingResponse = await bookingsApi.create({
-        customer_name: customerName,
-        customer_phone: `${country1?.callingCode}${customerPhone}`,
-        alternate_phone: `${country2?.callingCode}${alternatePhone}`,
-        customer_address: '',
+        user_id: userId,
         booking_date: new Date().toISOString().split('T')[0],
-        booked_from: '', // Will be calculated from products
-        booked_to: '', // Will be calculated from products
         products: cartItems.map(item => ({
           id: item.product.id,
           booked_from: item.dateFrom,
@@ -912,61 +1040,106 @@ export default function CartPage() {
 
           {/* Customer Contact Details */}
           <div className="mt-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Add Customer Contact Details</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Customer Details</h3>
             <div className="space-y-4">
-              <input
-                type="text"
-                placeholder="Name*"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-              />
-              <div className="grid grid-cols-2 gap-4">
+              {/* Phone-first search */}
+              <div className="relative">
                 <PhoneInput
-                  label="Phone Number"
+                  label="Primary Phone Number*"
                   value={customerPhone}
                   countryCode={customerPhoneCountry}
                   onValueChange={(value) => {
                     setCustomerPhone(value);
-                    // Check for duplicates
+                    setSelectedUser(null); // reset linked user on manual edit
+                    handlePhoneSearch(value);
+                    // Check duplicates
                     if (value && alternatePhone) {
                       const c1 = getCountryByCode(customerPhoneCountry);
                       const c2 = getCountryByCode(alternatePhoneCountry);
-                      if (c1 && c2) {
-                        const full1 = `${c1.callingCode}${value}`;
-                        const full2 = `${c2.callingCode}${alternatePhone}`;
-                        if (full1 === full2) {
-                          toast.warning('Phone numbers cannot be the same');
-                        }
+                      if (c1 && c2 && `${c1.callingCode}${value}` === `${c2.callingCode}${alternatePhone}`) {
+                        toast.warning('Phone numbers cannot be the same');
                       }
                     }
                   }}
-                  onCountryCodeChange={(code) => setCustomerPhoneCountry(code)}
-                  required
-                />
-                <PhoneInput
-                  label="Alternate Phone Number"
-                  value={alternatePhone}
-                  countryCode={alternatePhoneCountry}
-                  onValueChange={(value) => {
-                    setAlternatePhone(value);
-                    // Check for duplicates
-                    if (customerPhone && value) {
-                      const c1 = getCountryByCode(customerPhoneCountry);
-                      const c2 = getCountryByCode(alternatePhoneCountry);
-                      if (c1 && c2) {
-                        const full1 = `${c1.callingCode}${customerPhone}`;
-                        const full2 = `${c2.callingCode}${value}`;
-                        if (full1 === full2) {
-                          toast.warning('Phone numbers cannot be the same');
-                        }
-                      }
-                    }
+                  onCountryCodeChange={(code) => {
+                    setCustomerPhoneCountry(code);
+                    setSelectedUser(null);
                   }}
-                  onCountryCodeChange={(code) => setAlternatePhoneCountry(code)}
                   required
                 />
+                {/* Search results dropdown */}
+                {showPhoneDropdown && phoneSearchResults.length > 0 && (
+                  <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                    {phoneSearchResults.map((user) => (
+                      <button
+                        key={user.id}
+                        type="button"
+                        onClick={() => handleUserSelect(user)}
+                        className="w-full text-left px-4 py-3 hover:bg-blue-50 transition-colors border-b last:border-0"
+                      >
+                        <p className="font-medium text-gray-900">{user.name}</p>
+                        <p className="text-sm text-gray-500">{user.phone} {user.alternate_phone ? `· ${user.alternate_phone}` : ''}</p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {isSearching && (
+                  <p className="text-xs text-gray-400 mt-1">Searching...</p>
+                )}
               </div>
+
+              {selectedUser && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-300 rounded-lg text-sm">
+                  <span className="text-green-600">✓</span>
+                  <span className="text-green-800 font-medium">Returning customer: {selectedUser.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedUser(null);
+                      setCustomerName('');
+                      setAlternatePhone('');
+                      setAlternatePhoneCountry('IN');
+                      setCustomerAddress('');
+                    }}
+                    className="ml-auto text-gray-400 hover:text-red-500 text-xs"
+                  >
+                    ✕ Clear
+                  </button>
+                </div>
+              )}
+
+              <input
+                type="text"
+                placeholder="Full Name*"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              <PhoneInput
+                label="Alternate Phone Number*"
+                value={alternatePhone}
+                countryCode={alternatePhoneCountry}
+                onValueChange={(value) => {
+                  setAlternatePhone(value);
+                  // Check for duplicates
+                  if (customerPhone && value) {
+                    const c1 = getCountryByCode(customerPhoneCountry);
+                    const c2 = getCountryByCode(alternatePhoneCountry);
+                    if (c1 && c2 && `${c1.callingCode}${customerPhone}` === `${c2.callingCode}${value}`) {
+                      toast.warning('Phone numbers cannot be the same');
+                    }
+                  }
+                }}
+                onCountryCodeChange={(code) => setAlternatePhoneCountry(code)}
+                required
+              />
+              <input
+                type="text"
+                placeholder="Address (optional)"
+                value={customerAddress}
+                onChange={(e) => setCustomerAddress(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
             </div>
           </div>
         </div>
@@ -1013,7 +1186,7 @@ export default function CartPage() {
         </div>
       </div>
 
-      {/* Warning Modal */}
+      {/* Tight Schedule Warning Modal */}
       {showWarningModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg max-w-md w-full p-6">
@@ -1038,13 +1211,95 @@ export default function CartPage() {
                 Cancel
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
                   setShowWarningModal(false);
-                  createBooking();
+                  if (pendingUserIdForWarning !== null) {
+                    // Path A — user already resolved
+                    await createBooking(pendingUserIdForWarning);
+                  } else {
+                    // Path B — create user then book
+                    try {
+                      const createRes = await usersApi.create({
+                        name: customerName,
+                        phone: customerPhone,
+                        phone_country: customerPhoneCountry,
+                        alternate_phone: alternatePhone,
+                        alternate_phone_country: alternatePhoneCountry,
+                        email: '',
+                        address: customerAddress,
+                        role: 'customer',
+                      } as any);
+                      await createBooking(createRes.data.id);
+                    } catch (error: any) {
+                      toast.error(error?.response?.data?.error || 'Failed to create customer');
+                    }
+                  }
                 }}
                 className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
               >
                 Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* User Details Change Confirm Dialog */}
+      {showUserConfirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Update Customer Details?</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              You've changed some details for this returning customer. Do you want to update their record?
+            </p>
+            <div className="space-y-2 mb-6 bg-gray-50 rounded-lg p-3">
+              {userConfirmDiff.map((d, i) => (
+                <div key={i} className="text-sm">
+                  <span className="font-medium text-gray-700">{d.field}:</span>{' '}
+                  <span className="line-through text-red-500">{d.old}</span>
+                  {' → '}
+                  <span className="text-green-700 font-medium">{d.new}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  // Revert form to DB values and stay on page
+                  if (pendingFreshUser) {
+                    setCustomerName(pendingFreshUser.name);
+                    setAlternatePhone(pendingFreshUser.alternate_phone || '');
+                    setAlternatePhoneCountry(pendingFreshUser.alternate_phone_country || 'IN');
+                    setCustomerAddress(pendingFreshUser.address || '');
+                  }
+                  setShowUserConfirmDialog(false);
+                  toast.info('Customer details reverted to saved record. Review and submit when ready.');
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Keep Old Details
+              </button>
+              <button
+                onClick={async () => {
+                  setShowUserConfirmDialog(false);
+                  if (pendingUserId && pendingUserUpdateData) {
+                    try {
+                      await usersApi.update(pendingUserId, pendingUserUpdateData);
+                    } catch {
+                      toast.warning('Could not update customer details, proceeding with booking.');
+                    }
+                  }
+                  if (warningMessage) {
+                    // Came from tight schedule path — show tight schedule warning now
+                    setShowWarningModal(true);
+                  } else {
+                    // Normal path — create booking with updated user details
+                    if (pendingUserId) await createBooking(pendingUserId);
+                  }
+                }}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium"
+              >
+                Update & Continue
               </button>
             </div>
           </div>

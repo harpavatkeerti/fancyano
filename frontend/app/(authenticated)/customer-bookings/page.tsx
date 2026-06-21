@@ -321,10 +321,10 @@ export default function CustomerBookingsPage() {
                         {new Date(booking.booked_to).toLocaleDateString('en-GB')}
                       </p>
                       <p className="text-sm text-gray-600 mt-1">
-                        Customer: {booking.customer_name}
+                        Customer: {booking.user.name}
                       </p>
                       <p className="text-sm text-gray-600">
-                        Phone: {booking.customer_phone}
+                        Phone: {booking.user.phone}
                       </p>
                       <p className="text-sm text-gray-600">
                         Total: ₹{Math.floor(

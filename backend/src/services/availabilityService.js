@@ -17,12 +17,13 @@ class AvailabilityService {
     const query = `
       SELECT 
         b.id,
-        b.customer_name,
+        u.name AS customer_name,
         b.status,
         bp.booked_from,
         bp.booked_to,
         bp.status as product_status
       FROM bookings b
+      JOIN users u ON b.user_id = u.id
       JOIN booking_products bp ON b.id = bp.booking_id
       WHERE 
         bp.product_id = $1

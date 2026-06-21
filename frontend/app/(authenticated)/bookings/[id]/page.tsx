@@ -6,7 +6,7 @@ import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, invoi
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { makeShareableUrl } from '@/lib/urlHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import RequireRole from '@/components/common/RequireRole';
 import { toast } from '@/lib/toast';
@@ -366,12 +366,12 @@ export default function OrderDetailsPage() {
     }
 
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
-    const message = `Hi ${booking.customer_name}, your ${documentName} for booking #${booking.id} is ready. Download PDF: ${pdfDownloadLink}`;
+    const message = `Hi ${booking.user.name}, your ${documentName} for booking #${booking.id} is ready. Download PDF: ${pdfDownloadLink}`;
 
     const phoneNumbers: string[] = [];
 
     if (phoneType === 'customer' || phoneType === 'both') {
-      const customerPhone = formatPhoneNumber(booking.customer_phone || '');
+      const customerPhone = formatPhoneNumber(booking.user.phone || '');
       if (customerPhone) {
         phoneNumbers.push(customerPhone);
       } else {
@@ -381,7 +381,7 @@ export default function OrderDetailsPage() {
     }
 
     if (phoneType === 'alternate' || phoneType === 'both') {
-      const alternatePhone = formatPhoneNumber(booking.alternate_phone || '');
+      const alternatePhone = formatPhoneNumber(booking.user.alternate_phone || '');
       if (alternatePhone) {
         phoneNumbers.push(alternatePhone);
       } else {
@@ -409,7 +409,7 @@ export default function OrderDetailsPage() {
   }
 
   async function handleShareEmail() {
-    if (!booking?.customer_name) {
+    if (!booking?.user.name) {
       toast.warning('Customer information not available');
       return;
     }
@@ -427,10 +427,10 @@ export default function OrderDetailsPage() {
     const documentName = pdfType === 'estimate' ? 'Estimate' : pdfType === 'invoice' ? 'Invoice' : 'Tax Invoice';
 
     // Prompt for customer email if not available
-    let customerEmail = booking.customer_email || null;
+    let customerEmail = booking.user.email || null;
 
     if (!customerEmail) {
-      const emailInput = prompt(`Enter customer email address for ${booking.customer_name}:`);
+      const emailInput = prompt(`Enter customer email address for ${booking.user.name}:`);
       if (!emailInput || !emailInput.trim()) {
         toast.warning('Email address is required to send email');
         return;
@@ -443,7 +443,7 @@ export default function OrderDetailsPage() {
       const response = await invoicesApi.sendEmail({
         bookingId: booking.id,
         documentType: pdfType,
-        customerName: booking.customer_name,
+        customerName: booking.user.name,
         customerEmail: customerEmail,
         pdfUrl: pdfPublicUrl
       });
@@ -460,7 +460,7 @@ export default function OrderDetailsPage() {
 
       if (useMailto) {
         // Construct email body with PDF download link
-        const emailBody = `Hi ${booking.customer_name},\n\nPlease find your ${documentName} for booking #${booking.id} below.\n\nDownload PDF: ${pdfPublicUrl}\n\nNote: The PDF is available for download at the link above. Please download and attach it to this email if needed.\n\nThank you!`;
+        const emailBody = `Hi ${booking.user.name},\n\nPlease find your ${documentName} for booking #${booking.id} below.\n\nDownload PDF: ${pdfPublicUrl}\n\nNote: The PDF is available for download at the link above. Please download and attach it to this email if needed.\n\nThank you!`;
 
         const subject = encodeURIComponent(`${documentName} for Booking #${booking.id}`);
         const body = encodeURIComponent(emailBody);
@@ -1099,33 +1099,50 @@ export default function OrderDetailsPage() {
               <div className="flex justify-between">
                 <span className="text-gray-600">Name:</span>
                 <span className="font-medium text-gray-900">
-                  {booking.customer_name}
+                  {booking.user.name}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-gray-600">Phone Number:</span>
-                <div className="text-right">
-                  <p className="font-medium text-gray-900">
-                    {booking.customer_phone}
-                  </p>
-                  {booking.alternate_phone && (
-                    <p className="font-medium text-gray-900">
-                      {booking.alternate_phone}
-                    </p>
+                <div className="text-right space-y-1">
+                  {/* Primary phone with flag */}
+                  <div className="flex items-center justify-end gap-2">
+                    {booking.user.phone_country && (
+                      <FlagIcon
+                        countryCode={booking.user.phone_country}
+                        className="w-5 h-3.5 rounded-sm flex-shrink-0"
+                        alt={booking.user.phone_country}
+                      />
+                    )}
+                    <p className="font-medium text-gray-900">{booking.user.phone}</p>
+                  </div>
+                  {/* Alternate phone with flag */}
+                  {booking.user.alternate_phone && (
+                    <div className="flex items-center justify-end gap-2">
+                      {booking.user.alternate_phone_country && (
+                        <FlagIcon
+                          countryCode={booking.user.alternate_phone_country}
+                          className="w-5 h-3.5 rounded-sm flex-shrink-0"
+                          alt={booking.user.alternate_phone_country}
+                        />
+                      )}
+                      <p className="font-medium text-gray-900">{booking.user.alternate_phone}</p>
+                    </div>
                   )}
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Delivery Address */}
+
+          {/* Address */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Delivery Address
+              Address
             </h3>
             <div className="space-y-2">
               <p className="text-sm text-gray-900">
-                {booking.customer_address || 'No address provided'}
+                {booking.user.address || 'No address provided'}
               </p>
             </div>
           </div>
@@ -1288,14 +1305,14 @@ export default function OrderDetailsPage() {
 
             <div className="space-y-3">
               {/* Customer Phone Option */}
-              {booking.customer_phone && (
+              {booking.user.phone && (
                 <button
                   onClick={() => handleShareWhatsApp('customer')}
                   className="w-full px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-left flex items-center justify-between"
                 >
                   <div>
                     <div className="font-semibold">Customer Phone</div>
-                    <div className="text-sm text-green-100">{booking.customer_phone}</div>
+                    <div className="text-sm text-green-100">{booking.user.phone}</div>
                   </div>
                   <svg
                     className="w-5 h-5"
@@ -1308,14 +1325,14 @@ export default function OrderDetailsPage() {
               )}
 
               {/* Alternate Phone Option */}
-              {booking.alternate_phone && (
+              {booking.user.alternate_phone && (
                 <button
                   onClick={() => handleShareWhatsApp('alternate')}
                   className="w-full px-4 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-left flex items-center justify-between"
                 >
                   <div>
                     <div className="font-semibold">Alternate Phone</div>
-                    <div className="text-sm text-green-100">{booking.alternate_phone}</div>
+                    <div className="text-sm text-green-100">{booking.user.alternate_phone}</div>
                   </div>
                   <svg
                     className="w-5 h-5"
@@ -1328,7 +1345,7 @@ export default function OrderDetailsPage() {
               )}
 
               {/* Both Numbers Option */}
-              {booking.customer_phone && booking.alternate_phone && (
+              {booking.user.phone && booking.user.alternate_phone && (
                 <button
                   onClick={() => handleShareWhatsApp('both')}
                   className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-left flex items-center justify-between border-2 border-green-500"
@@ -1347,7 +1364,7 @@ export default function OrderDetailsPage() {
                 </button>
               )}
 
-              {!booking.customer_phone && !booking.alternate_phone && (
+              {!booking.user.phone && !booking.user.alternate_phone && (
                 <div className="text-center py-4 text-gray-500">
                   No phone numbers available for this booking
                 </div>

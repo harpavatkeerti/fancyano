@@ -3,9 +3,10 @@
 import { useEffect, useState } from 'react';
 import { usersApi } from '@/lib/api';
 import { User } from '@/types';
-import { Button, Input } from '@/components/common';
+import { Button, Input, PhoneInput } from '@/components/common';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
+import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 
 export default function UsersPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
@@ -19,13 +20,13 @@ export default function UsersPage() {
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
+    phone_country: 'IN',
+    alternate_phone: '',
+    alternate_phone_country: 'IN',
     role: 'customer' as 'admin' | 'salesman' | 'customer',
-    username: '',
-    password: '',
     email: '',
     address: '',
   });
-  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -44,40 +45,84 @@ export default function UsersPage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Validate primary phone (create only — locked on edit)
+    if (!editingUser) {
+      if (!formData.phone) {
+        toast.warning('Mobile number is required');
+        return;
+      }
+      if (!isValidPhoneNumber(formData.phone, formData.phone_country)) {
+        toast.warning('Please enter a valid mobile number');
+        return;
+      }
+    }
+    // Validate alternate phone
+    if (!formData.alternate_phone) {
+      toast.warning('Alternate mobile number is required');
+      return;
+    }
+    if (!isValidPhoneNumber(formData.alternate_phone, formData.alternate_phone_country)) {
+      toast.warning('Please enter a valid alternate mobile number');
+      return;
+    }
+    // Check both are not the same
+    const c1 = getCountryByCode(formData.phone_country);
+    const c2 = getCountryByCode(formData.alternate_phone_country);
+    const full1 = `${c1?.callingCode}${formData.phone}`;
+    const full2 = `${c2?.callingCode}${formData.alternate_phone}`;
+    if (full1 === full2) {
+      toast.warning('Mobile number and alternate mobile number cannot be the same');
+      return;
+    }
     try {
       if (editingUser) {
-        await usersApi.update(editingUser.id, formData);
+        // phone and phone_country are immutable — omit them from update
+        await usersApi.update(editingUser.id, {
+          name: formData.name,
+          alternate_phone: formData.alternate_phone,
+          alternate_phone_country: formData.alternate_phone_country,
+          role: formData.role,
+          email: formData.email,
+          address: formData.address,
+        });
       } else {
-        await usersApi.create(formData);
+        await usersApi.create({
+          name: formData.name,
+          phone: formData.phone,
+          phone_country: formData.phone_country,
+          alternate_phone: formData.alternate_phone,
+          alternate_phone_country: formData.alternate_phone_country,
+          role: formData.role,
+          email: formData.email,
+          address: formData.address,
+        });
       }
       await fetchUsers();
       setShowAddModal(false);
       setEditingUser(null);
       resetForm();
-      toast.success('User saved successfully');
-    } catch (error) {
-      console.error('Error saving user:', error);
-      toast.error('Error saving user');
+      toast.success(editingUser ? 'User updated successfully' : 'User created successfully');
+    } catch (error: any) {
+      const msg = error?.response?.data?.error || (editingUser ? 'Error updating user' : 'Error creating user');
+      toast.error(msg);
     }
   }
 
   async function handleEdit(user: User) {
     try {
-      // Fetch full user details including password
       const response = await usersApi.getById(user.id);
       const fullUser = response.data;
-      
       setEditingUser(fullUser);
       setFormData({
         name: fullUser.name,
         phone: fullUser.phone,
-        role: fullUser.role,
-        username: fullUser.username || '',
-        password: fullUser.password || '', // Show password if available
+        phone_country: fullUser.phone_country,
+        alternate_phone: fullUser.alternate_phone,
+        alternate_phone_country: fullUser.alternate_phone_country,
+        role: fullUser.role as 'admin' | 'salesman' | 'customer',
         email: fullUser.email || '',
         address: fullUser.address || '',
       });
-      setShowPassword(false); // Reset password visibility
       setShowAddModal(true);
     } catch (error) {
       console.error('Error fetching user details:', error);
@@ -87,26 +132,24 @@ export default function UsersPage() {
 
   async function handleDelete(id: number, userName: string) {
     const confirmed = await confirm({
-      title: 'Delete User',
-      message: `Are you sure you want to remove user "${userName}"? This action cannot be undone.`,
-      confirmText: 'Delete',
+      title: 'Deactivate Customer',
+      message: `Are you sure you want to deactivate "${userName}"? They will no longer appear in search, but their booking history is preserved.`,
+      confirmText: 'Deactivate',
       cancelText: 'Cancel',
       confirmColor: 'red',
       onConfirm: () => {},
       onCancel: () => {},
     });
 
-    if (!confirmed) {
-      return;
-    }
+    if (!confirmed) return;
 
     try {
       await usersApi.delete(id);
       await fetchUsers();
-      toast.success('User deleted successfully');
-    } catch (error) {
-      console.error('Error deleting user:', error);
-      toast.error('Error deleting user');
+      toast.success('Customer deactivated successfully');
+    } catch (error: any) {
+      const msg = error?.response?.data?.error || 'Error deactivating customer';
+      toast.error(msg);
     }
   }
 
@@ -114,13 +157,13 @@ export default function UsersPage() {
     setFormData({
       name: '',
       phone: '',
+      phone_country: 'IN',
+      alternate_phone: '',
+      alternate_phone_country: 'IN',
       role: 'customer',
-      username: '',
-      password: '',
       email: '',
       address: '',
     });
-    setShowPassword(false);
   }
 
   const handleSort = (column: string) => {
@@ -419,73 +462,62 @@ export default function UsersPage() {
               {editingUser ? 'Edit User' : 'Add New User'}
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
+              <Input
+                label="Full Name*"
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                required
+                placeholder="John Doe"
+              />
+
               <div className="grid grid-cols-2 gap-4">
-                <Input
-                  label="Full Name*"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                  placeholder="John Doe"
-                />
-                <Input
-                  label="Username*"
-                  value={formData.username}
-                  onChange={(e) => setFormData({ ...formData, username: e.target.value })}
-                  required
-                  placeholder="johndoe (auto-generated if empty)"
-                />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <Input
-                  label="Phone Number*"
-                  value={formData.phone}
-                  onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  required
-                  placeholder="+91 1234567890"
-                />
-                <Input
-                  label="Email"
-                  type="email"
-                  value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="user@example.com"
-                />
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  {editingUser ? "Password (leave empty to keep current)" : "Password*"}
-                </label>
-                <div className="relative">
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    value={formData.password}
-                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                    required={!editingUser}
-                    placeholder="Enter password"
-                    className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                <div>
+                  <PhoneInput
+                    label="Mobile Number*"
+                    value={formData.phone}
+                    countryCode={formData.phone_country}
+                    onValueChange={(value) => setFormData({ ...formData, phone: value })}
+                    onCountryCodeChange={(code) => setFormData({ ...formData, phone_country: code, phone: '' })}
+                    required
+                    disabled={!!editingUser}
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-500 hover:text-gray-700 focus:outline-none"
-                    tabIndex={-1}
-                  >
-                    {showPassword ? (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                      </svg>
-                    )}
-                  </button>
+                  {editingUser && (
+                    <p className="text-xs text-gray-400 mt-1">Phone number cannot be changed after creation.</p>
+                  )}
                 </div>
+                <PhoneInput
+                  label="Alternate Mobile Number*"
+                  value={formData.alternate_phone}
+                  countryCode={formData.alternate_phone_country}
+                  onValueChange={(value) => setFormData({ ...formData, alternate_phone: value })}
+                  onCountryCodeChange={(code) => setFormData({ ...formData, alternate_phone_country: code, alternate_phone: '' })}
+                  required
+                />
               </div>
-              
+
+              {/* Role — shown for both create and edit */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Role*</label>
+                <select
+                  value={formData.role}
+                  onChange={(e) => setFormData({ ...formData, role: e.target.value as 'admin' | 'salesman' | 'customer' })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                >
+                  <option value="customer">Customer</option>
+                  <option value="salesman">Salesman</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">Username and password are auto-assigned based on phone number.</p>
+              </div>
+
+              <Input
+                label="Email"
+                type="email"
+                value={formData.email}
+                onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                placeholder="customer@example.com"
+              />
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Address</label>
                 <textarea
@@ -496,49 +528,7 @@ export default function UsersPage() {
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
                 />
               </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Role*</label>
-                <div className="grid grid-cols-3 gap-3">
-                  <label className="flex items-center justify-center p-3 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-                    style={{ borderColor: formData.role === 'admin' ? '#9333ea' : '#d1d5db' }}>
-                    <input
-                      type="radio"
-                      name="role"
-                      value="admin"
-                      checked={formData.role === 'admin'}
-                      onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
-                      className="mr-2"
-                    />
-                    <span className="font-medium">Admin</span>
-                  </label>
-                  <label className="flex items-center justify-center p-3 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-                    style={{ borderColor: formData.role === 'salesman' ? '#3b82f6' : '#d1d5db' }}>
-                    <input
-                      type="radio"
-                      name="role"
-                      value="salesman"
-                      checked={formData.role === 'salesman'}
-                      onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
-                      className="mr-2"
-                    />
-                    <span className="font-medium">Salesman</span>
-                  </label>
-                  <label className="flex items-center justify-center p-3 border-2 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-                    style={{ borderColor: formData.role === 'customer' ? '#6b7280' : '#d1d5db' }}>
-                    <input
-                      type="radio"
-                      name="role"
-                      value="customer"
-                      checked={formData.role === 'customer'}
-                      onChange={(e) => setFormData({ ...formData, role: e.target.value as any })}
-                      className="mr-2"
-                    />
-                    <span className="font-medium">Customer</span>
-                  </label>
-                </div>
-              </div>
-              
+
               <div className="flex space-x-3 pt-4">
                 <Button type="submit" className="flex-1">
                   {editingUser ? 'Update User' : 'Create User'}

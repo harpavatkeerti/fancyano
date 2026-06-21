@@ -22,6 +22,7 @@ export { RefundSettlementSection } from './RefundSettlementSection';
 export type { SecuritySettlement, SecurityCalculation } from './RefundSettlementSection';
 export { ProductStatusBadge } from './ProductStatusBadge';
 export { MarkPickedUpButton } from './MarkPickedUpButton';
+export { default as FlagIcon } from './FlagIcon';
 export type { Toast, ToastType } from './Toast';
 export type { ConfirmDialogOptions } from './ConfirmDialog';
 

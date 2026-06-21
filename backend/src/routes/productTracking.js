@@ -1,243 +1,93 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../database/connection');
+const productTrackingService = require('../services/productTrackingService');
 
-// Tracking statuses that can only be set by the booking lifecycle service
-const LIFECYCLE_ONLY_STATUSES = ['in_house', 'picked_by_customer'];
-
-// Valid statuses that the Track modal can create via POST
-const MANUAL_TRACKING_STATUSES = [
-  'going_to_dry_clean',
-  'alternation_related_work',
-  'repair',
-  'other_work'
-];
-
-// Get all tracking records
+// GET /product-tracking
 router.get('/', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        pt.*,
-        p.name as product_name,
-        p.code as product_code_ref,
-        p.size as product_size,
-        b.customer_name,
-        b.id as booking_ref_id
-      FROM product_tracking pt
-      LEFT JOIN products p ON pt.product_id = p.id
-      LEFT JOIN bookings b ON pt.booking_id = b.id
-      ORDER BY pt.created_at DESC
-    `);
-    res.json({ data: result.rows });
+    const records = await productTrackingService.listTrackingRecords();
+    res.json({ data: records });
   } catch (error) {
     console.error('Error fetching product tracking:', error);
-    res.status(500).json({ error: 'Failed to fetch product tracking records' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch product tracking records' });
   }
 });
 
-// Get current (latest) tracking record for a product
+// GET /product-tracking/current/:productId
 router.get('/current/:productId', async (req, res) => {
   try {
-    const { productId } = req.params;
-    const result = await pool.query(`
-      SELECT
-        pt.*,
-        p.name as product_name,
-        p.code as product_code_ref,
-        p.size as product_size,
-        b.customer_name,
-        b.id as booking_ref_id
-      FROM product_tracking pt
-      LEFT JOIN products p ON pt.product_id = p.id
-      LEFT JOIN bookings b ON pt.booking_id = b.id
-      WHERE pt.product_id = $1
-      ORDER BY pt.created_at DESC
-      LIMIT 1
-    `, [productId]);
-    // null means no history — product is implicitly in_house
-    res.json({ data: result.rows[0] || null });
+    const record = await productTrackingService.getCurrentTrackingForProduct(req.params.productId);
+    res.json({ data: record });
   } catch (error) {
     console.error('Error fetching current tracking:', error);
-    res.status(500).json({ error: 'Failed to fetch current tracking record' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch current tracking record' });
   }
 });
 
-// Get tracking records by product ID (history)
+// GET /product-tracking/product/:productId
 router.get('/product/:productId', async (req, res) => {
   try {
-    const { productId } = req.params;
-    const result = await pool.query(`
-      SELECT
-        pt.*,
-        p.name as product_name,
-        p.code as product_code_ref,
-        p.size as product_size,
-        b.customer_name
-      FROM product_tracking pt
-      LEFT JOIN products p ON pt.product_id = p.id
-      LEFT JOIN bookings b ON pt.booking_id = b.id
-      WHERE pt.product_id = $1
-      ORDER BY pt.created_at DESC
-    `, [productId]);
-    res.json({ data: result.rows });
+    const records = await productTrackingService.getTrackingHistoryByProductId(req.params.productId);
+    res.json({ data: records });
   } catch (error) {
     console.error('Error fetching product tracking:', error);
-    res.status(500).json({ error: 'Failed to fetch product tracking records' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch product tracking records' });
   }
 });
 
-// Get tracking records by product code (history)
+// GET /product-tracking/code/:code
 router.get('/code/:code', async (req, res) => {
   try {
-    const { code } = req.params;
-    const result = await pool.query(`
-      SELECT
-        pt.*,
-        p.name as product_name,
-        p.code as product_code_ref,
-        p.size as product_size,
-        b.customer_name
-      FROM product_tracking pt
-      LEFT JOIN products p ON pt.product_id = p.id
-      LEFT JOIN bookings b ON pt.booking_id = b.id
-      WHERE pt.product_code = $1
-      ORDER BY pt.created_at DESC
-    `, [code]);
-    res.json({ data: result.rows });
+    const records = await productTrackingService.getTrackingHistoryByProductCode(req.params.code);
+    res.json({ data: records });
   } catch (error) {
     console.error('Error fetching product tracking:', error);
-    res.status(500).json({ error: 'Failed to fetch product tracking records' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch product tracking records' });
   }
 });
 
-// Create new tracking record (manual tracking via Track modal only)
-// in_house and picked_by_customer are set exclusively by the lifecycle service
-router.post('/', async (req, res) => {
-  try {
-    const {
-      product_id,
-      booking_id,
-      product_code,
-      tracking_status,
-      notes
-    } = req.body;
-
-    // Validate required fields
-    if (!product_code || !tracking_status) {
-      return res.status(400).json({ error: 'product_code and tracking_status are required' });
-    }
-
-    // Only manual statuses allowed via this endpoint
-    if (!MANUAL_TRACKING_STATUSES.includes(tracking_status)) {
-      return res.status(400).json({
-        error: `tracking_status '${tracking_status}' is not allowed via this endpoint. ` +
-          `Must be one of: ${MANUAL_TRACKING_STATUSES.join(', ')}. ` +
-          `'in_house' and 'picked_by_customer' are managed by the booking lifecycle.`
-      });
-    }
-
-    // notes required for other_work (describes what the work actually is)
-    if (tracking_status === 'other_work' && !notes) {
-      return res.status(400).json({ error: 'notes is required for other_work' });
-    }
-
-    const result = await pool.query(
-      `INSERT INTO product_tracking
-        (product_id, booking_id, product_code, tracking_status, notes)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [product_id, booking_id || null, product_code, tracking_status, notes || null]
-    );
-
-    res.status(201).json({ data: result.rows[0] });
-  } catch (error) {
-    console.error('Error creating tracking record:', error);
-    res.status(500).json({ error: 'Failed to create tracking record' });
-  }
-});
-
-// Get currently "out" tracking records — products whose LATEST tracking_status != in_house
-// IMPORTANT: this must be before /:id routes so Express doesn't treat 'active' as an id
+// GET /product-tracking/active
+// NOTE: must be defined BEFORE /:id to avoid Express treating 'active' as an id
 router.get('/active', async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT
-        latest.*,
-        p.name  AS product_name,
-        p.code  AS product_code_ref,
-        p.size  AS product_size,
-        b.customer_name,
-        b.id    AS booking_ref_id
-      FROM (
-        SELECT DISTINCT ON (product_id) *
-        FROM product_tracking
-        ORDER BY product_id, created_at DESC
-      ) latest
-      LEFT JOIN products p ON latest.product_id = p.id
-      LEFT JOIN bookings b ON latest.booking_id  = b.id
-      WHERE latest.tracking_status != 'in_house'
-      ORDER BY latest.created_at DESC
-    `);
-    res.json({ data: result.rows });
+    const records = await productTrackingService.listActiveTrackingRecords();
+    res.json({ data: records });
   } catch (error) {
     console.error('Error fetching active tracking records:', error);
-    res.status(500).json({ error: 'Failed to fetch active tracking records' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to fetch active tracking records' });
   }
 });
 
-// Mark a product as returned — inserts a new in_house row (preserves history)
-// The :id is the ID of the current "out" record; used to look up product_id/product_code
+// POST /product-tracking
+router.post('/', async (req, res) => {
+  try {
+    const record = await productTrackingService.createTrackingRecord(req.body);
+    res.status(201).json({ data: record });
+  } catch (error) {
+    console.error('Error creating tracking record:', error);
+    res.status(error.status || 500).json({ error: error.message || 'Failed to create tracking record' });
+  }
+});
+
+// PATCH /product-tracking/:id/return
 router.patch('/:id/return', async (req, res) => {
   try {
-    const { id } = req.params;
-    const { notes } = req.body;
-
-    // Look up the existing record to get product_id and product_code
-    const existing = await pool.query(
-      'SELECT product_id, product_code FROM product_tracking WHERE id = $1',
-      [id]
-    );
-
-    if (existing.rows.length === 0) {
-      return res.status(404).json({ error: 'Tracking record not found' });
-    }
-
-    const { product_id, product_code } = existing.rows[0];
-
-    // Insert a new in_house row (keeps full audit history)
-    const result = await pool.query(
-      `INSERT INTO product_tracking
-        (product_id, product_code, tracking_status, notes)
-       VALUES ($1, $2, 'in_house', $3)
-       RETURNING *`,
-      [product_id, product_code, notes || null]
-    );
-
-    res.json({ data: result.rows[0] });
+    const record = await productTrackingService.returnTrackingRecord(req.params.id, req.body.notes);
+    res.json({ data: record });
   } catch (error) {
     console.error('Error marking tracking record as returned:', error);
-    res.status(500).json({ error: 'Failed to mark as returned' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to mark as returned' });
   }
 });
 
-// Delete tracking record
+// DELETE /product-tracking/:id
 router.delete('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
-    const result = await pool.query(
-      'DELETE FROM product_tracking WHERE id = $1 RETURNING *',
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Tracking record not found' });
-    }
-
-    res.json({ data: result.rows[0] });
+    const record = await productTrackingService.deleteTrackingRecord(req.params.id);
+    res.json({ data: record });
   } catch (error) {
     console.error('Error deleting tracking record:', error);
-    res.status(500).json({ error: 'Failed to delete tracking record' });
+    res.status(error.status || 500).json({ error: error.message || 'Failed to delete tracking record' });
   }
 });
 

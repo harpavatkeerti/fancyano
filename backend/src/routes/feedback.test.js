@@ -8,21 +8,33 @@ app.use('/feedback', require('./feedback'));
 
 describe('Feedback Routes', () => {
   let testBookingId;
+  let testUserId;
 
   beforeAll(async () => {
-    // Create a real booking to satisfy the foreign key constraint
-    const result = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, status)
-       VALUES ($1, $2, CURRENT_DATE, 'pending')
+    // Create a test user (required by bookings FK)
+    const userResult = await pool.query(
+      `INSERT INTO users (name, phone, phone_country, username, password, role)
+       VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id`,
-      ['Test Feedback Customer', '9999900002']
+      ['Test Feedback Customer', '9000000002', 'IN', 'test_feedback_user', 'hash', 'customer']
     );
-    testBookingId = result.rows[0].id;
+    testUserId = userResult.rows[0].id;
+
+    // Create a booking linked to the test user
+    const bookingResult = await pool.query(
+      `INSERT INTO bookings (user_id, booking_date, status)
+       VALUES ($1, CURRENT_DATE, 'pending')
+       RETURNING id`,
+      [testUserId]
+    );
+    testBookingId = bookingResult.rows[0].id;
   });
 
   afterAll(async () => {
     await pool.query('DELETE FROM feedback WHERE feedback_by = $1', ['Test Feedback User']);
     await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [testUserId]);
+    await pool.end();
   });
 
   describe('POST /feedback', () => {
@@ -89,6 +101,57 @@ describe('Feedback Routes', () => {
       expect(response.body.booking_id).toBe(testBookingId);
       expect(response.body.feedback_by).toBe('Test Feedback User');
       expect(response.body.rating).toBe(4);
+    });
+  });
+
+  describe('GET /feedback', () => {
+    it('should return a list of feedback', async () => {
+      const response = await request(app).get('/feedback');
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+    });
+  });
+
+  describe('GET /feedback/:id', () => {
+    it('should return 404 for a non-existent feedback', async () => {
+      const response = await request(app).get('/feedback/999999');
+      expect(response.status).toBe(404);
+    });
+
+    it('should return the feedback for a valid id', async () => {
+      const created = await pool.query(
+        `INSERT INTO feedback (booking_id, feedback_by, rating)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [testBookingId, 'Test Feedback User', 5]
+      );
+      const id = created.rows[0].id;
+
+      const response = await request(app).get(`/feedback/${id}`);
+      expect(response.status).toBe(200);
+      expect(response.body.id).toBe(id);
+      expect(response.body.rating).toBe(5);
+    });
+  });
+
+  describe('DELETE /feedback/:id', () => {
+    it('should return 404 for a non-existent feedback', async () => {
+      const response = await request(app).delete('/feedback/999999');
+      expect(response.status).toBe(404);
+    });
+
+    it('should delete an existing feedback', async () => {
+      const created = await pool.query(
+        `INSERT INTO feedback (booking_id, feedback_by, rating)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [testBookingId, 'Test Feedback User', 3]
+      );
+      const id = created.rows[0].id;
+
+      const response = await request(app).delete(`/feedback/${id}`);
+      expect(response.status).toBe(200);
+
+      const check = await pool.query('SELECT id FROM feedback WHERE id = $1', [id]);
+      expect(check.rows.length).toBe(0);
     });
   });
 });

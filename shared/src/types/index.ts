@@ -67,11 +67,8 @@ export interface ProductCharge {
 // Booking type matching new backend schema
 export interface Booking {
   id: number;
-  customer_name: string;
-  customer_phone?: string;
-  customer_email?: string;
-  customer_address?: string;
-  alternate_phone?: string;
+  // Customer — joined from users table
+  user: User;
 
   // Booking lifecycle
   status: 'pending' | 'confirmed' | 'in_progress' | 'partially_completed' | 'completed' | 'cancelled';
@@ -112,11 +109,15 @@ export interface User {
   id: number;
   name: string;
   phone: string;
+  phone_country: string;          // ISO-2, e.g. 'IN'
+  alternate_phone: string;
+  alternate_phone_country: string;  // ISO-2
   role: 'admin' | 'salesman' | 'customer';
   username?: string;
   password?: string;
   email?: string;
   address?: string;
+  is_deleted?: boolean;
   created_at: string;
   updated_at: string;
 }
