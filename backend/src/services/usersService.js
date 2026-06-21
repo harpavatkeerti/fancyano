@@ -111,10 +111,10 @@ async function searchUsers(phone) {
   }
 
   const result = await pool.query(
-    `SELECT id, name, phone, phone_country, alternate_phone, alternate_phone_country, address, email
+    `SELECT id, name, phone, phone_country, alternate_phone, alternate_phone_country, address, email, is_deleted
      FROM users
-     WHERE phone ILIKE $1 AND is_deleted = FALSE
-     ORDER BY name
+     WHERE phone ILIKE $1
+     ORDER BY is_deleted ASC, name
      LIMIT 10`,
     [`%${phone.trim()}%`]
   );
@@ -129,7 +129,7 @@ async function searchUsers(phone) {
  */
 async function getUserById(id) {
   const result = await pool.query(
-    'SELECT * FROM users WHERE id = $1 AND is_deleted = FALSE',
+    'SELECT * FROM users WHERE id = $1',
     [id]
   );
 
@@ -272,6 +272,7 @@ async function updateUser(id, {
   role,
   username,
   password,
+  is_deleted,
 } = {}) {
   // Alternate phone length validation (if being updated)
   if (alternate_phone !== undefined && alternate_phone !== null && alternate_phone !== '') {
@@ -295,6 +296,8 @@ async function updateUser(id, {
   if (address !== undefined) { paramCount++; updates.push(`address = $${paramCount}`); values.push(address); }
   if (role !== undefined) { paramCount++; updates.push(`role = $${paramCount}`); values.push(role); }
   if (username !== undefined) { paramCount++; updates.push(`username = $${paramCount}`); values.push(username); }
+  // is_deleted: only false (reactivation) is accepted — setting to true is done via deleteUser
+  if (is_deleted === false) { paramCount++; updates.push(`is_deleted = $${paramCount}`); values.push(false); }
   if (password !== undefined && password !== null && password.trim() !== '') {
     const hashedPassword = await hashPassword(password);
     paramCount++;
@@ -314,7 +317,7 @@ async function updateUser(id, {
 
   try {
     const result = await pool.query(
-      `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} AND is_deleted = FALSE RETURNING *`,
+      `UPDATE users SET ${updates.join(', ')} WHERE id = $${paramCount} RETURNING *`,
       values
     );
 
