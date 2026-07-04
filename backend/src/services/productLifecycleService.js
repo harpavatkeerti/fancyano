@@ -261,6 +261,10 @@ class ProductLifecycleService {
         ]
       );
 
+      // STEP 7: Recalculate booking date range — old product is now 'exchanged' (excluded),
+      // new products carry the real dates, so the booking window reflects them.
+      await recalcBookingDateRange(oldBookingProduct.booking_id, client);
+
       await client.query('COMMIT');
 
       return {

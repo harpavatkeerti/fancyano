@@ -62,7 +62,7 @@ async function checkProductAvailability(productId, bookedFrom, bookedTo, { exclu
        FROM booking_products bp
        JOIN bookings b ON bp.booking_id = b.id
        WHERE bp.product_id = $1
-         AND bp.status NOT IN ('cancelled', 'exchanged')
+         AND bp.status NOT IN ('cancelled', 'exchanged', 'completed')
          AND b.status  NOT IN ('cancelled')
          AND bp.booked_from <= $3
          AND bp.booked_to   >= $2
