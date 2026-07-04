@@ -114,6 +114,7 @@ export default function ComplaintsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRaisedBy, setFilterRaisedBy] = useState<string[]>([]);
   const [filterStatus, setFilterStatus] = useState<string[]>([]);
+  const [filterRating, setFilterRating] = useState<string[]>([]);
 
   // Modals
   const [showViewModal, setShowViewModal] = useState(false);
@@ -165,6 +166,7 @@ export default function ComplaintsPage() {
     setSearchQuery('');
     setFilterRaisedBy([]);
     setFilterStatus([]);
+    setFilterRating([]);
     setSortColumn(null);
     setSortDirection('asc');
   };
@@ -247,7 +249,8 @@ export default function ComplaintsPage() {
         (f.description || '').toLowerCase().includes(q) ||
         String(f.booking_id ?? '').includes(q);
       const matchRaisedBy = filterRaisedBy.length === 0 || filterRaisedBy.includes(f.feedback_by || '');
-      return matchSearch && matchRaisedBy;
+      const matchRating   = filterRating.length === 0   || filterRating.includes(String(f.rating ?? ''));
+      return matchSearch && matchRaisedBy && matchRating;
     })
   );
 
@@ -449,6 +452,16 @@ export default function ComplaintsPage() {
               options={statusOptions}
               selected={filterStatus}
               onChange={setFilterStatus}
+            />
+          )}
+
+          {/* Rating filter — feedback only */}
+          {activeTab === 'feedback' && (
+            <MultiSelect
+              label="Rating"
+              options={['1', '2', '3', '4', '5']}
+              selected={filterRating}
+              onChange={setFilterRating}
             />
           )}
 
