@@ -29,10 +29,9 @@ describe('Policy Routes', () => {
     testProductId = productResult.rows[0].id;
 
     const bookingResult = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-       VALUES ('Test Customer', 'TEST-POLICY-PHONE', CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed')
-       RETURNING id`,
-      []
+      `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+       VALUES (1, CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed')
+       RETURNING id`
     );
     testBookingId = bookingResult.rows[0].id;
 

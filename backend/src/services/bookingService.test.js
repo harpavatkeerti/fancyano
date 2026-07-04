@@ -46,10 +46,10 @@ describe('BookingService', () => {
       await pool.query('DELETE FROM bookings WHERE id = ANY($1)', [ids]);
     }
 
-    // Also clean orphaned test bookings (from rollback/failed tests) by recognizable test phone numbers
+    // Also clean orphaned test bookings (from rollback/failed tests)
     await pool.query(`
       DELETE FROM bookings 
-      WHERE customer_phone IN ('1234567890', '9876543210', '1111111111', '9999999999', '8888888888')
+      WHERE user_id = 1
         AND id NOT IN (SELECT DISTINCT booking_id FROM booking_products)
     `);
   });
@@ -58,10 +58,7 @@ describe('BookingService', () => {
     // Test: Creates a new booking with products and initializes all charges
     test('should create booking with products successfully', async () => {
       const bookingData = {
-        customerName: 'John Doe',
-        customerPhone: '1234567890',
-        customerEmail: 'john@example.com',
-        customerAddress: '123 Test St',
+      userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -96,7 +93,7 @@ describe('BookingService', () => {
         'SELECT * FROM bookings WHERE id = $1',
         [result.booking_id]
       );
-      expect(booking.rows[0].customer_name).toBe('John Doe');
+      expect(booking.rows[0].user_id).toBe(1);
       expect(booking.rows[0].status).toBe('pending');
       expect(booking.rows[0].transport_charge).toBe(100);
 
@@ -132,8 +129,7 @@ describe('BookingService', () => {
     // Test: Handles single product booking correctly
     test('should create booking with single product', async () => {
       const bookingData = {
-        customerName: 'Jane Smith',
-        customerPhone: '9876543210',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -158,8 +154,7 @@ describe('BookingService', () => {
     // Test: Creates booking with percentage discount on products
     test('should create booking with percentage discount', async () => {
       const bookingData = {
-        customerName: 'Discount Customer',
-        customerPhone: '1111111111',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -204,8 +199,7 @@ describe('BookingService', () => {
     // Test: Creates booking with fixed discount on products
     test('should create booking with fixed discount', async () => {
       const bookingData = {
-        customerName: 'Fixed Discount Customer',
-        customerPhone: '2222222222',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -249,8 +243,7 @@ describe('BookingService', () => {
     // Test: Creates booking without discount (backward compatibility)
     test('should create booking without discount (backward compatibility)', async () => {
       const bookingData = {
-        customerName: 'No Discount Customer',
-        customerPhone: '3333333333',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -293,8 +286,7 @@ describe('BookingService', () => {
     // Test: Rejects invalid discount type
     test('should reject invalid discount type', async () => {
       const bookingData = {
-        customerName: 'Invalid Discount',
-        customerPhone: '4444444444',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -318,8 +310,7 @@ describe('BookingService', () => {
     // Test: Rejects fixed discount > rent
     test('should reject fixed discount exceeding rent', async () => {
       const bookingData = {
-        customerName: 'Excessive Discount',
-        customerPhone: '5555555555',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -343,8 +334,7 @@ describe('BookingService', () => {
     // Test: Stores discount details in activity log
     test('should include discount details in activity log', async () => {
       const bookingData = {
-        customerName: 'Log Discount Customer',
-        customerPhone: '6666666666',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -380,8 +370,7 @@ describe('BookingService', () => {
     // Test: Handles optional fields like measurements and special requirements
     test('should handle optional product fields', async () => {
       const bookingData = {
-        customerName: 'Test User',
-        customerPhone: '5555555555',
+        userId: 1,
         bookingDate: new Date('2024-01-15'),
         products: [
           {
@@ -414,8 +403,7 @@ describe('BookingService', () => {
     // Test: Validates that required fields are present before creating booking
     test('should throw error for missing required fields', async () => {
       const invalidData = {
-        customerName: 'Test',
-        // Missing customerPhone
+        // Missing userId
         bookingDate: new Date(),
         products: [],
         createdBy: 'admin'
@@ -429,8 +417,7 @@ describe('BookingService', () => {
     // Test: Validates that each product has all required fields
     test('should throw error for invalid product data', async () => {
       const invalidData = {
-        customerName: 'Test',
-        customerPhone: '1234567890',
+        userId: 1,
         bookingDate: new Date(),
         products: [
           {
@@ -451,8 +438,7 @@ describe('BookingService', () => {
       const countBefore = await pool.query('SELECT COUNT(*)::int AS cnt FROM bookings');
 
       const bookingData = {
-        customerName: 'Test',
-        customerPhone: '1234567890',
+        userId: 1,
         bookingDate: new Date(),
         products: [
           {
@@ -481,8 +467,7 @@ describe('BookingService', () => {
       await pool.query(`UPDATE products SET status = 'archived' WHERE id = $1`, [testProductId1]);
 
       const bookingData = {
-        customerName: 'Archived Test',
-        customerPhone: '8888888888',
+        userId: 1,
         bookingDate: new Date(),
         products: [
           {
@@ -512,8 +497,7 @@ describe('BookingService', () => {
       await pool.query(`UPDATE products SET status = 'available' WHERE id = $1`, [testProductId1]);
 
       const bookingData = {
-        customerName: 'Available Test',
-        customerPhone: '8888888888',
+        userId: 1,
         bookingDate: new Date(),
         products: [
           {
@@ -539,8 +523,8 @@ describe('BookingService', () => {
     beforeEach(async () => {
       // Create test booking with products
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Test Customer', '1234567890', CURRENT_DATE, 'in_progress', 'admin')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'in_progress', 'admin')
          RETURNING id`
       );
       testBookingId = booking.rows[0].id;
@@ -757,8 +741,8 @@ describe('BookingService', () => {
     beforeEach(async () => {
       // Create pending booking
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Test Customer', '1234567890', CURRENT_DATE, 'pending', 'admin')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'pending', 'admin')
          RETURNING id`
       );
       testBookingId = booking.rows[0].id;
@@ -830,8 +814,8 @@ describe('BookingService', () => {
     beforeEach(async () => {
       // Create test booking
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, transport_charge, created_by)
-         VALUES ('Test Customer', '1234567890', CURRENT_DATE, 'confirmed', 100, 'admin')
+        `INSERT INTO bookings (user_id, booking_date, status, transport_charge, created_by)
+         VALUES (1, CURRENT_DATE, 'confirmed', 100, 'admin')
          RETURNING id`
       );
       testBookingId = booking.rows[0].id;
@@ -848,7 +832,7 @@ describe('BookingService', () => {
       const booking = await bookingService.getBookingById(testBookingId);
 
       expect(booking.id).toBe(testBookingId);
-      expect(booking.customer_name).toBe('Test Customer');
+      expect(booking.user).toHaveProperty('id', 1);
       expect(booking.status).toBe('confirmed');
       expect(booking.transport_charge).toBe(100);
       expect(booking.products).toHaveLength(1);
@@ -869,10 +853,10 @@ describe('BookingService', () => {
       // Create multiple test bookings
       for (let i = 1; i <= 3; i++) {
         const booking = await pool.query(
-          `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-           VALUES ($1, $2, CURRENT_DATE, $3, 'admin')
+          `INSERT INTO bookings (user_id, booking_date, status, created_by)
+           VALUES (1, CURRENT_DATE, $1, 'admin')
            RETURNING id`,
-          [`Customer ${i}`, `123456789${i}`, i === 1 ? 'pending' : 'confirmed']
+          [i === 1 ? 'pending' : 'confirmed']
         );
 
         await pool.query(
@@ -888,7 +872,7 @@ describe('BookingService', () => {
       const bookings = await bookingService.getBookingsList();
 
       expect(bookings.length).toBeGreaterThanOrEqual(3);
-      expect(bookings[0]).toHaveProperty('customer_name');
+      expect(bookings[0]).toHaveProperty('user');
       expect(bookings[0]).toHaveProperty('product_count');
       expect(bookings[0]).toHaveProperty('total_rent');
     });
@@ -905,10 +889,10 @@ describe('BookingService', () => {
 
     // Test: Searches bookings by customer name or phone
     test('should search by customer name', async () => {
-      const bookings = await bookingService.getBookingsList({ search: 'Customer 2' });
+      const bookings = await bookingService.getBookingsList({ search: 'Test Admin' });
 
       expect(bookings.length).toBeGreaterThanOrEqual(1);
-      expect(bookings[0].customer_name).toBe('Customer 2');
+      expect(bookings[0].user).toHaveProperty('id', 1);
     });
 
     // Test: Applies pagination with limit and offset
@@ -926,8 +910,8 @@ describe('BookingService', () => {
 
     beforeEach(async () => {
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Update Test Customer', '9999999999', CURRENT_DATE, 'confirmed', 'admin')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'confirmed', 'admin')
          RETURNING id`
       );
       testBookingId = booking.rows[0].id;
@@ -987,8 +971,8 @@ describe('BookingService', () => {
 
     beforeEach(async () => {
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Availability Test', '8888888888', CURRENT_DATE, 'confirmed', 'admin')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'confirmed', 'admin')
          RETURNING id`
       );
       testBookingId = booking.rows[0].id;
@@ -1037,11 +1021,12 @@ describe('BookingService', () => {
     let testBookingId, testBP1, testBP2;
 
     beforeEach(async () => {
-      // Clean up test-created bookings (phone '9999999999' is reserved for this suite)
+      // Clean up test-created bookings for this suite (linked to our test products)
       const staleIds = await pool.query(
-        `SELECT id FROM bookings WHERE customer_phone = '9999999999'`
+        `SELECT DISTINCT booking_id FROM booking_products WHERE product_id IN ($1, $2)`,
+        [testProductId1, testProductId2]
       );
-      const ids = staleIds.rows.map(r => r.id);
+      const ids = staleIds.rows.map(r => r.booking_id);
       if (ids.length > 0) {
         await pool.query('DELETE FROM booking_activity_log WHERE booking_id = ANY($1)', [ids]);
         await pool.query(
@@ -1057,9 +1042,9 @@ describe('BookingService', () => {
 
       // Create a fresh booking with two products on known date ranges
       const booking = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by,
+        `INSERT INTO bookings (user_id, booking_date, status, created_by,
                                booked_from, booked_to)
-         VALUES ('Date Change Test', '9999999999', CURRENT_DATE, 'confirmed', 'test',
+         VALUES (1, CURRENT_DATE, 'confirmed', 'test',
                  '2024-09-01', '2024-09-10')
          RETURNING id`
       );
@@ -1182,8 +1167,8 @@ describe('BookingService', () => {
     // A booking_product_id from another booking must not be updated (security guard)
     test('should not update a booking_product that belongs to a different booking', async () => {
       const other = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Other', '7777777777', CURRENT_DATE, 'confirmed', 'test')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'confirmed', 'test')
          RETURNING id`
       );
       const otherBookingId = other.rows[0].id;

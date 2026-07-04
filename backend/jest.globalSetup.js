@@ -106,6 +106,17 @@ module.exports = async function globalSetup() {
     ON CONFLICT (policy_key) DO UPDATE SET is_active = true, value = EXCLUDED.value
   `);
 
+  // Seed a minimal test user (id=1) so test fixtures that reference user_id=1
+  // satisfy the bookings_user_id_fkey FK constraint.
+  await testClient.query(`
+    INSERT INTO users (id, name, phone, phone_country, role)
+    VALUES (1, 'Test Admin', '5555555555', 'IN', 'admin')
+    ON CONFLICT (id) DO NOTHING
+  `);
+  // Advance the sequence so auto-generated IDs don't collide with the explicitly-inserted id=1
+  await testClient.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
+
+
   await testClient.end();
 
   console.log(`✅ Test database "${testDb}" ready (schema from "${prodDb}", clean data, policies seeded)`);

@@ -20,12 +20,17 @@ const TEST_COUNTRY = 'US'; // 10 digits — avoids IN-only constraint
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 async function cleanup() {
-  // Find all test user IDs so we can clean bookings first (FK constraint)
+  // Find all test user IDs so we can clean up dependent records first (FK constraints)
   const testUsers = await pool.query(
     `SELECT id FROM users WHERE phone LIKE '${TEST_PREFIX}%'`
   );
   const ids = testUsers.rows.map(r => r.id);
   if (ids.length > 0) {
+    await pool.query('DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))', [ids]);
+    await pool.query('DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))', [ids]);
+    await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT bp.id FROM booking_products bp JOIN bookings b ON bp.booking_id = b.id WHERE b.user_id = ANY($1))', [ids]);
+    await pool.query('DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))', [ids]);
+    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))', [ids]);
     await pool.query('DELETE FROM bookings WHERE user_id = ANY($1)', [ids]);
   }
   await pool.query(`DELETE FROM users WHERE phone LIKE '${TEST_PREFIX}%'`);
@@ -44,8 +49,10 @@ async function createTestUser(overrides = {}) {
 
 // ── Test Suite ────────────────────────────────────────────────────────────────
 describe('usersService', () => {
+  beforeAll(cleanup);   // Remove any stale '0001%' users from a prior interrupted run
   beforeEach(cleanup);
   afterAll(cleanup);
+
 
   // ── createUser ──────────────────────────────────────────────────────────────
   describe('createUser', () => {
@@ -225,12 +232,16 @@ describe('usersService', () => {
       await expect(usersService.searchUsers(undefined)).rejects.toMatchObject({ status: 400 });
     });
 
-    test('should not include soft-deleted users in search results', async () => {
+    test('should return soft-deleted users in search results with is_deleted=true', async () => {
       const user = (await usersService.searchUsers(TEST_PREFIX))[0];
       await pool.query('UPDATE users SET is_deleted = TRUE WHERE id = $1', [user.id]);
 
+      // Soft-deleted users still appear in search (for reactivation flow),
+      // but sorted after active users and flagged with is_deleted=true.
       const after = await usersService.searchUsers(TEST_PREFIX);
-      expect(after.find(u => u.id === user.id)).toBeUndefined();
+      const found = after.find(u => u.id === user.id);
+      expect(found).toBeDefined();
+      expect(found.is_deleted).toBe(true);
     });
   });
 
@@ -258,9 +269,11 @@ describe('usersService', () => {
       await expect(usersService.getUserById(9999999)).rejects.toMatchObject({ status: 404 });
     });
 
-    test('should throw 404 for soft-deleted user', async () => {
+    test('should return soft-deleted user with is_deleted=true (not throw 404)', async () => {
       await pool.query('UPDATE users SET is_deleted = TRUE WHERE id = $1', [userId]);
-      await expect(usersService.getUserById(userId)).rejects.toMatchObject({ status: 404 });
+      const user = await usersService.getUserById(userId);
+      expect(user.id).toBe(userId);
+      expect(user.is_deleted).toBe(true);
     });
   });
 
@@ -374,9 +387,11 @@ describe('usersService', () => {
       expect(raw.rows[0].is_deleted).toBe(true);
     });
 
-    test('should make user invisible to getUserById after deletion', async () => {
+    test('should return user via getUserById with is_deleted=true after deletion', async () => {
       await usersService.deleteUser(userId);
-      await expect(usersService.getUserById(userId)).rejects.toMatchObject({ status: 404 });
+      const user = await usersService.getUserById(userId);
+      expect(user.id).toBe(userId);
+      expect(user.is_deleted).toBe(true);
     });
 
     test('should make user invisible to listUsers after deletion', async () => {

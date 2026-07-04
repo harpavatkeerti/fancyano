@@ -27,14 +27,18 @@ app.use('/bookings', require('./bookings'));
 // ─── Shared helpers ────────────────────────────────────────────────────────────
 
 const PHONE = 'TEST-PAY-BTN';
+const createdBookingIds = [];
 
-/** Delete all test data keyed by the PHONE sentinel */
+/** Delete all test data keyed by ID */
 async function cleanup() {
-  await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)`, [PHONE]);
-  await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT bp.id FROM booking_products bp JOIN bookings b ON bp.booking_id = b.id WHERE b.customer_phone = $1)`, [PHONE]);
-  await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)`, [PHONE]);
-  await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)`, [PHONE]);
-  await pool.query(`DELETE FROM bookings WHERE customer_phone = $1`, [PHONE]);
+  for (const bookingId of createdBookingIds) {
+    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [bookingId]);
+    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [bookingId]);
+    await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [bookingId]);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [bookingId]);
+    await pool.query(`DELETE FROM bookings WHERE id = $1`, [bookingId]);
+  }
+  createdBookingIds.length = 0;
 }
 
 /** Compute a future date string YYYY-MM-DD, offset from today */
@@ -51,8 +55,7 @@ function futureDate(daysFromNow) {
  */
 async function makeConfirmedBooking(testProductId) {
   const result = await bookingService.createBooking({
-    customerName: 'Regression Test Customer',
-    customerPhone: PHONE,
+    userId: 1,
     bookingDate: futureDate(1),
     products: [{
       productId: testProductId,
@@ -65,6 +68,7 @@ async function makeConfirmedBooking(testProductId) {
     createdBy: 'test-user',
   });
   const bookingId = result.booking_id;
+  createdBookingIds.push(bookingId);
   await bookingService.confirmBooking(bookingId, 'test-user');
 
   const bpResult = await pool.query(
@@ -80,8 +84,7 @@ async function makeConfirmedBooking(testProductId) {
  */
 async function makePendingBooking(testProductId) {
   const result = await bookingService.createBooking({
-    customerName: 'Regression Test Customer',
-    customerPhone: PHONE,
+    userId: 1,
     bookingDate: futureDate(1),
     products: [{
       productId: testProductId,
@@ -94,6 +97,7 @@ async function makePendingBooking(testProductId) {
     createdBy: 'test-user',
   });
   const bookingId = result.booking_id;
+  createdBookingIds.push(bookingId);
 
   const bpResult = await pool.query(
     'SELECT id FROM booking_products WHERE booking_id = $1',
@@ -217,8 +221,7 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       // Two products: one with securityDeposit=3000, one with 9000
       // Use future dates so pickup eligibility doesn't fail
       const result = await bookingService.createBooking({
-        customerName: 'Regression Test Customer',
-        customerPhone: PHONE,
+        userId: 1,
         bookingDate: futureDate(1),
         products: [
           { productId: testProductId, bookedFrom: futureDate(20), bookedTo: futureDate(23), rent: 0, securityDeposit: 3000 },
@@ -228,6 +231,7 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
         createdBy: 'test-user',
       });
       const allocBookingId = result.booking_id;
+      createdBookingIds.push(allocBookingId);
       await bookingService.confirmBooking(allocBookingId, 'test-user');
 
       const bpRows = await pool.query(
@@ -269,16 +273,16 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
      */
     it('returns 400 when selected product capacity is less than the security portion', async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Regression Test Customer',
-        customerPhone: PHONE,
+        userId: 1,
         bookingDate: futureDate(1),
         products: [
           { productId: testProductId, bookedFrom: futureDate(40), bookedTo: futureDate(43), rent: 0, securityDeposit: 3000 },
         ],
-        transportCharge: 5000, // adds buffer so balance (8000) > payment (5000)
+        transportCharge: 5000,
         createdBy: 'test-user',
       });
       const allocBookingId = result.booking_id;
+      createdBookingIds.push(allocBookingId);
       await bookingService.confirmBooking(allocBookingId, 'test-user');
 
       // First pay transport so the remaining balance is just 3000 security
@@ -582,8 +586,7 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
     it('records two concurrent refund transactions without conflict', async () => {
       // Create booking with two products — use future dates
       const result = await bookingService.createBooking({
-        customerName: 'Regression Test Customer',
-        customerPhone: PHONE,
+        userId: 1,
         bookingDate: futureDate(1),
         products: [
           { productId: testProductId, bookedFrom: futureDate(50), bookedTo: futureDate(53), rent: 25000, securityDeposit: 10000 },
@@ -593,6 +596,7 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
         createdBy: 'test-user',
       });
       const multiBookingId = result.booking_id;
+      createdBookingIds.push(multiBookingId);
       await bookingService.confirmBooking(multiBookingId, 'test-user');
 
       // Pay full amount

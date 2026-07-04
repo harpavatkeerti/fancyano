@@ -25,29 +25,33 @@ describe('Payment Transactions Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE'`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+    }
     await pool.query(`DELETE FROM products WHERE code = 'TEST-PAY-001'`);
   });
 
   afterEach(async () => {
     // Cleanup after each test
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-PAY-ROUTE'`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+      testBookingId = null;
+    }
   });
 
   describe('GET /payments/summary/:bookingId', () => {
     beforeEach(async () => {
       // Create a test booking
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-PAY-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -110,8 +114,7 @@ describe('Payment Transactions Routes', () => {
   describe('POST /payments', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-PAY-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -227,8 +230,7 @@ describe('Payment Transactions Routes', () => {
   describe('POST /payments/adjustment', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-PAY-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -415,8 +417,7 @@ describe('Payment Transactions Routes', () => {
   describe('POST /payments (refund)', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-PAY-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -523,8 +524,7 @@ describe('Payment Transactions Routes', () => {
       // Two products with rent=0 and no transport so the entire payment goes to security.
       // Non-overlapping date ranges avoid availability conflicts with each other.
       const result = await bookingService.createBooking({
-        customerName: 'Alloc Route Test',
-        customerPhone: 'TEST-PAY-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           { productId: testProductId, bookedFrom: '2024-02-10', bookedTo: '2024-02-12', rent: 0, securityDeposit: 3000 },
@@ -542,6 +542,17 @@ describe('Payment Transactions Routes', () => {
       );
       bpSmallId = bpResult.rows[0].id; // security_deposit = 3000
       bpLargeId = bpResult.rows[1].id; // security_deposit = 9000
+    });
+
+    afterEach(async () => {
+      if (allocBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [allocBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [allocBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [allocBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [allocBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [allocBookingId]);
+        allocBookingId = null;
+      }
     });
 
     it('should return 400 with a descriptive error when selected products cannot absorb the security amount', async () => {

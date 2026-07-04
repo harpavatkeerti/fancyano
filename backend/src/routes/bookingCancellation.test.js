@@ -58,36 +58,25 @@ describe('Booking Cancellation Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    const testPhones = ['TEST-CANCEL-ROUTE', 'CANCEL-PREVIEW-TEST', 'CANCEL-SUMMARY-TEST', 'CANCEL-SETTLE-TEST'];
-    const phoneList = testPhones.map(p => `'${p}'`).join(',');
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList})))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone IN (${phoneList})`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+    }
     await pool.query(`DELETE FROM products WHERE code IN ('TEST-CANCEL-001', 'TEST-CANCEL-PREV-002')`);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key IN ('test_cancellation_0_1', 'test_cancellation_2_3')`);
     // Re-activate real policies
     await pool.query(`UPDATE rental_policies SET is_active = true WHERE policy_key NOT LIKE 'test_%'`);
   });
 
-  afterEach(async () => {
-    // Cleanup after each test
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE')`);
-    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-CANCEL-ROUTE'`);
-  });
-
   describe('POST /cancellation', () => {
     beforeEach(async () => {
       // Create a test booking with confirmed status
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-CANCEL-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -112,6 +101,18 @@ describe('Booking Cancellation Routes', () => {
         [testBookingId]
       );
       testBookingProductId = bpResult.rows[0].id;
+    });
+
+    afterEach(async () => {
+      if (testBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+        testBookingId = null;
+      }
     });
 
     it('should cancel a product with penalty', async () => {
@@ -305,8 +306,7 @@ describe('Booking Cancellation Routes', () => {
   describe('GET /cancellation/penalty-suggestion/:booking_product_id', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-CANCEL-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -331,6 +331,18 @@ describe('Booking Cancellation Routes', () => {
       testBookingProductId = bpResult.rows[0].id;
     });
 
+    afterEach(async () => {
+      if (testBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+        testBookingId = null;
+      }
+    });
+
     it('should return penalty suggestion for a booking product', async () => {
       const response = await request(app).get(`/cancellation/penalty-suggestion/${testBookingProductId}`);
 
@@ -353,8 +365,7 @@ describe('Booking Cancellation Routes', () => {
 
     beforeEach(async () => {
       const booking = await bookingService.createBooking({
-        customerName: 'Cancel Preview Customer',
-        customerPhone: 'CANCEL-PREVIEW-TEST',
+        userId: 1,
         customerEmail: 'cancel-preview@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -503,8 +514,7 @@ describe('Booking Cancellation Routes', () => {
     beforeEach(async () => {
       // Create test booking
       const booking = await bookingService.createBooking({
-        customerName: 'Cancellation Info Customer',
-        customerPhone: 'CANCEL-INFO-TEST',
+        userId: 1,
         customerEmail: 'cancel-info@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -592,8 +602,7 @@ describe('Booking Cancellation Routes', () => {
 
     beforeEach(async () => {
       const booking = await bookingService.createBooking({
-        customerName: 'Summary Test Customer',
-        customerPhone: 'CANCEL-SUMMARY-TEST',
+        userId: 1,
         customerEmail: 'summary@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -870,8 +879,7 @@ describe('Booking Cancellation Routes', () => {
 
     beforeEach(async () => {
       const booking = await bookingService.createBooking({
-        customerName: 'Settlement Test Customer',
-        customerPhone: 'CANCEL-SETTLE-TEST',
+        userId: 1,
         customerEmail: 'settle@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{

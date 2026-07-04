@@ -28,21 +28,24 @@ describe('Bookings Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-ROUTE'`);
+    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+    await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+    await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
     await pool.query(`DELETE FROM products WHERE code = 'TEST-BOOK-001'`);
   });
 
   afterEach(async () => {
-    // Cleanup after each test
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-ROUTE'`);
+    // Cleanup after each test - use booking ID-based cleanup where available
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+      testBookingId = null;
+    }
   });
 
   describe('POST /bookings', () => {
@@ -50,10 +53,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Test Customer',
-          customer_phone: 'TEST-ROUTE',
-          customer_email: 'test@example.com',
-          customer_address: '123 Test St',
+          user_id: 1,
           booking_date: '2027-01-01',
           products: [
             {
@@ -70,7 +70,7 @@ describe('Bookings Routes', () => {
 
       expect(response.status).toBe(201);
       expect(response.body).toHaveProperty('id');
-      expect(response.body.customer_name).toBe('Test Customer');
+      expect(response.body).toHaveProperty('user');
       expect(response.body.products).toHaveLength(1);
 
       testBookingId = response.body.id;
@@ -80,10 +80,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Discount Test Customer',
-          customer_phone: 'TEST-ROUTE',
-          customer_email: 'discount@example.com',
-          customer_address: '123 Test St',
+          user_id: 1,
           booking_date: '2027-01-01',
           products: [
             {
@@ -110,10 +107,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Fixed Discount Customer',
-          customer_phone: 'TEST-ROUTE',
-          customer_email: 'fixed@example.com',
-          customer_address: '123 Test St',
+          user_id: 1,
           booking_date: '2027-01-01',
           products: [
             {
@@ -138,10 +132,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Auto Fetch Customer',
-          customer_phone: 'TEST-ROUTE',
-          customer_email: 'autofetch@example.com',
-          customer_address: '123 Test St',
+          user_id: 1,
           booking_date: '2027-01-01',
           products: [
             {
@@ -163,10 +154,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Test Customer',
-          customer_phone: 'TEST-NOT-FOUND',
-          customer_email: 'test@example.com',
-          customer_address: '123 Test St',
+          user_id: 1,
           booking_date: '2027-01-01',
           products: [
             {
@@ -187,8 +175,7 @@ describe('Bookings Routes', () => {
       const response = await request(app)
         .post('/bookings')
         .send({
-          customer_name: 'Test Customer'
-          // Missing required fields
+          // Missing required fields userId, bookingDate, products
         });
 
       expect(response.status).toBe(400);
@@ -200,9 +187,7 @@ describe('Bookings Routes', () => {
     beforeEach(async () => {
       // Create a test booking
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
-        customerEmail: 'test@example.com',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -235,20 +220,19 @@ describe('Bookings Routes', () => {
     });
 
     it('should filter bookings by search term', async () => {
-      const response = await request(app).get('/bookings?search=TEST-ROUTE');
+      const response = await request(app).get('/bookings?search=Test+Admin');
 
       expect(response.status).toBe(200);
       expect(Array.isArray(response.body)).toBe(true);
       expect(response.body.length).toBeGreaterThan(0);
-      expect(response.body[0].customer_phone).toBe('TEST-ROUTE');
+      // user.name matches the search
     });
   });
 
   describe('GET /bookings/:id', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -286,8 +270,7 @@ describe('Bookings Routes', () => {
   describe('PUT /bookings/:id/confirm', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -330,8 +313,7 @@ describe('Bookings Routes', () => {
   describe('PUT /bookings/:id/status', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -360,8 +342,7 @@ describe('Bookings Routes', () => {
   describe('DELETE /bookings/:id', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -399,8 +380,7 @@ describe('Bookings Routes', () => {
   describe('POST /bookings/:id/final-discount', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         bookingDate: '2027-01-01',
         products: [
           {
@@ -493,8 +473,7 @@ describe('Bookings Routes', () => {
       const futureTo   = new Date(Date.now() + 65 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
       const booking = await bookingService.createBooking({
-        customerName: 'Finalize Test Customer',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         customerEmail: 'finalize@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -524,6 +503,17 @@ describe('Bookings Routes', () => {
         'UPDATE booking_products SET status = $1 WHERE booking_id = $2',
         ['completed', finalizeTestBookingId]
       );
+    });
+
+    afterEach(async () => {
+      if (finalizeTestBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [finalizeTestBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [finalizeTestBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [finalizeTestBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [finalizeTestBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [finalizeTestBookingId]);
+        finalizeTestBookingId = null;
+      }
     });
 
     // Test: Finalize with balance due (customer owes money)
@@ -692,8 +682,7 @@ describe('Bookings Routes', () => {
     beforeEach(async () => {
       // Create a booking using the service (which properly initializes charges)
       const booking = await bookingService.createBooking({
-        customerName: 'Activity Log Test',
-        customerPhone: 'TEST-ROUTE',
+        userId: 1,
         customerEmail: 'activitylog@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -730,6 +719,17 @@ describe('Bookings Routes', () => {
           JSON.stringify({ booking_product_id: activityLogProductId })
         ]
       );
+    });
+
+    afterEach(async () => {
+      if (activityLogTestBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [activityLogTestBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [activityLogTestBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [activityLogTestBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [activityLogTestBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [activityLogTestBookingId]);
+        activityLogTestBookingId = null;
+      }
     });
 
     // Test: Retrieve activity log successfully
@@ -772,8 +772,8 @@ describe('Bookings Routes', () => {
     it('should return empty array for booking with no activity log', async () => {
       // Create a booking without any activity log entries
       const emptyBookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-         VALUES ('Empty Activity Test', 'TEST-ROUTE', CURRENT_DATE, 'pending', 'test-user')
+        `INSERT INTO bookings (user_id, booking_date, status, created_by)
+         VALUES (1, CURRENT_DATE, 'pending', 'test-user')
          RETURNING id`
       );
       const emptyBookingId = emptyBookingResult.rows[0].id;

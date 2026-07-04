@@ -10,6 +10,7 @@ app.use('/availability', require('./availability'));
 
 describe('Availability Routes', () => {
   let testProductId;
+  let testBookingId = null;
 
   beforeAll(async () => {
     // Create test product
@@ -24,14 +25,17 @@ describe('Availability Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-AVAIL-ROUTE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-AVAIL-ROUTE']);
+    await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
     await pool.query('DELETE FROM products WHERE id = $1', [testProductId]);
   });
 
   afterEach(async () => {
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-AVAIL-ROUTE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-AVAIL-ROUTE']);
+    if (testBookingId) {
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+      await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
+      testBookingId = null;
+    }
   });
 
   describe('POST /availability/check', () => {
@@ -66,16 +70,17 @@ describe('Availability Routes', () => {
     it('should detect conflicts', async () => {
       // Create a booking
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
          RETURNING id`,
-        ['Test Customer', 'TEST-AVAIL-ROUTE', '2024-01-01', '2024-05-01', '2024-05-10', 'confirmed']
+        ['2024-01-01', '2024-05-01', '2024-05-10', 'confirmed']
       );
+      testBookingId = bookingResult.rows[0].id;
 
       await pool.query(
         `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [bookingResult.rows[0].id, testProductId, '2024-05-01', '2024-05-10', 'confirmed', 50000, 20000]
+        [testBookingId, testProductId, '2024-05-01', '2024-05-10', 'confirmed', 50000, 20000]
       );
 
       const response = await request(app)

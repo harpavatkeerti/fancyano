@@ -67,12 +67,14 @@ describe('Product Exchanges Routes', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM booking_exchange_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE'`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_exchange_history WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+    }
     await pool.query(`DELETE FROM products WHERE code LIKE 'TEST-EXCH-%'`);
     await pool.query(`DELETE FROM rental_policies WHERE policy_key IN ('test_exchange_0_1', 'test_exchange_2_3')`);
     // Re-activate real policies
@@ -81,20 +83,22 @@ describe('Product Exchanges Routes', () => {
 
   afterEach(async () => {
     // Cleanup after each test
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM booking_exchange_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE'))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE')`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = 'TEST-EXCH-ROUTE'`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_exchange_history WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+      testBookingId = null;
+    }
   });
 
   describe('POST /exchanges', () => {
     beforeEach(async () => {
       // Create a test booking with confirmed status
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-EXCH-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -307,8 +311,7 @@ describe('Product Exchanges Routes', () => {
   describe('GET /exchanges/penalty-suggestion/:booking_product_id', () => {
     beforeEach(async () => {
       const result = await bookingService.createBooking({
-        customerName: 'Test Customer',
-        customerPhone: 'TEST-EXCH-ROUTE',
+        userId: 1,
         bookingDate: '2024-01-01',
         products: [
           {
@@ -365,8 +368,7 @@ describe('Product Exchanges Routes', () => {
     beforeEach(async () => {
       // Create test booking
       const booking = await bookingService.createBooking({
-        customerName: 'Exchange Eligibility Customer',
-        customerPhone: 'EXCH-ELIG-TEST',
+        userId: 1,
         customerEmail: 'exch-eligibility@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -443,8 +445,7 @@ describe('Product Exchanges Routes', () => {
     beforeEach(async () => {
       // Create test booking
       const booking = await bookingService.createBooking({
-        customerName: 'Exchange Preview Customer',
-        customerPhone: 'TEST-EXCH-ROUTE',
+        userId: 1,
         customerEmail: 'preview@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -466,6 +467,18 @@ describe('Product Exchanges Routes', () => {
       previewTestBPId = bpResult.rows[0].id;
 
       await bookingService.confirmBooking(previewTestBookingId, 'test-user');
+    });
+
+    afterEach(async () => {
+      if (previewTestBookingId) {
+        await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [previewTestBookingId]);
+        await pool.query(`DELETE FROM booking_exchange_history WHERE booking_id = $1`, [previewTestBookingId]);
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [previewTestBookingId]);
+        await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [previewTestBookingId]);
+        await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [previewTestBookingId]);
+        await pool.query(`DELETE FROM bookings WHERE id = $1`, [previewTestBookingId]);
+        previewTestBookingId = null;
+      }
     });
 
     it('should return complete exchange preview with calculations', async () => {

@@ -32,10 +32,10 @@ describe('Invoices Routes', () => {
 
     // Create test booking
     const bookingResult = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+       VALUES (1, $1, $2, $3, $4)
        RETURNING id`,
-      ['Test Customer', 'TEST-INV-ROUTE', '2024-01-01', '2024-02-01', '2024-02-05', 'confirmed']
+      ['2024-01-01', '2024-02-01', '2024-02-05', 'confirmed']
     );
     testBookingId = bookingResult.rows[0].id;
 

@@ -40,9 +40,9 @@ describe('recalcBookingDateRange', () => {
     await cleanupBookingsForProduct(testProductId);
 
     const booking = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by,
+      `INSERT INTO bookings (user_id, booking_date, status, created_by,
                              booked_from, booked_to)
-       VALUES ('Util Test', '0000000001', CURRENT_DATE, 'confirmed', 'test',
+       VALUES (1, CURRENT_DATE, 'confirmed', 'test',
                '2024-01-01', '2024-01-31')
        RETURNING id`
     );
@@ -191,8 +191,8 @@ describe('checkProductAvailability', () => {
 
     // Seed one confirmed booking that blocks 2024-09-10 → 2024-09-20
     const booking = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-       VALUES ('Blocking Customer', '0000000002', CURRENT_DATE, 'confirmed', 'test')
+      `INSERT INTO bookings (user_id, booking_date, status, created_by)
+       VALUES (1, CURRENT_DATE, 'confirmed', 'test')
        RETURNING id`
     );
     existingBookingId = booking.rows[0].id;
@@ -252,8 +252,8 @@ describe('checkProductAvailability', () => {
   // excludeBookingId does NOT suppress conflicts from OTHER bookings
   test('still throws when a different booking conflicts even with excludeBookingId set', async () => {
     const other = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-       VALUES ('Other Blocker', '0000000003', CURRENT_DATE, 'confirmed', 'test')
+      `INSERT INTO bookings (user_id, booking_date, status, created_by)
+       VALUES (1, CURRENT_DATE, 'confirmed', 'test')
        RETURNING id`
     );
     await pool.query(
@@ -288,6 +288,19 @@ describe('checkProductAvailability', () => {
     await pool.query(
       `UPDATE bookings SET status = 'cancelled' WHERE id = $1`,
       [existingBookingId]
+    );
+
+    await expect(
+      checkProductAvailability(testProductId, '2024-09-10', '2024-09-20')
+    ).resolves.toBeUndefined();
+  });
+
+  // Fix 1: a completed (returned) product must not block new bookings for those dates
+  test('resolves when the only conflicting product is completed (returned)', async () => {
+    await pool.query(
+      `UPDATE booking_products SET status = 'completed'
+       WHERE booking_id = $1 AND product_id = $2`,
+      [existingBookingId, testProductId]
     );
 
     await expect(

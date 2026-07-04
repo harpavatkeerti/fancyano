@@ -37,8 +37,7 @@ describe('Product Lifecycle Routes', () => {
   beforeEach(async () => {
     // Create fresh booking for each test
     const booking = await bookingService.createBooking({
-      customerName: 'Test Customer',
-      customerPhone: 'TEST-LIFECYCLE-PHONE',
+      userId: 1,
       customerEmail: 'test@lifecycle.com',
       bookingDate: new Date().toISOString().split('T')[0],
       products: [{
@@ -66,14 +65,15 @@ describe('Product Lifecycle Routes', () => {
 
   afterEach(async () => {
     // Cleanup
-    const testPhones = ['TEST-LIFECYCLE-PHONE', 'TEST-SEC-ADJUST', 'TEST-BALANCE-DUE', 'TEST-PARTIAL', 'TEST-NO-SEC'];
-    const phoneList = testPhones.map(p => `'${p}'`).join(',');
-    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT bp.id FROM booking_products bp JOIN bookings b ON bp.booking_id = b.id WHERE b.customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone IN (${phoneList}))`);
-    await pool.query(`DELETE FROM bookings WHERE customer_phone IN (${phoneList})`);
+    if (testBookingId) {
+      await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
+      await pool.query(`DELETE FROM payment_transactions WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM booking_products WHERE booking_id = $1`, [testBookingId]);
+      await pool.query(`DELETE FROM bookings WHERE id = $1`, [testBookingId]);
+      testBookingId = null;
+    }
   });
 
   afterAll(async () => {
@@ -322,8 +322,7 @@ describe('Product Lifecycle Routes', () => {
       const futureFrom = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const futureTo   = new Date(Date.now() + 35 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
       const booking2 = await bookingService.createBooking({
-        customerName: 'Test Adjust',
-        customerPhone: 'TEST-SEC-ADJUST',
+        userId: 1,
         customerEmail: 'adjust@test.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -441,8 +440,7 @@ describe('Product Lifecycle Routes', () => {
       const futureTo   = new Date(Date.now() + 35 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
       const booking2 = await bookingService.createBooking({
-        customerName: 'Test Customer 2',
-        customerPhone: 'TEST-BALANCE-DUE',
+        userId: 1,
         customerEmail: 'test2@lifecycle.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -496,8 +494,7 @@ describe('Product Lifecycle Routes', () => {
       const futureTo   = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
       const booking3 = await bookingService.createBooking({
-        customerName: 'Test Customer 3',
-        customerPhone: 'TEST-PARTIAL',
+        userId: 1,
         customerEmail: 'test3@lifecycle.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{
@@ -565,8 +562,7 @@ describe('Product Lifecycle Routes', () => {
       const futureTo   = new Date(Date.now() + 55 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
 
       const booking4 = await bookingService.createBooking({
-        customerName: 'Test Customer 4',
-        customerPhone: 'TEST-NO-SEC',
+        userId: 1,
         customerEmail: 'test4@lifecycle.com',
         bookingDate: new Date().toISOString().split('T')[0],
         products: [{

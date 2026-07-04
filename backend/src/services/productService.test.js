@@ -20,7 +20,8 @@ describe('ProductService', () => {
 
   afterEach(async () => {
     // Cleanup test products (cascade deletes booking_products)
-    await pool.query(`DELETE FROM bookings WHERE customer_phone = '9999999999' OR customer_phone LIKE '999999999%'`);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = 1 AND status IN ('confirmed','cancelled'))`);
+    await pool.query(`DELETE FROM bookings WHERE user_id = 1 AND status IN ('confirmed','cancelled')`);
     await pool.query(`DELETE FROM products WHERE code LIKE 'TEST-PROD-%'`);
   });
 
@@ -235,10 +236,10 @@ describe('ProductService', () => {
 
     it('should block archiving when product has an active booking', async () => {
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status)
-         VALUES ($1, $2, CURRENT_DATE, $3)
+        `INSERT INTO bookings (user_id, booking_date, status)
+         VALUES (1, CURRENT_DATE, $1)
          RETURNING id`,
-        ['Test Customer', '9999999999', 'confirmed']
+        ['confirmed']
       );
       const bookingId = bookingResult.rows[0].id;
 
@@ -255,10 +256,10 @@ describe('ProductService', () => {
 
     it('should allow archiving when bookings are cancelled or completed', async () => {
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, status)
-         VALUES ($1, $2, CURRENT_DATE, $3)
+        `INSERT INTO bookings (user_id, booking_date, status)
+         VALUES (1, CURRENT_DATE, $1)
          RETURNING id`,
-        ['Test Customer', '9999999999', 'cancelled']
+        ['cancelled']
       );
       const bookingId = bookingResult.rows[0].id;
 

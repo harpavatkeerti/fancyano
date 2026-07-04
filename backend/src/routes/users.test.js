@@ -26,8 +26,23 @@ const TEST_ALT_PHONE    = '0000100002';
 const TEST_COUNTRY      = 'US';         // US = 10 digits, avoids India-10-digit-only rule conflict
 
 async function cleanup() {
+  // Delete bookings referencing test users first (to satisfy FK constraint)
+  // Must delete in correct FK order: activity_log/charges/products → bookings → users
+  const testUserIds = await pool.query(
+    `SELECT id FROM users WHERE phone LIKE '${TEST_PHONE_PREFIX}%' AND id != 1`
+  );
+  const ids = testUserIds.rows.map(r => r.id);
+  if (ids.length > 0) {
+    await pool.query(`DELETE FROM booking_activity_log WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))`, [ids]);
+    await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))`, [ids]);
+    await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT bp.id FROM booking_products bp JOIN bookings b ON bp.booking_id = b.id WHERE b.user_id = ANY($1))`, [ids]);
+    await pool.query(`DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))`, [ids]);
+    await pool.query(`DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE user_id = ANY($1))`, [ids]);
+    await pool.query(`DELETE FROM bookings WHERE user_id = ANY($1)`, [ids]);
+  }
+  // Exclude id=1 — that's the globally-seeded admin user that all tests depend on
   await pool.query(
-    `DELETE FROM users WHERE phone LIKE '${TEST_PHONE_PREFIX}%'`
+    `DELETE FROM users WHERE phone LIKE '${TEST_PHONE_PREFIX}%' AND id != 1`
   );
 }
 
@@ -287,11 +302,12 @@ describe('Users Routes', () => {
       expect(res.body).toHaveProperty('error');
     });
 
-    it('should return 404 for soft-deleted user', async () => {
+    it('should return soft-deleted user with is_deleted=true (not 404)', async () => {
       await request(app).delete(`/users/${testUserId}`);
       const res = await request(app).get(`/users/${testUserId}`);
 
-      expect(res.status).toBe(404);
+      expect(res.status).toBe(200);
+      expect(res.body.is_deleted).toBe(true);
     });
   });
 
@@ -389,9 +405,10 @@ describe('Users Routes', () => {
       expect(res.status).toBe(200);
       expect(res.body.message).toMatch(/deactivated/i);
 
-      // Confirm user is gone from list
+      // Confirm is_deleted = TRUE via GET (returns 200 with is_deleted flag)
       const getRes = await request(app).get(`/users/${testUserId}`);
-      expect(getRes.status).toBe(404);
+      expect(getRes.status).toBe(200);
+      expect(getRes.body.is_deleted).toBe(true);
 
       // Confirm is_deleted = TRUE in DB
       const dbRes = await pool.query('SELECT is_deleted FROM users WHERE id = $1', [testUserId]);

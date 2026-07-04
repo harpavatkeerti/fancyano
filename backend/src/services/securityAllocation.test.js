@@ -33,8 +33,8 @@ describe('Security Allocation — productIds routing', () => {
 
       // Booking with no transport charge so balance = security only
       const bookingResult = await client.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status, transport_charge, transport_paid)
-         VALUES ('Alloc Test', '8888888888', CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 7, 'confirmed', 0, 0)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status, transport_charge, transport_paid)
+         VALUES (1, CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 7, 'confirmed', 0, 0)
          RETURNING id`
       );
       testBookingId = bookingResult.rows[0].id;

@@ -19,15 +19,15 @@ describe('AvailabilityService', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-AVAIL-SERVICE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-AVAIL-SERVICE']);
+    await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
     await pool.query('DELETE FROM products WHERE id = $1', [testProductId]);
   });
 
   afterEach(async () => {
     // Cleanup after each test
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-AVAIL-SERVICE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-AVAIL-SERVICE']);
+    await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
   });
 
   describe('checkProductAvailability', () => {
@@ -46,10 +46,10 @@ describe('AvailabilityService', () => {
     it('should return unavailable when product has conflicting booking', async () => {
       // Create a confirmed booking
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
          RETURNING id`,
-        ['Test Customer', 'TEST-AVAIL-SERVICE', '2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
+        ['2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
       );
       testBookingId = bookingResult.rows[0].id;
 
@@ -74,10 +74,10 @@ describe('AvailabilityService', () => {
     it('should return available when conflicting booking product is cancelled', async () => {
       // Create a booking with cancelled product
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
          RETURNING id`,
-        ['Test Customer', 'TEST-AVAIL-SERVICE', '2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
+        ['2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
       );
       testBookingId = bookingResult.rows[0].id;
 
@@ -100,10 +100,10 @@ describe('AvailabilityService', () => {
     it('should return available when conflicting booking product is exchanged', async () => {
       // Create a booking with exchanged product
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
          RETURNING id`,
-        ['Test Customer', 'TEST-AVAIL-SERVICE', '2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
+        ['2024-01-01', '2024-03-01', '2024-03-10', 'confirmed']
       );
       testBookingId = bookingResult.rows[0].id;
 
@@ -156,10 +156,10 @@ describe('AvailabilityService', () => {
     it('should return all_available false when any product is unavailable', async () => {
       // Create a booking
       const bookingResult = await pool.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
          RETURNING id`,
-        ['Test Customer', 'TEST-AVAIL-SERVICE', '2024-01-01', '2024-04-01', '2024-04-10', 'confirmed']
+        ['2024-01-01', '2024-04-01', '2024-04-10', 'confirmed']
       );
       testBookingId = bookingResult.rows[0].id;
 

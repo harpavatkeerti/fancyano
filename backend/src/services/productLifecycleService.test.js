@@ -28,8 +28,8 @@ describe('ProductLifecycleService', () => {
       
       // Create test booking
       const bookingResult = await client.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status)
-         VALUES ('Test Customer', '1234567890', CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed')
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed')
          RETURNING id`
       );
       testBookingId = bookingResult.rows[0].id;
@@ -589,8 +589,8 @@ describe('ProductLifecycleService', () => {
 
         // Create a separate booking that holds testProductId2 on the same dates
         const blocker = await pool.query(
-          `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-           VALUES ('Blocker', '1111111111', CURRENT_DATE, 'confirmed', 'test')
+          `INSERT INTO bookings (user_id, booking_date, status, created_by)
+           VALUES (1, CURRENT_DATE, 'confirmed', 'test')
            RETURNING id`
         );
         const blockerBookingId = blocker.rows[0].id;
@@ -637,8 +637,8 @@ describe('ProductLifecycleService', () => {
         const to   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
 
         const cancelled = await pool.query(
-          `INSERT INTO bookings (customer_name, customer_phone, booking_date, status, created_by)
-           VALUES ('Cancelled', '2222222222', CURRENT_DATE, 'cancelled', 'test')
+          `INSERT INTO bookings (user_id, booking_date, status, created_by)
+           VALUES (1, CURRENT_DATE, 'cancelled', 'test')
            RETURNING id`
         );
         const cancelledId = cancelled.rows[0].id;
@@ -699,6 +699,53 @@ describe('ProductLifecycleService', () => {
           String(testUserId)
         );
         expect(result).toHaveProperty('new_booking_product_ids');
+      });
+    });
+
+    describe('booking date range recalculation on exchange (Fix 2)', () => {
+      // Fix 2: booking booked_from/booked_to must reflect the NEW product's dates after exchange
+      test('booking date range updates to match the new product dates after exchange', async () => {
+        const newFrom = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+
+        // Confirm the booking currently ends on the old product's booked_to (today+5, from beforeEach)
+        const before = await pool.query('SELECT booked_from, booked_to FROM bookings WHERE id = $1', [testBookingId]);
+        const oldTo = before.rows[0].booked_to.toISOString().slice(0, 10);
+        expect(oldTo).not.toBe(newTo); // sanity: new dates are different
+
+        await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
+          'Date-range recalc test',
+          String(testUserId)
+        );
+
+        const after = await pool.query('SELECT booked_from, booked_to FROM bookings WHERE id = $1', [testBookingId]);
+        expect(after.rows[0].booked_from.toISOString().slice(0, 10)).toBe(newFrom);
+        expect(after.rows[0].booked_to.toISOString().slice(0, 10)).toBe(newTo);
+      });
+
+      // Fix 1 + Fix 2 combined: the old (exchanged) product's dates must be free for new bookings
+      test('old product dates are freed for new bookings after exchange (completed status not a blocker)', async () => {
+        const { checkProductAvailability } = require('../utils/bookingDateUtils');
+
+        const oldFrom = new Date().toISOString().slice(0, 10);
+        const oldTo   = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
+        const newFrom = new Date(Date.now() + 20 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 25 * 864e5).toISOString().slice(0, 10);
+
+        // Exchange testProductId1 (booked oldFrom–oldTo) for testProductId2 (booked newFrom–newTo)
+        await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
+          'Free-up old dates test',
+          String(testUserId)
+        );
+
+        // testProductId1 is now 'exchanged' for oldFrom–oldTo — those dates must be available again
+        await expect(
+          checkProductAvailability(testProductId1, oldFrom, oldTo)
+        ).resolves.toBeUndefined();
       });
     });
   });

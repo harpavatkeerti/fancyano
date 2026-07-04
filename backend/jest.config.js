@@ -20,7 +20,11 @@ module.exports = {
   forceExit: true,
   // Ignore node_modules
   testPathIgnorePatterns: ['/node_modules/'],
-  // Global setup: creates test database with schema copied from production
+  // Run test files sequentially — all tests share one PostgreSQL test database,
+  // so parallel file execution causes race conditions (one file's afterAll deletes
+  // records that another file's mid-run tests depend on).
+  maxWorkers: 1,
+
   globalSetup: './jest.globalSetup.js',
   // Safety guard: blocks unscoped DELETE/TRUNCATE to protect data
   setupFiles: ['./jest.testSafetyGuard.js'],

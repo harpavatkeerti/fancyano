@@ -29,16 +29,17 @@ describe('InvoiceService', () => {
 
   afterAll(async () => {
     // Cleanup
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-INV-SERVICE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-INV-SERVICE']);
+    await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
     await pool.query('DELETE FROM products WHERE id = $1', [testProductId]);
   });
 
   afterEach(async () => {
     // Cleanup after each test
-    await pool.query('DELETE FROM payment_transactions WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-INV-SERVICE']);
-    await pool.query('DELETE FROM booking_products WHERE booking_id IN (SELECT id FROM bookings WHERE customer_phone = $1)', ['TEST-INV-SERVICE']);
-    await pool.query('DELETE FROM bookings WHERE customer_phone = $1', ['TEST-INV-SERVICE']);
+    await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+    await pool.query('DELETE FROM bookings WHERE id = $1', [testBookingId]);
+    testBookingId = null;
     
     // Clean up generated PDFs
     const uploadsDir = path.join(__dirname, '../../uploads');
@@ -56,10 +57,10 @@ describe('InvoiceService', () => {
   beforeEach(async () => {
     // Create test booking with product
     const bookingResult = await pool.query(
-      `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status, transport_charge)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status, transport_charge)
+       VALUES (1, $1, $2, $3, $4, $5)
        RETURNING id`,
-      ['Test Customer', 'TEST-INV-SERVICE', '2024-01-01', '2024-02-01', '2024-02-05', 'confirmed', 5000]
+      ['2024-01-01', '2024-02-01', '2024-02-05', 'confirmed', 5000]
     );
     testBookingId = bookingResult.rows[0].id;
 

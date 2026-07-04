@@ -12,8 +12,8 @@ describe('ChargeAccountingService', () => {
 
       // Create test booking
       const bookingResult = await client.query(
-        `INSERT INTO bookings (customer_name, customer_phone, booking_date, booked_from, booked_to, status, transport_charge, transport_paid)
-         VALUES ('Test Customer', '1234567890', CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 100, 0)
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status, transport_charge, transport_paid)
+         VALUES (1, CURRENT_DATE, CURRENT_DATE, CURRENT_DATE + 5, 'confirmed', 100, 0)
          RETURNING id`
       );
       testBookingId = bookingResult.rows[0].id;
