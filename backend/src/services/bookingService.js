@@ -1007,7 +1007,7 @@ class BookingService {
          JOIN users u ON b.user_id = u.id
          JOIN booking_products bp ON bp.booking_id = b.id
          WHERE bp.product_id = $1
-           AND bp.status NOT IN ('cancelled', 'exchanged')
+           AND bp.status NOT IN ('cancelled', 'exchanged', 'completed')
            AND b.status NOT IN ('cancelled')
          ORDER BY bp.booked_from`,
         [productId]
