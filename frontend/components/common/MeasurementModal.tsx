@@ -22,9 +22,9 @@ export function isMaleClothing(productName: string): boolean {
 interface MeasurementModalProps {
   /**
    * 'confirm' — post-payment modal that collects measurements for all products at once.
-   * 'view'    — single-product modal for viewing and editing saved measurements.
+   * 'edit'    — single-product modal for editing saved measurements.
    */
-  mode: 'confirm' | 'view';
+  mode: 'confirm' | 'edit';
 
   bookingId: number;
   booking: any;
@@ -32,7 +32,7 @@ interface MeasurementModalProps {
   // 'confirm' mode: all non-cancelled products
   products?: any[];
 
-  // 'view' mode: single selected product
+  // 'edit' mode: single selected product
   selectedProduct?: any;
 
   // Shared state (lives in parent across modal open/close cycles — loaded from server)
@@ -41,15 +41,8 @@ interface MeasurementModalProps {
   onMeasurementsChange: (updated: { [key: string]: any }) => void;
   onSpecialRequirementsChange: (updated: { [key: string]: string }) => void;
 
-  // 'view' mode: locking flags
-  isOrderCompleted?: boolean;
+  // 'edit' mode: locking flags
   isProductRefunded?: (productId: number) => boolean;
-  isDropDatePassed?: (product: any) => boolean;
-  /**
-   * 'view' mode only: open directly in edit mode (used when no measurements exist yet).
-   * Defaults to false (view mode).
-   */
-  defaultEditMode?: boolean;
 
   onClose: () => void;
   onSaved: () => void; // Parent calls fetchBooking() here
@@ -67,20 +60,34 @@ export function MeasurementModal({
   specialRequirements,
   onMeasurementsChange,
   onSpecialRequirementsChange,
-  isOrderCompleted = false,
   isProductRefunded,
-  isDropDatePassed,
-  defaultEditMode = false,
   onClose,
   onSaved,
 }: MeasurementModalProps) {
   // ── Internal state (confirm mode) ──────────────────────────────────────────
   const [measurementErrors, setMeasurementErrors] = useState<{ [key: string]: string }>({});
 
-  // ── Internal state (view mode) ─────────────────────────────────────────────
-  const [isEditingMeasurements, setIsEditingMeasurements] = useState(defaultEditMode);
-  const [editingMeasurements, setEditingMeasurements] = useState<{ [key: string]: string }>({});
-  const [editingSpecialRequirements, setEditingSpecialRequirements] = useState<string>('');
+  // ── Internal state (edit mode) ─────────────────────────────────────────────
+  const [editingMeasurements, setEditingMeasurements] = useState<{ [key: string]: string }>(
+    () => {
+      if (mode === 'edit' && selectedProduct) {
+        const from = selectedProduct.booked_from || booking?.booked_from;
+        const to = selectedProduct.booked_to || booking?.booked_to;
+        const key = `${selectedProduct.id}_${from}_${to}`;
+        return { ...(measurements[key] || measurements[selectedProduct.id] || {}) };
+      }
+      return {};
+    },
+  );
+  const [editingSpecialRequirements, setEditingSpecialRequirements] = useState<string>(() => {
+    if (mode === 'edit' && selectedProduct) {
+      const from = selectedProduct.booked_from || booking?.booked_from;
+      const to = selectedProduct.booked_to || booking?.booked_to;
+      const key = `${selectedProduct.id}_${from}_${to}`;
+      return specialRequirements[key] || '';
+    }
+    return '';
+  });
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -107,15 +114,11 @@ export function MeasurementModal({
     });
   }
 
-  // View mode: validates a single input field and syncs to shared state immediately
+  // Edit mode: validates a single input field and updates local draft only (not parent)
   function handleEditMeasurementChange(field: string, value: string) {
     const numericValue = value.replace(/\D/g, '');
     if (numericValue.length > 2) return;
-    const updated = { ...editingMeasurements, [field]: numericValue };
-    setEditingMeasurements(updated);
-    if (selectedProduct) {
-      onMeasurementsChange({ ...measurements, [uniqueKey(selectedProduct)]: updated });
-    }
+    setEditingMeasurements(prev => ({ ...prev, [field]: numericValue }));
   }
 
   // ── Confirm mode: save all products ───────────────────────────────────────
@@ -143,9 +146,9 @@ export function MeasurementModal({
     }
   }
 
-  // ── View mode: save single product ────────────────────────────────────────
+  // ── Edit mode: save single product ────────────────────────────────────────
 
-  async function handleViewSave() {
+  async function handleEditSave() {
     if (!selectedProduct) return;
     try {
       const key = uniqueKey(selectedProduct);
@@ -159,8 +162,8 @@ export function MeasurementModal({
 
       onMeasurementsChange(updatedMeasurements);
       onSpecialRequirementsChange(updatedSpecialReqs);
-      setIsEditingMeasurements(false);
       onSaved();
+      onClose();
       toast.success('Measurements saved successfully!');
     } catch (error: any) {
       console.error('Error saving measurements:', error);
@@ -252,80 +255,12 @@ export function MeasurementModal({
     );
   }
 
-  // ── View mode: read-only display ──────────────────────────────────────────
-
-  function renderMeasurementDisplay(productName: string, meas: any) {
-    const item = (label: string, value: string | undefined) =>
-      value ? (
-        <div className="bg-white border border-gray-200 rounded-lg p-3">
-          <p className="text-sm text-gray-600 mb-1">{label}</p>
-          <p className="text-lg font-semibold text-gray-900">{value}"</p>
-        </div>
-      ) : null;
-
-    if (isFemaleClothing(productName)) {
-      return (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-900 border-b pb-2">Female Measurements (in inches)</h3>
-          <div className="grid grid-cols-2 gap-4">
-            {item('Waist', meas.waist)}
-            {item('Bust', meas.bust)}
-            {item('Shoulder', meas.shoulder)}
-            {item('Sleeves Up', meas.sleevesUp)}
-            {item('Sleeves E', meas.sleevesE)}
-            {item('Sleeves B', meas.sleevesB)}
-            {item('Lehenga Length', meas.lehengaLength)}
-          </div>
-        </div>
-      );
-    }
-
-    if (isMaleClothing(productName)) {
-      return (
-        <div className="space-y-4">
-          <h3 className="text-lg font-semibold text-gray-900 border-b pb-2">Male Measurements (in inches)</h3>
-          <div className="space-y-4">
-            <div>
-              <h4 className="text-md font-medium text-gray-700 mb-3">Tight Fit</h4>
-              <div className="grid grid-cols-2 gap-4">
-                {item('Side Tight', meas.sideTight)}
-                {item('Sleeves Tight', meas.sleevesTight)}
-                {item('Sleeves Length', meas.sleevesLength)}
-                {item('Pant Length', meas.pantLength)}
-              </div>
-            </div>
-            <div>
-              <h4 className="text-md font-medium text-gray-700 mb-3">Loose Fit</h4>
-              <div className="grid grid-cols-2 gap-4">
-                {item('Side Loose', meas.sideLoose)}
-                {item('Sleeves Loose', meas.sleevesLoose)}
-                {item('Sleeves Length', meas.sleevesLengthLoose)}
-                {item('Pant Length', meas.pantLengthLoose)}
-              </div>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
-    return (
-      <div className="space-y-4">
-        <h3 className="text-lg font-semibold text-gray-900 border-b pb-2">Measurements (in inches)</h3>
-        <div className="grid grid-cols-2 gap-4">
-          {item('Waist', meas.waist)}
-          {item('Bust', meas.bust)}
-          {item('Chest', meas.chest)}
-          {item('Shoulder', meas.shoulder)}
-        </div>
-      </div>
-    );
-  }
-
   // ── Render: confirm mode ───────────────────────────────────────────────────
 
   if (mode === 'confirm') {
     return (
-      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-4">
+      <div className="fixed inset-0 bg-black bg-opacity-50 z-50 overflow-y-auto">
+        <div className="flex min-h-full items-center justify-center p-4">
         <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 my-8">
           <div className="flex items-center mb-6">
             <svg className="w-8 h-8 text-green-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
@@ -420,39 +355,19 @@ export function MeasurementModal({
             </button>
           </div>
         </div>
+        </div>
       </div>
     );
   }
 
-  // ── Render: view mode ─────────────────────────────────────────────────────
+  // ── Render: edit mode ─────────────────────────────────────────────────────
 
   if (!selectedProduct) return null;
 
   const key = uniqueKey(selectedProduct);
-  const productMeasurements = measurements[key] || measurements[selectedProduct.id] || {};
-  const hasMeasurements = Object.keys(productMeasurements).length > 0;
-  const isFemale = isFemaleClothing(selectedProduct.name);
-  const isMale = isMaleClothing(selectedProduct.name);
-  const currentSpecialReqs = isEditingMeasurements
-    ? editingSpecialRequirements
-    : (specialRequirements[key] || '');
 
-  // refundLocked: disables inputs and shows locked Edit button — but does NOT show warning banner
   const refundLocked = isProductRefunded ? isProductRefunded(selectedProduct.id) : false;
-  // dateLocked: triggers locked warning banner (drop date passed)
-  const dateLocked = isDropDatePassed ? isDropDatePassed(selectedProduct) : false;
-
-  function startEditing() {
-    setIsEditingMeasurements(true);
-    setEditingMeasurements(productMeasurements);
-    setEditingSpecialRequirements(specialRequirements[key] || '');
-  }
-
-  function cancelEditing() {
-    setIsEditingMeasurements(false);
-    setEditingMeasurements(productMeasurements);
-    setEditingSpecialRequirements(specialRequirements[key] || '');
-  }
+  const inputsDisabled = refundLocked;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -493,148 +408,58 @@ export function MeasurementModal({
           </div>
         </div>
 
-        {/* Measurements Display/Edit */}
-        {(() => {
-          // No measurements + not editing
-          if (!hasMeasurements && !isEditingMeasurements) {
-            return (
-              <div className="text-center py-8">
-                <p className="text-gray-500 text-lg mb-4">No measurements recorded yet</p>
-                {isOrderCompleted ? (
-                  <div className="px-6 py-2 bg-gray-300 text-gray-600 rounded-lg font-medium cursor-not-allowed inline-block">
-                    Measurements Locked (Order Completed)
-                  </div>
-                ) : (
-                  <button
-                    onClick={startEditing}
-                    className="px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700"
-                  >
-                    ➕ Add Measurements
-                  </button>
-                )}
-              </div>
-            );
-          }
-
-          // Locked banner: only for order completed or drop date passed (NOT refund)
-          if (isOrderCompleted || dateLocked) {
-            return (
-              <div className="space-y-6">
-                <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-lg p-4 mb-4">
-                  <div className="flex items-center">
-                    <svg className="w-5 h-5 text-yellow-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    <p className="text-yellow-800 font-medium">
-                      {isOrderCompleted
-                        ? 'Measurements cannot be changed after order completion.'
-                        : 'Measurements cannot be changed after the product drop date has passed.'}
-                    </p>
-                  </div>
-                </div>
-                {renderMeasurementDisplay(selectedProduct.name, productMeasurements)}
-                {currentSpecialReqs && (
-                  <div className="mt-6 pt-6 border-t border-gray-200">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-3">Special Requirements</h3>
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <p className="text-gray-700 whitespace-pre-wrap">{currentSpecialReqs}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          // View mode (has measurements, not editing)
-          if (!isEditingMeasurements && hasMeasurements) {
-            return (
-              <div className="space-y-6">
-                {renderMeasurementDisplay(selectedProduct.name, productMeasurements)}
-                {currentSpecialReqs && (
-                  <div className="mt-6 pt-6 border-t border-gray-200">
-                    <h3 className="text-lg font-semibold text-gray-900 mb-3">Special Requirements</h3>
-                    <div className="bg-gray-50 rounded-lg p-4">
-                      <p className="text-gray-700 whitespace-pre-wrap">{currentSpecialReqs}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          // Edit mode
-          return (
-            <div className="space-y-6">
-              {renderMeasurementInputs(
-                selectedProduct.name,
-                key,
-                field => editingMeasurements[field] || '',
-                (field, value) => handleEditMeasurementChange(field, value),
-                refundLocked || dateLocked,
-              )}
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Special Requirements (if any):
-                </label>
-                <textarea
-                  placeholder="Enter any additional fitting requirements"
-                  value={editingSpecialRequirements}
-                  onChange={e => {
-                    const newValue = e.target.value;
-                    setEditingSpecialRequirements(newValue);
-                    onSpecialRequirementsChange({ ...specialRequirements, [key]: newValue });
-                  }}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  rows={3}
-                  disabled={refundLocked || dateLocked}
-                />
-              </div>
+        {inputsDisabled && (
+          <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-lg p-4 mb-6">
+            <div className="flex items-center">
+              <svg className="w-5 h-5 text-yellow-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <p className="text-yellow-800 font-medium">
+                Measurements cannot be changed after a refund has been completed.
+              </p>
             </div>
-          );
-        })()}
+          </div>
+        )}
+
+        {/* Measurement inputs */}
+        <div className="space-y-6">
+          {renderMeasurementInputs(
+            selectedProduct.name,
+            key,
+            field => editingMeasurements[field] || '',
+            (field, value) => handleEditMeasurementChange(field, value),
+            inputsDisabled,
+          )}
+          <div className="mt-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Special Requirements (if any):
+            </label>
+            <textarea
+              placeholder="Enter any additional fitting requirements"
+              value={editingSpecialRequirements}
+              onChange={e => setEditingSpecialRequirements(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
+              rows={3}
+              disabled={inputsDisabled}
+            />
+          </div>
+        </div>
 
         {/* Footer buttons */}
         <div className="mt-6 flex gap-3 justify-end">
-          {isEditingMeasurements ? (
-            <>
-              <button
-                onClick={cancelEditing}
-                className="px-6 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleViewSave}
-                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
-              >
-                Save
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                onClick={onClose}
-                className="px-6 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
-              >
-                Close
-              </button>
-              {hasMeasurements && (
-                (refundLocked || dateLocked) ? (
-                  <div className="px-6 py-2 bg-gray-300 text-gray-600 rounded-lg font-medium cursor-not-allowed">
-                    {refundLocked
-                      ? 'Edit (Locked - Refund Completed)'
-                      : 'Edit (Locked - Drop Date Passed)'}
-                  </div>
-                ) : (
-                  <button
-                    onClick={startEditing}
-                    className="px-6 py-2 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700"
-                  >
-                    Edit
-                  </button>
-                )
-              )}
-            </>
+          <button
+            onClick={onClose}
+            className="px-6 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          {!inputsDisabled && (
+            <button
+              onClick={handleEditSave}
+              className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700"
+            >
+              Save
+            </button>
           )}
         </div>
       </div>

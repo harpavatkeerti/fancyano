@@ -75,7 +75,7 @@ export function computeSecAllocationPreview(
   for (const p of selected) {
     if (remaining <= 0) break;
     const toApply = Math.min(remaining, p.remaining);
-    allocation.push({ bpId: p.bpId, name: p.name, amount: toApply });
+    allocation.push({ bpId: p.bpId, name: p.name, code: p.code, amount: toApply });
     remaining -= toApply;
   }
 
@@ -113,6 +113,7 @@ export interface EligibleSecProduct {
 export interface SecAllocationEntry {
   bpId: number;
   name: string;
+  code: string;
   amount: number;
 }
 
@@ -198,7 +199,12 @@ export function SecurityAllocationSection({
           <div className="space-y-1">
             {projectedAllocation.map(a => (
               <div key={a.bpId} className="flex justify-between text-xs text-gray-600">
-                <span>{a.name}</span>
+                <span>
+                  {a.name}
+                  {a.code && (
+                    <span className="ml-1 text-gray-400 font-mono">{a.code}</span>
+                  )}
+                </span>
                 <span className="font-medium">+₹{a.amount.toLocaleString('en-IN')}</span>
               </div>
             ))}

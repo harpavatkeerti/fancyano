@@ -69,8 +69,6 @@ export default function OrderDetailsPage() {
   // View/Edit measurements modal
   const [showViewMeasurements, setShowViewMeasurements] = useState(false);
   const [selectedProductForMeasurements, setSelectedProductForMeasurements] = useState<any>(null);
-  // Controls whether view modal opens in edit mode (true when product has no measurements yet)
-  const [measurementDefaultEditMode, setMeasurementDefaultEditMode] = useState(false);
 
   // Salesman permissions
   const [salesmanPermissions, setSalesmanPermissions] = useState({
@@ -629,20 +627,6 @@ export default function OrderDetailsPage() {
     return product?.status === 'completed';
   }
 
-
-  // Helper function to check if product's drop date has passed
-  function isProductDropDatePassed(product: any): boolean {
-    const dropDate = product.booked_to || booking.booked_to;
-    if (!dropDate) return false;
-
-    const drop = new Date(dropDate);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    drop.setHours(0, 0, 0, 0);
-
-    return drop < today;
-  }
-
   // Build security-paid map once so it can be used both for the date-edit button
   // and for the ProductExchange component below.
   const securityByProduct = securityPaidByProductFromSummary(paymentSummary?.products ?? []);
@@ -922,31 +906,31 @@ export default function OrderDetailsPage() {
                     )}
                   </div>
                   <div className="mt-4">
-                    {hasProductRefund(product.id) || isProductDropDatePassed(product) ? (
-                      <div className="px-4 py-2 rounded-lg text-sm font-medium bg-gray-300 text-gray-600 cursor-not-allowed">
-                        {hasProductRefund(product.id)
-                          ? '📏 Measurements (Locked - Refund Completed)'
-                          : '📏 Measurements (Locked)'}
-                      </div>
+                    {hasProductRefund(product.id) ? (
+                      <button
+                        onClick={() => {
+                          setSelectedProductForMeasurements(product);
+                          setShowViewMeasurements(true);
+                        }}
+                        className="px-4 py-2 rounded-lg text-sm font-medium transition-colors bg-blue-600 text-white hover:bg-blue-700"
+                      >
+                        📏 Measurements (Locked - Refund Completed)
+                      </button>
                     ) : (
                       <button
                         onClick={() => {
                           setSelectedProductForMeasurements(product);
-                          const bookedFrom = product.booked_from || booking?.booked_from;
-                          const bookedTo = product.booked_to || booking?.booked_to;
-                          const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-                          const productMeasurements = measurements[uniqueKey] || {};
-                          const hasMeasurements = Object.keys(productMeasurements).length > 0;
-                          // Open directly in edit mode when no measurements exist yet
-                          setMeasurementDefaultEditMode(!hasMeasurements);
                           setShowViewMeasurements(true);
                         }}
                         className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${(() => {
                           const bookedFrom = product.booked_from || booking?.booked_from;
                           const bookedTo = product.booked_to || booking?.booked_to;
                           const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-                          const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
-                          return productMeas && Object.keys(productMeas).length > 0
+                          const productMeas = measurements[uniqueKey];
+                          const hasData =
+                            (productMeas && Object.keys(productMeas).length > 0) ||
+                            !!specialRequirements[uniqueKey];
+                          return hasData
                             ? 'bg-blue-600 text-white hover:bg-blue-700'
                             : 'bg-green-600 text-white hover:bg-green-700';
                         })()
@@ -956,10 +940,11 @@ export default function OrderDetailsPage() {
                           const bookedFrom = product.booked_from || booking?.booked_from;
                           const bookedTo = product.booked_to || booking?.booked_to;
                           const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}`;
-                          const productMeas = measurements[uniqueKey] || measurements[uniqueKey];
-                          return productMeas && Object.keys(productMeas).length > 0
-                            ? '📏 Measurements'
-                            : '➕ Add Measurements';
+                          const productMeas = measurements[uniqueKey];
+                          const hasData =
+                            (productMeas && Object.keys(productMeas).length > 0) ||
+                            !!specialRequirements[uniqueKey];
+                          return hasData ? '📏 Measurements' : '➕ Add Measurements';
                         })()}
                       </button>
                     )}
@@ -1568,7 +1553,7 @@ export default function OrderDetailsPage() {
 
       {showViewMeasurements && selectedProductForMeasurements && (
         <MeasurementModal
-          mode="view"
+          mode="edit"
           bookingId={booking?.id || Number(params.id)}
           booking={booking}
           selectedProduct={selectedProductForMeasurements}
@@ -1576,10 +1561,7 @@ export default function OrderDetailsPage() {
           specialRequirements={specialRequirements}
           onMeasurementsChange={setMeasurements}
           onSpecialRequirementsChange={setSpecialRequirements}
-          isOrderCompleted={isOrderCompleted}
           isProductRefunded={(productId) => hasProductRefund(productId)}
-          isDropDatePassed={(product) => isProductDropDatePassed(product)}
-          defaultEditMode={measurementDefaultEditMode}
           onClose={() => {
             setShowViewMeasurements(false);
             setSelectedProductForMeasurements(null);
