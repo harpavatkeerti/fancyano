@@ -57,10 +57,6 @@ export default function CartPage() {
   const [discountType, setDiscountType] = useState<'percentage' | 'amount' | null>(null);
   const [discountValue, setDiscountValue] = useState(0);
 
-  // Measurements
-  const [measurements, setMeasurements] = useState<{ [key: number]: any }>({});
-  const [measurementErrors, setMeasurementErrors] = useState<{ [key: string]: string }>({});
-  const [specialRequirements, setSpecialRequirements] = useState<{ [key: number]: string }>({});
 
   // Cart timeout timer
   const [timeRemaining, setTimeRemaining] = useState<{ minutes: number; seconds: number } | null>(null);
@@ -641,35 +637,6 @@ export default function CartPage() {
     }
   }
 
-  function handleMeasurementChange(productId: number, field: string, value: string) {
-    // Remove any non-digit characters
-    const numericValue = value.replace(/\D/g, '');
-
-    // Check if more than 2 digits
-    if (numericValue.length > 2) {
-      const errorKey = `${productId}-${field}`;
-      setMeasurementErrors({
-        ...measurementErrors,
-        [errorKey]: 'Please enter correct measurement (maximum 2 digits)',
-      });
-      return;
-    }
-
-    // Clear error if valid
-    const errorKey = `${productId}-${field}`;
-    setMeasurementErrors({
-      ...measurementErrors,
-      [errorKey]: '',
-    });
-
-    setMeasurements({
-      ...measurements,
-      [productId]: {
-        ...measurements[productId],
-        [field]: numericValue,
-      },
-    });
-  }
 
   // Determine if product is female clothing (Lehenga, Gown, Girlish Crop Top)
   function isFemaleClothing(productName: string): boolean {

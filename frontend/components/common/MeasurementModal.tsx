@@ -17,6 +17,20 @@ export function isMaleClothing(productName: string): boolean {
   return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
 }
 
+/**
+ * Sanitizes a measurement input value: strips non-numeric characters (except `.`),
+ * collapses multiple decimal points, and validates the format (up to 2 digits
+ * before the decimal and up to 2 after, e.g. 39.75).
+ * Returns `{ valid: true, value }` on success or `{ valid: false }` on failure.
+ */
+export function sanitizeMeasurement(raw: string): { valid: true; value: string } | { valid: false } {
+  const sanitized = raw.replace(/[^\d.]/g, '');
+  const parts = sanitized.split('.');
+  const cleanValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : sanitized;
+  if (!/^\d{0,2}(\.\d{0,2})?$/.test(cleanValue)) return { valid: false };
+  return { valid: true, value: cleanValue };
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface MeasurementModalProps {
@@ -97,28 +111,28 @@ export function MeasurementModal({
     return `${product.id}_${from}_${to}`;
   }
 
-  // Confirm mode: validates a single input field (max 2 digits)
+  // Confirm mode: validates a single input field (supports decimals like 39.75)
   function handleMeasurementChange(key: string, field: string, value: string) {
-    const numericValue = value.replace(/\D/g, '');
-    if (numericValue.length > 2) {
+    const result = sanitizeMeasurement(value);
+    if (!result.valid) {
       setMeasurementErrors(prev => ({
         ...prev,
-        [`${key}-${field}`]: 'Please enter correct measurement (maximum 2 digits)',
+        [`${key}-${field}`]: 'Please enter a valid measurement (e.g. 39 or 39.75)',
       }));
       return;
     }
     setMeasurementErrors(prev => ({ ...prev, [`${key}-${field}`]: '' }));
     onMeasurementsChange({
       ...measurements,
-      [key]: { ...(measurements[key] || {}), [field]: numericValue },
+      [key]: { ...(measurements[key] || {}), [field]: result.value },
     });
   }
 
   // Edit mode: validates a single input field and updates local draft only (not parent)
   function handleEditMeasurementChange(field: string, value: string) {
-    const numericValue = value.replace(/\D/g, '');
-    if (numericValue.length > 2) return;
-    setEditingMeasurements(prev => ({ ...prev, [field]: numericValue }));
+    const result = sanitizeMeasurement(value);
+    if (!result.valid) return;
+    setEditingMeasurements(prev => ({ ...prev, [field]: result.value }));
   }
 
   // ── Confirm mode: save all products ───────────────────────────────────────
@@ -187,7 +201,7 @@ export function MeasurementModal({
           placeholder={placeholder}
           value={value}
           onChange={e => onChange(e.target.value)}
-          maxLength={2}
+          maxLength={5}
           disabled={disabled}
           className={`px-3 py-2 border rounded w-full ${measurementErrors[errKey] ? 'border-red-500' : 'border-gray-300'}`}
         />
