@@ -108,6 +108,32 @@ async function createTrackingRecord({ product_id, booking_id, product_code, trac
     throw err;
   }
 
+  // Validate size against the product's available_sizes
+  if (product_id) {
+    const prodResult = await pool.query(
+      'SELECT available_sizes FROM products WHERE id = $1',
+      [product_id]
+    );
+    if (prodResult.rows.length > 0) {
+      const availSizes = prodResult.rows[0].available_sizes || [];
+      if (availSizes.length > 0 && !size) {
+        const err = new Error(`size is required for this product. Available sizes: ${availSizes.join(', ')}`);
+        err.status = 400;
+        throw err;
+      }
+      if (availSizes.length > 0 && !availSizes.includes(size)) {
+        const err = new Error(`size '${size}' is not valid. Available sizes: ${availSizes.join(', ')}`);
+        err.status = 400;
+        throw err;
+      }
+      if (availSizes.length === 0 && size) {
+        const err = new Error('This product does not have sizes. Do not pass size.');
+        err.status = 400;
+        throw err;
+      }
+    }
+  }
+
   const result = await pool.query(
     `INSERT INTO product_tracking
        (product_id, booking_id, product_code, tracking_status, notes, size)

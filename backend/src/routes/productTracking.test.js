@@ -10,9 +10,11 @@ app.use('/product-tracking', require('./productTracking'));
 describe('Product Tracking Routes', () => {
   let testProductId;
   let testProductCode = 'TEST-TRACK-CODE-001';
+  let sizedProductId;
+  let sizedProductCode = 'TEST-TRACK-CODE-002';
 
   beforeAll(async () => {
-    // Create a test product to attach tracking to
+    // Create a sizeless test product
     const result = await pool.query(
       `INSERT INTO products (code, name, rent, security_deposit, category)
        VALUES ($1, $2, $3, $4, $5)
@@ -20,6 +22,15 @@ describe('Product Tracking Routes', () => {
       [testProductCode, 'Test Tracking Product', 10000, 5000, 'test']
     );
     testProductId = result.rows[0].id;
+
+    // Create a sized test product
+    const sizedResult = await pool.query(
+      `INSERT INTO products (code, name, rent, security_deposit, category, available_sizes)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id`,
+      [sizedProductCode, 'Test Sized Tracking Product', 10000, 5000, 'test', '{M,L,XL}']
+    );
+    sizedProductId = sizedResult.rows[0].id;
   });
 
   afterAll(async () => {
@@ -30,7 +41,7 @@ describe('Product Tracking Routes', () => {
 
   afterEach(async () => {
     // Clean up tracking records between tests
-    await pool.query('DELETE FROM product_tracking WHERE product_code = $1', [testProductCode]);
+    await pool.query('DELETE FROM product_tracking WHERE product_code LIKE $1', ['TEST-TRACK-CODE-%']);
   });
 
   // ─── POST / ────────────────────────────────────────────────────────────
@@ -115,6 +126,75 @@ describe('Product Tracking Routes', () => {
       expect(response.status).toBe(400);
       expect(response.body.error).toMatch(/is not allowed/i);
     });
+
+    it('should create a tracking record with a size field (sized product)', async () => {
+      const response = await request(app)
+        .post('/product-tracking')
+        .send({
+          product_id: sizedProductId,
+          product_code: sizedProductCode,
+          tracking_status: 'going_to_dry_clean',
+          size: 'XL',
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.tracking_status).toBe('going_to_dry_clean');
+      expect(response.body.data.size).toBe('XL');
+    });
+
+    it('should store null size when size is not provided (sizeless product)', async () => {
+      const response = await request(app)
+        .post('/product-tracking')
+        .send({
+          product_id: testProductId,
+          product_code: testProductCode,
+          tracking_status: 'repair',
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.size).toBeNull();
+    });
+
+    it('should reject 400 when size is missing for a sized product', async () => {
+      const response = await request(app)
+        .post('/product-tracking')
+        .send({
+          product_id: sizedProductId,
+          product_code: sizedProductCode,
+          tracking_status: 'repair',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/size is required/i);
+    });
+
+    it('should reject 400 for invalid size on a sized product', async () => {
+      const response = await request(app)
+        .post('/product-tracking')
+        .send({
+          product_id: sizedProductId,
+          product_code: sizedProductCode,
+          tracking_status: 'repair',
+          size: 'XXXL',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/not valid/i);
+    });
+
+    it('should reject 400 when size is passed for a sizeless product', async () => {
+      const response = await request(app)
+        .post('/product-tracking')
+        .send({
+          product_id: testProductId,
+          product_code: testProductCode,
+          tracking_status: 'repair',
+          size: 'M',
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toMatch(/does not have sizes/i);
+    });
   });
 
   // ─── GET /current/:productId ────────────────────────────────────────────
@@ -127,16 +207,10 @@ describe('Product Tracking Routes', () => {
       expect(response.body.data).toBeNull();
     });
 
-    it('should return the latest tracking record', async () => {
-      // Insert two tracking records
+    it('should return the most recent tracking record for a product', async () => {
       await pool.query(
         `INSERT INTO product_tracking (product_id, product_code, tracking_status)
-         VALUES ($1, $2, 'going_to_dry_clean')`,
-        [testProductId, testProductCode]
-      );
-      await pool.query(
-        `INSERT INTO product_tracking (product_id, product_code, tracking_status)
-         VALUES ($1, $2, 'repair')`,
+         VALUES ($1, $2, 'going_to_dry_clean'), ($1, $2, 'repair')`,
         [testProductId, testProductCode]
       );
 
@@ -146,6 +220,27 @@ describe('Product Tracking Routes', () => {
       expect(response.body.data).toBeDefined();
       // Should be the most recent: repair (inserted last)
       expect(response.body.data.tracking_status).toBe('repair');
+    });
+
+    it('should filter by size query param', async () => {
+      await pool.query(
+        `INSERT INTO product_tracking (product_id, product_code, tracking_status, size)
+         VALUES ($1, $2, 'repair', 'M')`,
+        [testProductId, testProductCode]
+      );
+      await pool.query(
+        `INSERT INTO product_tracking (product_id, product_code, tracking_status, size)
+         VALUES ($1, $2, 'going_to_dry_clean', 'L')`,
+        [testProductId, testProductCode]
+      );
+
+      const responseM = await request(app).get(`/product-tracking/current/${testProductId}?size=M`);
+      expect(responseM.status).toBe(200);
+      expect(responseM.body.data.tracking_status).toBe('repair');
+
+      const responseL = await request(app).get(`/product-tracking/current/${testProductId}?size=L`);
+      expect(responseL.status).toBe(200);
+      expect(responseL.body.data.tracking_status).toBe('going_to_dry_clean');
     });
   });
 
@@ -248,6 +343,22 @@ describe('Product Tracking Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body.data.length).toBe(2);
+    });
+
+    it('should filter by size query param', async () => {
+      await pool.query(
+        `INSERT INTO product_tracking (product_id, product_code, tracking_status, size)
+         VALUES ($1, $2, 'repair', 'M'), ($1, $2, 'going_to_dry_clean', 'M'), ($1, $2, 'repair', 'L')`,
+        [testProductId, testProductCode]
+      );
+
+      const responseM = await request(app).get(`/product-tracking/product/${testProductId}?size=M`);
+      expect(responseM.status).toBe(200);
+      expect(responseM.body.data.length).toBe(2);
+
+      const responseL = await request(app).get(`/product-tracking/product/${testProductId}?size=L`);
+      expect(responseL.status).toBe(200);
+      expect(responseL.body.data.length).toBe(1);
     });
   });
 

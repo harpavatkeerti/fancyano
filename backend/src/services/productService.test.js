@@ -96,6 +96,56 @@ describe('ProductService', () => {
       expect(products.length).toBeGreaterThanOrEqual(1);
       expect(products[0].vendor_name).toBeNull();
     });
+
+    it('should return size_tracking_map with sized tracking records', async () => {
+      // Get the product id for TEST-PROD-001
+      const prodRes = await pool.query(`SELECT id FROM products WHERE code = 'TEST-PROD-001'`);
+      const prodId = prodRes.rows[0].id;
+
+      // Insert tracking records with sizes
+      await pool.query(
+        `INSERT INTO product_tracking (product_id, product_code, tracking_status, size)
+         VALUES ($1, 'TEST-PROD-001', 'repair', 'M'), ($1, 'TEST-PROD-001', 'going_to_dry_clean', 'L')`,
+        [prodId]
+      );
+
+      const products = await productService.getProducts({ search: 'TEST-PROD-001' });
+      expect(products.length).toBeGreaterThanOrEqual(1);
+      const map = products[0].size_tracking_map;
+      expect(map).toBeDefined();
+      expect(map['M']).toBe('repair');
+      expect(map['L']).toBe('going_to_dry_clean');
+
+      // Cleanup tracking
+      await pool.query(`DELETE FROM product_tracking WHERE product_id = $1`, [prodId]);
+    });
+
+    it('should use _ key for sizeless (NULL) tracking records via COALESCE', async () => {
+      const prodRes = await pool.query(`SELECT id FROM products WHERE code = 'TEST-PROD-001'`);
+      const prodId = prodRes.rows[0].id;
+
+      // Insert a tracking record with NULL size
+      await pool.query(
+        `INSERT INTO product_tracking (product_id, product_code, tracking_status, size)
+         VALUES ($1, 'TEST-PROD-001', 'going_to_dry_clean', NULL)`,
+        [prodId]
+      );
+
+      const products = await productService.getProducts({ search: 'TEST-PROD-001' });
+      expect(products.length).toBeGreaterThanOrEqual(1);
+      const map = products[0].size_tracking_map;
+      expect(map).toBeDefined();
+      expect(map['_']).toBe('going_to_dry_clean');
+
+      // Cleanup tracking
+      await pool.query(`DELETE FROM product_tracking WHERE product_id = $1`, [prodId]);
+    });
+
+    it('should return null size_tracking_map when no tracking records exist', async () => {
+      const products = await productService.getProducts({ search: 'TEST-PROD-001' });
+      expect(products.length).toBeGreaterThanOrEqual(1);
+      expect(products[0].size_tracking_map).toBeNull();
+    });
   });
 
   describe('getProductById', () => {
