@@ -20,6 +20,7 @@ const routePermissions = {
     '/dashboard':   ['admin'] as Role[],
     '/inventory':   ['admin'] as Role[],
     '/users':       ['admin'] as Role[],
+    '/vendors':     ['admin'] as Role[],
     '/credit-notes':['admin'] as Role[],
     '/reports':     ['admin'] as Role[],
     '/settings':    ['admin'] as Role[],

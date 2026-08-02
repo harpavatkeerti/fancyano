@@ -8,15 +8,15 @@ describe('BookingService', () => {
   beforeAll(async () => {
     // Create test products
     const product1 = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent, security_deposit)
-       VALUES ('Test Product 1', 'BOOK001', 'Test', 'M', 500, 1000)
+      `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+       VALUES ('Test Product 1', 'BOOK001', 'Test', '{M}', 500, 1000)
        RETURNING id`
     );
     testProductId1 = product1.rows[0].id;
 
     const product2 = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent, security_deposit)
-       VALUES ('Test Product 2', 'BOOK002', 'Test', 'L', 800, 1500)
+      `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+       VALUES ('Test Product 2', 'BOOK002', 'Test', '{L}', 800, 1500)
        RETURNING id`
     );
     testProductId2 = product2.rows[0].id;
@@ -63,6 +63,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 2500,
@@ -71,6 +72,7 @@ describe('BookingService', () => {
           },
           {
             productId: testProductId2,
+            size: 'L',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 4000,
@@ -134,6 +136,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 2500,
@@ -159,6 +162,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 5000,
@@ -204,6 +208,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId2,
+            size: 'L',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 6000,
@@ -248,6 +253,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 3000,
@@ -291,6 +297,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 5000,
@@ -315,6 +322,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 3000,
@@ -339,6 +347,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 4000,
@@ -375,6 +384,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2024-01-20'),
             bookedTo: new Date('2024-01-25'),
             rent: 2500,
@@ -422,6 +432,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             // Missing bookedFrom, bookedTo, rent, securityDeposit
           }
         ],
@@ -472,6 +483,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2026-09-01'),
             bookedTo: new Date('2026-09-05'),
             rent: 500,
@@ -502,6 +514,7 @@ describe('BookingService', () => {
         products: [
           {
             productId: testProductId1,
+            size: 'M',
             bookedFrom: new Date('2026-10-01'),
             bookedTo: new Date('2026-10-05'),
             rent: 500,

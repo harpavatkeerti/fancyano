@@ -39,9 +39,10 @@ async function recalcBookingDateRange(bookingId, client = null) {
 /**
  * Assert that a product's date range is available (no conflicting active bookings).
  *
- * Throws an error if any existing booking_product for `productId` overlaps the
- * requested `[bookedFrom, bookedTo]` range.  Use `excludeBookingId` when editing
- * an existing booking so that booking's own products are not treated as conflicts.
+ * Throws an error if any existing booking_product for `productId` (and optionally
+ * `size`) overlaps the requested `[bookedFrom, bookedTo]` range.
+ * Use `excludeBookingId` when editing an existing booking so that booking's
+ * own products are not treated as conflicts.
  *
  * Must be called inside the caller's transaction so that the availability
  * snapshot is consistent with any rows already inserted/updated in this tx.
@@ -50,10 +51,11 @@ async function recalcBookingDateRange(bookingId, client = null) {
  * @param {string}  bookedFrom       - ISO date string (YYYY-MM-DD).
  * @param {string}  bookedTo         - ISO date string (YYYY-MM-DD).
  * @param {Object}  [opts]
+ * @param {string}  [opts.size]      - Size to check availability for (null = sizeless product).
  * @param {number}  [opts.excludeBookingId] - Booking ID to exclude (self).
  * @param {Object}  [opts.client]    - pg client to use (required when inside a tx).
  */
-async function checkProductAvailability(productId, bookedFrom, bookedTo, { excludeBookingId = null, client = null } = {}) {
+async function checkProductAvailability(productId, bookedFrom, bookedTo, { size = null, excludeBookingId = null, client = null } = {}) {
   const db = client || pool;
 
   const conflict = await db.query(
@@ -67,8 +69,9 @@ async function checkProductAvailability(productId, bookedFrom, bookedTo, { exclu
          AND bp.booked_from <= $3
          AND bp.booked_to   >= $2
          AND ($4::int IS NULL OR b.id <> $4)
+         AND ($5::text IS NULL OR bp.size = $5)
      ) AS has_conflict`,
-    [productId, bookedFrom, bookedTo, excludeBookingId]
+    [productId, bookedFrom, bookedTo, excludeBookingId, size]
   );
 
   if (conflict.rows[0].has_conflict) {

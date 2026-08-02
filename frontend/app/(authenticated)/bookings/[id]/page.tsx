@@ -858,7 +858,7 @@ export default function OrderDetailsPage() {
                           />
                         ) : null;
                       })()}
-                      <p className="text-xs text-gray-500 font-mono">Code: {product.code}</p>
+                      <p className="text-xs text-gray-500 font-mono">Code: {product.code}{product.size ? ` · Size: ${product.size}` : ''}</p>
                     </div>
                   )}
                   <p className="text-gray-600 mb-4">
@@ -993,7 +993,7 @@ export default function OrderDetailsPage() {
                       <ProductStatusBadge status={product.status} size="md" />
                     </div>
                     {product.code && (
-                      <p className="text-xs text-gray-400 font-mono mb-1">Code: {product.code}</p>
+                      <p className="text-xs text-gray-400 font-mono mb-1">Code: {product.code}{product.size ? ` · Size: ${product.size}` : ''}</p>
                     )}
                     <p className="text-gray-400 mb-4">
                       ₹{Math.floor(product.effective_rent || product.rent || 0)} / Day
@@ -1116,6 +1116,15 @@ export default function OrderDetailsPage() {
                   )}
                 </div>
               </div>
+              {/* Created by (Salesman) */}
+              {(booking as any).created_by && (
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Created by:</span>
+                  <span className="font-medium text-gray-900">
+                    {(booking as any).created_by}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
 

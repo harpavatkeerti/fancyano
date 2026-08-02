@@ -13,9 +13,10 @@ interface ProductTrackingModalProps {
   productId?: number;
   productCode?: string;
   bookingId?: number;
+  size?: string | null;
 }
 
-export function ProductTrackingModal({ onClose, productId, productCode, bookingId }: ProductTrackingModalProps) {
+export function ProductTrackingModal({ onClose, productId, productCode, bookingId, size }: ProductTrackingModalProps) {
   const { confirm, ConfirmDialog } = useConfirm();
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [trackingHistory, setTrackingHistory] = useState<ProductTracking[]>([]);
@@ -102,6 +103,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
         product_id: selectedProduct.id,
         booking_id: bookingId,
         product_code: selectedProduct.code,
+        size: size || undefined,
         tracking_status: trackingType as TrackingStatus,
         notes: notes || undefined,
       });
@@ -156,7 +158,9 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
       <div className="bg-white rounded-lg p-6 w-full max-w-3xl my-8 max-h-[90vh] overflow-y-auto">
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
-          <h2 className="text-2xl font-bold text-gray-800">🗺️ Product Tracking</h2>
+          <h2 className="text-2xl font-bold text-gray-800">
+            🗺️ Product Tracking{size ? ` · Size ${size}` : ''}
+          </h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl font-bold">
             ×
           </button>

@@ -32,7 +32,9 @@ export function ProductExchange({
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [selectedOriginalProduct, setSelectedOriginalProduct] = useState<number | null>(null);
   const [selectedExchangedProduct, setSelectedExchangedProduct] = useState<number | null>(null);
+  const [selectedExchangeSize, setSelectedExchangeSize] = useState<string | null>(null);
   const [additionalProducts, setAdditionalProducts] = useState<number[]>([]); // For multiple product selection
+  const [additionalProductSizes, setAdditionalProductSizes] = useState<Record<number, string | null>>({}); // Size per additional product
   const [productSearchTerm, setProductSearchTerm] = useState(''); // For searching products
   const [availableProducts, setAvailableProducts] = useState<any[]>([]);
   const [exchangeReason, setExchangeReason] = useState('');
@@ -128,8 +130,10 @@ export function ProductExchange({
             original_product_id: selectedOriginalProduct,
             exchanged_product_id: selectedExchangedProduct,
             exchange_reason: exchangeReason,
+            size: selectedExchangeSize,
             additionalProducts: additionalProducts.map(productId => ({
               product_id: productId,
+              size: additionalProductSizes[productId] || null,
               booked_from: productDates[productId]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
               booked_to: productDates[productId]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
             })),
@@ -246,12 +250,22 @@ export function ProductExchange({
   async function fetchAvailableProducts() {
     try {
       const response = await productsApi.getAll();
-      const currentProductIds = currentProducts
-        .filter(p => p.id !== selectedOriginalProduct)
-        .map(p => p.id);
-      const available = response.data.filter((p: any) =>
-        !currentProductIds.includes(p.id)
+      const currentProductPairs = new Set(
+        currentProducts
+          .filter(p => p.id !== selectedOriginalProduct)
+          .map(p => `${p.product_id}:${p.size || ''}`)
       );
+      const available = response.data.filter((p: any) => {
+        // Allow same product if it has sizes not already in the booking
+        if (currentProductPairs.size === 0) return true;
+        const hasSizes = p.available_sizes && p.available_sizes.length > 0;
+        if (!hasSizes) {
+          // Sizeless product: check if product_id is already in booking
+          return !currentProductPairs.has(`${p.id}:`);
+        }
+        // Sized product: allow if at least one size is not in the booking
+        return p.available_sizes.some((sz: string) => !currentProductPairs.has(`${p.id}:${sz}`));
+      });
       setAvailableProducts(available);
 
       // Initialize dates for main exchanged product (use empty strings to allow fresh selection)
@@ -349,17 +363,15 @@ export function ProductExchange({
       const newProductIds = [
         {
           product_id: selectedExchangedProduct,
+          size: selectedExchangeSize,
           booked_from: mainProductDates.booked_from,
           booked_to: mainProductDates.booked_to,
-          rent: exchangePreview?.calculations?.new_rent || 0,
-          security_deposit: exchangePreview?.calculations?.new_security || 0,
         },
         ...additionalProducts.map(productId => ({
           product_id: productId,
+          size: additionalProductSizes[productId] || null,
           booked_from: productDates[productId].booked_from,
           booked_to: productDates[productId].booked_to,
-          rent: exchangePreview?.calculations?.additional_rent || 0,
-          security_deposit: exchangePreview?.calculations?.additional_security || 0,
         }))
       ];
 
@@ -376,7 +388,9 @@ export function ProductExchange({
       setShowExchangeModal(false);
       setSelectedOriginalProduct(null);
       setSelectedExchangedProduct(null);
+      setSelectedExchangeSize(null);
       setAdditionalProducts([]);
+      setAdditionalProductSizes({});
       setProductSearchTerm('');
       setProductDates({});
       setProductBookings({});
@@ -442,6 +456,7 @@ export function ProductExchange({
       const newProductIds = [
         {
           product_id: pendingExchangeData.exchanged_product_id,
+          size: pendingExchangeData.size || null,
           booked_from: mainProductDates.booked_from,
           booked_to: mainProductDates.booked_to,
           rent: exchangePreview?.calculations?.new_rent || 0,
@@ -449,6 +464,7 @@ export function ProductExchange({
         },
         ...(pendingExchangeData.additionalProducts || []).map((ap: any) => ({
           product_id: ap.product_id,
+          size: ap.size || null,
           booked_from: ap.booked_from,
           booked_to: ap.booked_to,
           rent: ap.rent || exchangePreview?.calculations?.additional_rent || 0,
@@ -830,6 +846,7 @@ export function ProductExchange({
                       onChange={async (e) => {
                         const productId = Number(e.target.value);
                         setSelectedExchangedProduct(productId);
+                        setSelectedExchangeSize(null); // Reset size when product changes
                         setAdditionalProducts([]); // Reset additional products when main product changes
                         setProductSearchTerm(''); // Reset search when main product changes
 
@@ -850,13 +867,17 @@ export function ProductExchange({
                     >
                       <option value="">Select replacement product</option>
                       {(() => {
-                        const activeProductIds = new Set(
+                        const activeProductPairs = new Set(
                           currentProducts
                             .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
-                            .map(p => p.product_id)
+                            .map(p => `${p.product_id}:${p.size || ''}`)
                         );
                         return availableProducts.map((product) => {
-                          const isDisabled = activeProductIds.has(product.id);
+                          // Sized product: disabled only if ALL its sizes are in booking
+                          const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+                          const isDisabled = hasSizes
+                            ? product.available_sizes.every((sz: string) => activeProductPairs.has(`${product.id}:${sz}`))
+                            : activeProductPairs.has(`${product.id}:`);
                           return (
                             <option key={product.id} value={product.id} disabled={isDisabled}>
                               {product.name} ({product.code}) - ₹{product.rent}/day{product.security_deposit > 0 ? ` | Security: ₹${parseFloat(String(product.security_deposit)).toLocaleString('en-IN')}` : ''}
@@ -869,6 +890,51 @@ export function ProductExchange({
                   )}
                 </div>
               )}
+
+              {/* Size Selector — shown when exchanged product has available_sizes */}
+              {selectedExchangedProduct && (() => {
+                const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
+                if (!exchangedProduct?.available_sizes?.length) return null;
+                // Filter out sizes already actively in this booking for this product
+                const activeProductPairs = new Set(
+                  currentProducts
+                    .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                    .map(p => `${p.product_id}:${p.size || ''}`)
+                );
+                return (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Select Size *
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {exchangedProduct.available_sizes.map((sz: string) => {
+                        const isSelected = selectedExchangeSize === sz;
+                        const isInBooking = activeProductPairs.has(`${selectedExchangedProduct}:${sz}`);
+                        return (
+                          <button
+                            key={sz}
+                            type="button"
+                            disabled={isInBooking}
+                            onClick={() => setSelectedExchangeSize(sz)}
+                            className={`px-4 py-2 rounded-full text-sm font-medium border-2 transition-all duration-200 ${isInBooking
+                                ? 'opacity-40 cursor-not-allowed bg-gray-100 border-gray-200 text-gray-400'
+                                : isSelected
+                                  ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                                  : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
+                              }`}
+                          >
+                            {sz}
+                            {isInBooking && ' ✓'}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {!selectedExchangeSize && (
+                      <p className="text-xs text-orange-600 mt-1">⚠️ Please select a size</p>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Exchange Reason */}
               <div>
@@ -940,11 +1006,10 @@ export function ProductExchange({
                             return (
                               <label
                                 key={product.id}
-                                className={`flex items-center p-3 transition-colors ${
-                                  isActiveInBooking
+                                className={`flex items-center p-3 transition-colors ${isActiveInBooking
                                     ? 'opacity-50 cursor-not-allowed bg-gray-50'
                                     : `hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`
-                                }`}
+                                  }`}
                               >
                                 <input
                                   type="checkbox"
@@ -1018,42 +1083,78 @@ export function ProductExchange({
                         {additionalProducts.map((productId) => {
                           const product = availableProducts.find(p => p.id === productId);
                           if (!product) return null;
+                          const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+                          const selectedSz = additionalProductSizes[productId] || null;
                           return (
-                            <div key={productId} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                              <div className="flex-1">
-                                <p className="text-sm font-medium text-gray-900">{product.name}</p>
-                                <p className="text-xs text-gray-500">{product.code}</p>
+                            <div key={productId} className="p-2 bg-gray-50 rounded">
+                              <div className="flex items-center justify-between">
+                                <div className="flex-1">
+                                  <p className="text-sm font-medium text-gray-900">
+                                    {product.name}
+                                    {selectedSz && <span className="ml-1 text-xs text-gray-500">· {selectedSz}</span>}
+                                  </p>
+                                  <p className="text-xs text-gray-500">{product.code}</p>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <div className="text-right">
+                                    <span className="text-sm font-semibold text-gray-900">
+                                      ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
+                                    </span>
+                                    {parseFloat(String(product.security_deposit || '0')) > 0 && (
+                                      <p className="text-xs text-gray-400">
+                                        Security: ₹{parseFloat(String(product.security_deposit || '0')).toLocaleString('en-IN')}
+                                      </p>
+                                    )}
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setAdditionalProducts(additionalProducts.filter(id => id !== productId));
+                                      // Clear dates and size for removed product
+                                      setProductDates(prev => {
+                                        const newDates = { ...prev };
+                                        delete newDates[productId];
+                                        return newDates;
+                                      });
+                                      setAdditionalProductSizes(prev => {
+                                        const newSizes = { ...prev };
+                                        delete newSizes[productId];
+                                        return newSizes;
+                                      });
+                                    }}
+                                    className="text-red-600 hover:text-red-800 p-1"
+                                    title="Remove"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                  </button>
+                                </div>
                               </div>
-                              <div className="flex items-center gap-2">
-                                <div className="text-right">
-                                  <span className="text-sm font-semibold text-gray-900">
-                                    ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
-                                  </span>
-                                  {parseFloat(String(product.security_deposit || '0')) > 0 && (
-                                    <p className="text-xs text-gray-400">
-                                      Security: ₹{parseFloat(String(product.security_deposit || '0')).toLocaleString('en-IN')}
-                                    </p>
+                              {/* Size selector for this additional product */}
+                              {hasSizes && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {product.available_sizes.map((sz: string) => {
+                                    const isSelected = selectedSz === sz;
+                                    return (
+                                      <button
+                                        key={sz}
+                                        type="button"
+                                        onClick={() => setAdditionalProductSizes(prev => ({ ...prev, [productId]: sz }))}
+                                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${isSelected
+                                            ? 'bg-red-600 text-white border-red-600'
+                                            : 'bg-white text-gray-600 border-gray-300 hover:border-red-400'
+                                          }`}
+                                      >
+                                        {sz}
+                                      </button>
+                                    );
+                                  })}
+                                  {!selectedSz && (
+                                    <span className="text-xs text-orange-500 ml-1 self-center">← select size</span>
                                   )}
                                 </div>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setAdditionalProducts(additionalProducts.filter(id => id !== productId));
-                                    // Clear dates for removed product
-                                    setProductDates(prev => {
-                                      const newDates = { ...prev };
-                                      delete newDates[productId];
-                                      return newDates;
-                                    });
-                                  }}
-                                  className="text-red-600 hover:text-red-800 p-1"
-                                  title="Remove"
-                                >
-                                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                  </svg>
-                                </button>
-                              </div>
+                              )}
                             </div>
                           );
                         })}

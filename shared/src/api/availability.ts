@@ -4,6 +4,7 @@ export interface AvailabilityCheckRequest {
   product_id: number;
   date_from: string;
   date_to: string;
+  size?: string;
 }
 
 export interface AvailabilityConflict {

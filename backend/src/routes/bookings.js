@@ -4,6 +4,7 @@ const requireRole = require('../middleware/requireRole');
 const bookingService = require('../services/bookingService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingCalculationService = require('../services/bookingCalculationService');
+const { ProductService } = require('../services/productService');
 
 // GET all bookings
 router.get('/', async (req, res) => {
@@ -26,7 +27,8 @@ router.get('/', async (req, res) => {
 router.get('/by-product/:productId', async (req, res) => {
   try {
     const { productId } = req.params;
-    const bookings = await bookingService.getBookingsByProductId(parseInt(productId));
+    const { size } = req.query;
+    const bookings = await bookingService.getBookingsByProductId(parseInt(productId), size || null);
     res.json(bookings);
   } catch (error) {
     console.error('Error fetching bookings by product:', error);
@@ -95,12 +97,15 @@ router.post('/', async (req, res) => {
         throw new Error(`Product with id ${productId} not found`);
       }
 
+      const size = p.size || null;
+
       return {
         productId,
         bookedFrom: p.booked_from,
         bookedTo: p.booked_to,
-        rent: productDetails.rent,
+        rent: ProductService.getProductRent(productDetails, size),
         securityDeposit: productDetails.security_deposit,
+        size,
         quantity: p.quantity || 1,
         measurements: p.measurements,
         specialRequirements: p.special_requirements,

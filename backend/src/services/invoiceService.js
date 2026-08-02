@@ -27,7 +27,8 @@ class InvoiceService {
           'booked_to', bp.booked_to,
           'status', bp.status,
           'rent', bp.rent,
-          'security_deposit', bp.security_deposit
+          'security_deposit', bp.security_deposit,
+          'size', bp.size
         )) as products
       FROM bookings b
       LEFT JOIN booking_products bp ON b.id = bp.booking_id

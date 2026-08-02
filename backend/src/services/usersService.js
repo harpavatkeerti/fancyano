@@ -7,45 +7,8 @@
 
 const pool = require('../database/connection');
 const { hashPassword } = require('../middleware/auth');
+const { validatePhoneLength } = require('../utils/phoneUtils');
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Expected national digit lengths per country, keyed by ISO-2 code.
- * Mirrors the frontend's getExpectedLength() in lib/countryCodes.ts.
- * Countries not listed fall back to the ITU range of 7–15 digits.
- */
-const PHONE_LENGTH_MAP = {
-  IN: { min: 10, max: 10 }, // India
-  US: { min: 10, max: 10 }, // United States
-  CA: { min: 10, max: 10 }, // Canada
-  GB: { min: 10, max: 10 }, // United Kingdom
-  AU: { min: 9, max: 9 }, // Australia
-  AE: { min: 9, max: 9 }, // UAE
-  SG: { min: 8, max: 8 }, // Singapore
-  CN: { min: 11, max: 11 }, // China
-  JP: { min: 10, max: 10 }, // Japan
-};
-const PHONE_LENGTH_FALLBACK = { min: 7, max: 15 }; // ITU E.164 range
-
-/**
- * Validate phone digit count against the country's expected length.
- * @param {string} phone   - national digits (may contain spaces/dashes — stripped internally)
- * @param {string} country - ISO-2 country code, e.g. 'IN'
- * @returns {string|null}  error message, or null if valid
- */
-function validatePhoneLength(phone, country) {
-  if (!phone) return null; // presence is checked separately
-  const digits = phone.replace(/\D/g, '');
-  const { min, max } = PHONE_LENGTH_MAP[country] || PHONE_LENGTH_FALLBACK;
-  if (digits.length < min || digits.length > max) {
-    const range = min === max ? `${min}` : `${min}–${max}`;
-    return `Phone number for ${country} must be ${range} digits (got ${digits.length}).`;
-  }
-  return null;
-}
 
 /**
  * Returns the E.164 calling code prefix for a given ISO-2 country code.

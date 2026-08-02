@@ -9,9 +9,10 @@ class AvailabilityService {
    * @param {number} productId - Product ID
    * @param {string} dateFrom - Start date (YYYY-MM-DD)
    * @param {string} dateTo - End date (YYYY-MM-DD)
+   * @param {string|null} size - Size to check (null for sizeless products)
    * @returns {Promise<Object>} - Availability status and conflicts
    */
-  async checkProductAvailability(productId, dateFrom, dateTo) {
+  async checkProductAvailability(productId, dateFrom, dateTo, size = null) {
     // Query bookings for this product that overlap with the requested dates
     // Only check booking_products status - exclude cancelled, completed, and exchanged products
     const query = `
@@ -33,10 +34,11 @@ class AvailabilityService {
           (bp.booked_from <= $3 AND bp.booked_to >= $3) OR
           (bp.booked_from >= $2 AND bp.booked_to <= $3)
         )
+        AND ($4::text IS NULL OR bp.size = $4)
       ORDER BY bp.booked_from
     `;
 
-    const result = await pool.query(query, [productId, dateFrom, dateTo]);
+    const result = await pool.query(query, [productId, dateFrom, dateTo, size]);
 
     if (result.rows.length > 0) {
       // Product is not available
@@ -71,7 +73,7 @@ class AvailabilityService {
     const results = [];
 
     for (const item of products) {
-      const { product_id, date_from, date_to } = item;
+      const { product_id, date_from, date_to, size } = item;
       
       if (!product_id || !date_from || !date_to) {
         results.push({
@@ -86,7 +88,8 @@ class AvailabilityService {
         const availabilityResult = await this.checkProductAvailability(
           product_id,
           date_from,
-          date_to
+          date_to,
+          size || null
         );
 
         results.push({

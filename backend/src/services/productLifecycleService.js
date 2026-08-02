@@ -78,17 +78,17 @@ class ProductLifecycleService {
 
       // Guard: new products must not already be active in this booking
       const activeRows = await client.query(
-        `SELECT DISTINCT product_id FROM booking_products
+        `SELECT DISTINCT product_id, size FROM booking_products
          WHERE booking_id = $1
            AND status NOT IN ('cancelled', 'exchanged', 'completed')`,
         [oldBookingProduct.booking_id]
       );
-      const activeProductIds = new Set(activeRows.rows.map(r => r.product_id));
+      const activeKeys = new Set(activeRows.rows.map(r => `${r.product_id}:${r.size || ''}`));
       const conflicting = newProducts
-        .map(p => p.productId)
-        .filter(id => activeProductIds.has(id));
+        .filter(p => activeKeys.has(`${p.productId}:${p.size || ''}`))
+        .map(p => `${p.productId}${p.size ? ` (${p.size})` : ''}`);
       if (conflicting.length > 0) {
-        throw new Error(`Cannot exchange to a product already active in this booking (product_id: ${conflicting.join(', ')})`);
+        throw new Error(`Cannot exchange to a product already active in this booking (${conflicting.join(', ')})`);
       }
 
       // Check if any security has been paid — blocks exchange
@@ -142,7 +142,7 @@ class ProductLifecycleService {
       for (const newProd of newProducts) {
         // Guard: reject if the replacement product is archived
         const newProdInfo = await client.query(
-          'SELECT name, code, status FROM products WHERE id = $1',
+          'SELECT name, code, status, available_sizes FROM products WHERE id = $1',
           [newProd.productId]
         );
         if (!newProdInfo.rows[0]) {
@@ -152,15 +152,23 @@ class ProductLifecycleService {
           throw new Error(`Product "${newProdInfo.rows[0].name}" (${newProdInfo.rows[0].code}) is archived and cannot be added to a booking`);
         }
 
-        // Guard: reject if the replacement product is already booked on these dates
+        // Guard: validate size against available_sizes
+        const availableSizes = newProdInfo.rows[0].available_sizes;
+        if (availableSizes && availableSizes.length > 0) {
+          if (!newProd.size || !availableSizes.includes(newProd.size)) {
+            throw new Error(`Invalid size "${newProd.size}" for product "${newProdInfo.rows[0].name}". Available: ${availableSizes.join(', ')}`);
+          }
+        }
+
+        // Guard: reject if the replacement product is already booked on these dates (for this size)
         await checkProductAvailability(
-          newProd.productId, newProd.bookedFrom, newProd.bookedTo, { client }
+          newProd.productId, newProd.bookedFrom, newProd.bookedTo, { client, size: newProd.size || null }
         );
 
         const newBpResult = await client.query(
           `INSERT INTO booking_products 
-            (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent, size)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            RETURNING id`,
           [
             oldBookingProduct.booking_id,
@@ -171,7 +179,8 @@ class ProductLifecycleService {
             'confirmed',
             newProd.rent,
             newProd.securityDeposit,
-            newProd.rent
+            newProd.rent,
+            newProd.size || null
           ]
         );
 

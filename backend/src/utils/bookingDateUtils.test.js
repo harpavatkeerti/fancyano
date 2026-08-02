@@ -25,8 +25,8 @@ describe('recalcBookingDateRange', () => {
 
   beforeAll(async () => {
     const product = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent, security_deposit)
-       VALUES ('Date Util Test Product', 'DUTIL001', 'Test', 'M', 1000, 500)
+      `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+       VALUES ('Date Util Test Product', 'DUTIL001', 'Test', '{M}', 1000, 500)
        RETURNING id`
     );
     testProductId = product.rows[0].id;
@@ -175,8 +175,8 @@ describe('checkProductAvailability', () => {
 
   beforeAll(async () => {
     const product = await pool.query(
-      `INSERT INTO products (name, code, category, size, rent, security_deposit)
-       VALUES ('Availability Test Product', 'DUTIL002', 'Test', 'M', 1000, 500)
+      `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+       VALUES ('Availability Test Product', 'DUTIL002', 'Test', '{M}', 1000, 500)
        RETURNING id`
     );
     testProductId = product.rows[0].id;

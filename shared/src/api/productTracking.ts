@@ -35,8 +35,9 @@ export interface ProductTracking {
   product_code: string;
   tracking_status: TrackingStatus;
   notes?: string;
+  /** Size of the tracked product (from product_tracking.size, not from products table) */
+  size?: string | null;
   product_name?: string;
-  product_size?: string;
   customer_name?: string;
   booking_ref_id?: number;
   created_at: string;
@@ -50,6 +51,7 @@ export interface CreateTrackingData {
   /** Must be one of the MANUAL_TRACKING_STATUSES */
   tracking_status: TrackingStatus;
   notes?: string;
+  size?: string;
 }
 
 export function createProductTrackingApi(api: AxiosInstance) {

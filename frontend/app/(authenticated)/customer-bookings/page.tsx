@@ -296,18 +296,23 @@ export default function CustomerBookingsPage() {
                     {/* Product Images */}
                     <div className="flex gap-2">
                       {products.slice(0, 3).map((product: any, idx: number) => (
-                        <div key={idx} className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden">
-                          {getImageUrl(product.image) ? (
-                            <img
-                              src={getImageUrl(product.image)!}
-                              alt={product.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <span className="text-2xl">👔</span>
-                            </div>
-                          )}
+                        <div key={idx} className="text-center">
+                          <div className="w-20 h-28 bg-gray-100 rounded-lg overflow-hidden">
+                            {getImageUrl(product.image) ? (
+                              <img
+                                src={getImageUrl(product.image)!}
+                                alt={product.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <span className="text-2xl">👔</span>
+                              </div>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-gray-500 mt-1 truncate w-20">
+                            {product.code}{product.size ? ` · ${product.size}` : ''}
+                          </p>
                         </div>
                       ))}
                     </div>

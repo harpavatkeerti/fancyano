@@ -9,15 +9,20 @@ export interface Product {
   status: 'available' | 'archived';
   category?: string;
   gender?: string;
-  size?: string;
   description?: string;
   image?: string;
   created_at: string;
   updated_at: string;
-  /** Current tracking status — embedded from product_tracking via lateral subquery. Null means in_house. */
-  tracking_status?: 'in_house' | 'picked_by_customer' | 'going_to_dry_clean' | 'alternation_related_work' | 'repair' | 'other_work' | null;
-  /** Booking ID associated with the current tracking record (e.g. for picked_by_customer) */
-  tracking_booking_id?: number | null;
+  /** Sizes this product is available in (null = sizeless product, e.g. jewellery) */
+  available_sizes?: string[] | null;
+  /** Per-size tracking status map from lateral join: {"36": "going_to_dry_clean", "38": "in_house"}. Sizes not in this map are implicitly in_house. */
+  size_tracking_map?: Record<string, string> | null;
+  /** Computed per-size rent map: {"36": 1000, "38": 1200}. Derived from rent + rent_overrides. */
+  rents_by_size?: Record<string, number> | null;
+  /** Vendor FK — references vendors.id */
+  vendor_id?: number | null;
+  /** Vendor name — joined from vendors table in list queries */
+  vendor_name?: string | null;
 }
 
 // Booking Product (individual product in a booking)
@@ -47,6 +52,8 @@ export interface BookingProduct {
   cancellation_reason?: string;
   measurements?: any;
   special_requirements?: string;
+  /** Size of the booked product (null for sizeless products) */
+  size?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +125,19 @@ export interface User {
   email?: string;
   address?: string;
   is_deleted?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Vendor {
+  id: number;
+  name: string;
+  phone: string;
+  phone_country: string;   // ISO-2 e.g. 'IN', 'US'
+  address?: string;
+  gst_number?: string;
+  pan_number?: string;
+  notes?: string;
   created_at: string;
   updated_at: string;
 }

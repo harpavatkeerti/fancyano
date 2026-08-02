@@ -28,6 +28,7 @@ export const feedbackApi = api.feedback;
 export const creditNotesApi = api.creditNotes;
 export const productTrackingApi = api.productTracking;
 export const invoicesApi = api.invoices;
+export const vendorsApi = api.vendors;
 
 // ── Re-export types from shared ──
 export type {
@@ -35,6 +36,7 @@ export type {
   Booking,
   BookingProduct,
   User,
+  Vendor,
   PaymentTransaction,
   PaymentSummary,
   ProductCharge,

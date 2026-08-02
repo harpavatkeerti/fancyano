@@ -20,6 +20,7 @@ const routePermissions = {
   routes: {
     '/api/policies':     ['admin'],
     '/api/credit-notes': ['admin'],
+    '/api/vendors':      ['admin'],
     // Add more role-restricted routes as needed — one-line change to modify access
   },
 
@@ -31,6 +32,7 @@ const routePermissions = {
     '/api/settings':            'settings',
     '/api/policies':            'policies',
     '/api/credit-notes':        'creditNotes',
+    '/api/vendors':             'vendors',
     // Shared (any authenticated user)
     '/api/products':            'products',
     '/api/bookings':            'bookings',

@@ -25,8 +25,8 @@ describe('Security Allocation — productIds routing', () => {
 
       // Shared catalog product (rent/security values on booking_products are what matter)
       const productResult = await client.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Sec Alloc Test', 'SECALLOC001', 'Test', 'M', 100, 3000)
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Sec Alloc Test', 'SECALLOC001', 'Test', '{M}', 100, 3000)
          RETURNING id`
       );
       sharedProductId = productResult.rows[0].id;

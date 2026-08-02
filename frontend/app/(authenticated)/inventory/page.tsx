@@ -1,7 +1,13 @@
 'use client';
 
-import { productsApi, bookingsApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES } from '@/lib/api';
-import { useEffect, useState } from 'react';
+import { productsApi, bookingsApi, vendorsApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, Vendor } from '@/lib/api';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import {
+  MALE_PRODUCT_TYPES, FEMALE_PRODUCT_TYPES,
+  MALE_NUMERIC_SIZES, STANDARD_SIZES, FANCY_COSTUME_SIZES,
+  getSizesForProduct, NO_SIZE_TYPES,
+} from '@/lib/productConstants';
+
 
 import { toast } from '@/lib/toast';
 import { Product } from '@/types';
@@ -20,13 +26,25 @@ export default function InventoryPage() {
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
-  
+
   // Filter states
   const [filterProductType, setFilterProductType] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [filterSize, setFilterSize] = useState('');
   const [filterTrackingStatus, setFilterTrackingStatus] = useState<TrackingStatus[]>([]);
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'archived'>('all');
+
+  // Real-time code duplicate check
+  const [codeCheckStatus, setCodeCheckStatus] = useState<'idle' | 'checking' | 'taken' | 'available'>('idle');
+  const codeCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Code autocomplete dropdown
+  const [codeDropdownOpen, setCodeDropdownOpen] = useState(false);
+  const codeInputRef = useRef<HTMLDivElement>(null);
+  // Tracks if the typed code already belongs to a different product type
+  const [codeWrongType, setCodeWrongType] = useState(false);
+  // Rent overrides UI visibility
+  const [showRentOverrides, setShowRentOverrides] = useState(false);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -36,12 +54,34 @@ export default function InventoryPage() {
     security_deposit: '',
     category: '',
     gender: '', // Male or Female
-    size: '',
+    available_sizes: [] as string[],
+    rent_overrides: {} as Record<string, number>,
     description: '',
 
     image: '', // Keep for backward compatibility
     images: [] as string[], // New: array of images
+    vendor_id: null as number | null,
   });
+
+  // Vendor search state
+  const [vendorSearchQuery, setVendorSearchQuery] = useState('');
+  const [vendorSearchResults, setVendorSearchResults] = useState<Vendor[]>([]);
+  const [showVendorDropdown, setShowVendorDropdown] = useState(false);
+  const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
+  const [vendorFormData, setVendorFormData] = useState({
+    name: '',
+    phone: '',
+    address: '',
+    gst_number: '',
+    pan_number: '',
+    notes: '',
+  });
+  const [isVendorSearching, setIsVendorSearching] = useState(false);
+  const vendorSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Vendor update confirm dialog
+  const [showVendorConfirmDialog, setShowVendorConfirmDialog] = useState(false);
+  const [vendorConfirmDiff, setVendorConfirmDiff] = useState<{ field: string; old: string; new: string }[]>([]);
+  const [pendingSubmitData, setPendingSubmitData] = useState<any>(null);
 
   useEffect(() => {
     fetchProducts();
@@ -70,55 +110,234 @@ export default function InventoryPage() {
     toast.success(`Searching for product: ${code}`);
   }
 
+  // Debounced real-time code duplicate checker
+  const checkCodeDuplicate = useCallback((code: string, currentEditingId?: number) => {
+    if (codeCheckTimerRef.current) clearTimeout(codeCheckTimerRef.current);
+
+    const trimmedCode = code.trim();
+    if (!trimmedCode) {
+      setCodeCheckStatus('idle');
+      return;
+    }
+
+    setCodeCheckStatus('checking');
+    codeCheckTimerRef.current = setTimeout(() => {
+      const duplicate = products.find((p) => {
+        if (p.id === currentEditingId) return false;
+        return p.code.trim().toLowerCase() === trimmedCode.toLowerCase();
+      });
+      setCodeCheckStatus(duplicate ? 'taken' : 'available');
+    }, 400);
+  }, [products]);
+
+  // Debounced vendor search
+  function handleVendorSearch(query: string) {
+    setVendorSearchQuery(query);
+    if (vendorSearchTimerRef.current) clearTimeout(vendorSearchTimerRef.current);
+
+    if (query.trim().length < 2) {
+      setVendorSearchResults([]);
+      setShowVendorDropdown(false);
+      return;
+    }
+
+    setIsVendorSearching(true);
+    vendorSearchTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await vendorsApi.search(query.trim());
+        const vendors = res.data || [];
+        setVendorSearchResults(vendors);
+        setShowVendorDropdown(vendors.length > 0);
+      } catch {
+        setVendorSearchResults([]);
+        setShowVendorDropdown(false);
+      } finally {
+        setIsVendorSearching(false);
+      }
+    }, 350);
+  }
+
+  /** Copy shared fields from the first existing same-type product with the given code. */
+  function autofillFromExistingCode(code: string, currentFormData: typeof formData) {
+    const source = products.find(
+      p => p.code.toUpperCase() === code.toUpperCase() && p.name === currentFormData.name
+    );
+    if (!source) return;
+
+    // Collect images from the source product
+    const srcImg = (source as any).image;
+    let srcImages: string[] = [];
+    if (Array.isArray(srcImg)) {
+      srcImages = srcImg;
+    } else if (typeof srcImg === 'string' && srcImg.startsWith('[')) {
+      try { srcImages = JSON.parse(srcImg); } catch { srcImages = srcImg ? [srcImg] : []; }
+    } else if (srcImg) {
+      srcImages = [srcImg];
+    }
+
+    setFormData(prev => ({
+      ...prev,
+      purchase_price: source.purchase_price != null ? String(source.purchase_price) : prev.purchase_price,
+      rent: String(source.rent ?? prev.rent),
+      security_deposit: String(source.security_deposit ?? prev.security_deposit),
+      description: (source as any).description || prev.description,
+      images: srcImages.length > 0 ? srcImages : prev.images,
+      image: srcImages[0] || prev.image,
+      vendor_id: source.vendor_id ?? prev.vendor_id,
+    }));
+
+    // Restore vendor chip if source has a vendor by looking it up in recent search results
+    if (source.vendor_id) {
+      const v = vendorSearchResults.find((vv: Vendor) => vv.id === source.vendor_id);
+      if (v) {
+        setSelectedVendor(v);
+        setVendorSearchQuery(v.name);
+      }
+    }
+  }
+
+  // Auto-fill vendor fields when selected from dropdown
+  function handleVendorSelect(vendor: Vendor) {
+    setSelectedVendor(vendor);
+    setShowVendorDropdown(false);
+    setVendorSearchQuery(vendor.name);
+    setVendorFormData({
+      name: vendor.name,
+      phone: vendor.phone,
+      address: vendor.address || '',
+      gst_number: vendor.gst_number || '',
+      pan_number: vendor.pan_number || '',
+      notes: vendor.notes || '',
+    });
+    setFormData(prev => ({ ...prev, vendor_id: vendor.id }));
+  }
+
+  // Compute vendor diff for confirm dialog
+  function computeVendorDiff(): { field: string; old: string; new: string }[] {
+    if (!selectedVendor) return [];
+    const diff: { field: string; old: string; new: string }[] = [];
+    if (vendorFormData.phone !== selectedVendor.phone)
+      diff.push({ field: 'Phone', old: selectedVendor.phone, new: vendorFormData.phone });
+    if ((vendorFormData.address || '') !== (selectedVendor.address || ''))
+      diff.push({ field: 'Address', old: selectedVendor.address || '(none)', new: vendorFormData.address || '(none)' });
+    if ((vendorFormData.gst_number || '') !== (selectedVendor.gst_number || ''))
+      diff.push({ field: 'GST Number', old: selectedVendor.gst_number || '(none)', new: vendorFormData.gst_number || '(none)' });
+    if ((vendorFormData.pan_number || '') !== (selectedVendor.pan_number || ''))
+      diff.push({ field: 'PAN Number', old: selectedVendor.pan_number || '(none)', new: vendorFormData.pan_number || '(none)' });
+    if ((vendorFormData.notes || '') !== (selectedVendor.notes || ''))
+      diff.push({ field: 'Notes', old: selectedVendor.notes || '(none)', new: vendorFormData.notes || '(none)' });
+    return diff;
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+
+    // Block submit if the code is known to be taken (only for new products)
+    if (!editingProduct && codeCheckStatus === 'taken') {
+      toast.error('⚠️ A product with this code already exists.');
+      return;
+    }
+
     try {
       // Prepare images array - use images if available, otherwise fall back to single image
-      const imagesToSubmit = formData.images.length > 0 
-        ? formData.images 
+      const imagesToSubmit = formData.images.length > 0
+        ? formData.images
         : (formData.image ? [formData.image] : []);
 
-      const dataToSubmit = {
+      // Build rent_overrides: only include sizes where rent differs from base rent
+      const baseRent = Math.round(parseFloat(formData.rent));
+      const rentOverrides: Record<string, number> = {};
+      for (const [sz, r] of Object.entries(formData.rent_overrides)) {
+        if (r !== baseRent && formData.available_sizes.includes(sz)) {
+          rentOverrides[sz] = r;
+        }
+      }
+
+      const dataToSubmit: any = {
         ...formData,
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
-        rent: Math.round(parseFloat(formData.rent)), // Ensure it's a whole number
+        rent: baseRent, // Ensure it's a whole number
         security_deposit: Math.round((parseFloat(formData.security_deposit) || 0) / 100) * 100, // Round to nearest ₹100
         // Set gender to null for Fancy Costumes (uses age-based sizes instead), or if empty for Other
-        // Set size to null for Artificial Jewelleries or if empty for Other
         gender: (formData.name === 'Fancy Costumes' || !formData.gender) ? null : formData.gender,
-        size: (formData.name === 'Artificial Jewelleries' || !formData.size) ? null : formData.size,
+        // Sizes: send array or null for sizeless products
+        available_sizes: formData.available_sizes.length > 0 ? formData.available_sizes : null,
+        // Rent overrides: only if there are any
+        rent_overrides: Object.keys(rentOverrides).length > 0 ? rentOverrides : null,
         // Send images array to backend
         images: imagesToSubmit,
         // Keep image for backward compatibility (first image from array)
         image: imagesToSubmit.length > 0 ? imagesToSubmit[0] : '',
       };
 
-      if (editingProduct) {
-        await productsApi.update(editingProduct.id, dataToSubmit);
+      // ── Vendor logic ──────────────────────────────────────────────
+      // If a vendor was selected and name hasn't changed, check for detail updates
+      if (selectedVendor && vendorFormData.name === selectedVendor.name) {
+        const diff = computeVendorDiff();
+        if (diff.length > 0) {
+          // Show confirm dialog; pause submission
+          setVendorConfirmDiff(diff);
+          setPendingSubmitData(dataToSubmit);
+          setShowVendorConfirmDialog(true);
+          return;
+        }
+        dataToSubmit.vendor_id = selectedVendor.id;
+      } else if (vendorFormData.name.trim()) {
+        // Name changed or no vendor selected: create new vendor
+        const newVendor = await vendorsApi.create({
+          name: vendorFormData.name.trim(),
+          phone: vendorFormData.phone.trim(),
+          address: vendorFormData.address.trim() || undefined,
+          gst_number: vendorFormData.gst_number.trim() || undefined,
+          pan_number: vendorFormData.pan_number.trim() || undefined,
+          notes: vendorFormData.notes.trim() || undefined,
+        });
+        dataToSubmit.vendor_id = newVendor.data.id;
       } else {
-        await productsApi.create(dataToSubmit);
+        dataToSubmit.vendor_id = null;
       }
-      await fetchProducts();
-      setShowAddModal(false);
-      setEditingProduct(null);
-      resetForm();
+
+      await submitProduct(dataToSubmit);
     } catch (error: any) {
-      console.error('❌ Error saving product:', error);
-      console.error('   Error response:', error.response?.data);
-      console.error('   Error status:', error.response?.status);
-      const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
-      toast.error(`Error saving product: ${errorMessage}`);
+      handleSubmitError(error);
     }
   }
 
-  function handleEdit(product: Product) {
+  // Separated for reuse from both direct submit and post-confirm submit
+  async function submitProduct(dataToSubmit: any) {
+    if (editingProduct) {
+      await productsApi.update(editingProduct.id, dataToSubmit);
+    } else {
+      await productsApi.create(dataToSubmit);
+    }
+    await fetchProducts();
+    setShowAddModal(false);
+    setEditingProduct(null);
+    resetForm();
+  }
+
+  function handleSubmitError(error: any) {
+    console.error('❌ Error saving product:', error);
+
+    const status = error.response?.status;
+    const serverError = error.response?.data?.error || error.response?.data?.details || error.message || 'Unknown error';
+
+    // Give a friendly message for duplicate code (409 Conflict)
+    if (status === 409 || serverError?.toLowerCase().includes('already exists')) {
+      toast.error('⚠️ A product with this code already exists.');
+    } else {
+      toast.error(`Failed to save product: ${serverError}`);
+    }
+  }
+
+  async function handleEdit(product: Product) {
     setEditingProduct(product);
-    
+
     // Handle images - can be array or single string
     const productImage = (product as any).image;
     let images: string[] = [];
     let singleImage = '';
-    
+
     if (Array.isArray(productImage)) {
       images = productImage;
       singleImage = productImage.length > 0 ? productImage[0] : '';
@@ -139,7 +358,18 @@ export default function InventoryPage() {
         images = [productImage];
       }
     }
-    
+
+    // Build rent_overrides from rents_by_size for the edit form
+    const rentOverrides: Record<string, number> = {};
+    const productRentsBySize = (product as any).rents_by_size;
+    if (productRentsBySize) {
+      for (const [sz, r] of Object.entries(productRentsBySize)) {
+        if ((r as number) !== product.rent) {
+          rentOverrides[sz] = r as number;
+        }
+      }
+    }
+
     setFormData({
       name: product.name,
       code: product.code,
@@ -148,11 +378,41 @@ export default function InventoryPage() {
       security_deposit: product.security_deposit?.toString() || '',
       category: product.category || '',
       gender: (product as any).gender || '',
-      size: (product as any).size || '',
+      available_sizes: product.available_sizes || [],
+      rent_overrides: rentOverrides,
       description: product.description || '',
       image: singleImage,
       images: images,
+      vendor_id: product.vendor_id || null,
     });
+
+    // Show rent overrides section if there are any
+    setShowRentOverrides(Object.keys(rentOverrides).length > 0);
+
+    // Load vendor details if product has a vendor
+    if (product.vendor_id) {
+      try {
+        const vendorRes = await vendorsApi.getById(product.vendor_id);
+        const vendor = vendorRes.data;
+        setSelectedVendor(vendor);
+        setVendorSearchQuery(vendor.name);
+        setVendorFormData({
+          name: vendor.name,
+          phone: vendor.phone,
+          address: vendor.address || '',
+          gst_number: vendor.gst_number || '',
+          pan_number: vendor.pan_number || '',
+          notes: vendor.notes || '',
+        });
+      } catch {
+        // Vendor might have been deleted, ignore
+      }
+    } else {
+      setSelectedVendor(null);
+      setVendorSearchQuery('');
+      setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
+    }
+
     setShowAddModal(true);
   }
 
@@ -190,25 +450,41 @@ export default function InventoryPage() {
       security_deposit: '',
       category: '',
       gender: '',
-      size: '',
+      available_sizes: [],
+      rent_overrides: {},
       description: '',
       image: '',
       images: [],
+      vendor_id: null,
     });
+    setCodeCheckStatus('idle');
+    setCodeDropdownOpen(false);
+    setCodeWrongType(false);
+    setShowRentOverrides(false);
+    if (codeCheckTimerRef.current) clearTimeout(codeCheckTimerRef.current);
+    // Reset vendor state
+    setSelectedVendor(null);
+    setVendorSearchQuery('');
+    setVendorSearchResults([]);
+    setShowVendorDropdown(false);
+    setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
+    setShowVendorConfirmDialog(false);
+    setVendorConfirmDiff([]);
+    setPendingSubmitData(null);
   }
 
   // Auto-calculate rent per day based on purchase price
   function handlePurchasePriceChange(value: string) {
     const purchasePrice = parseFloat(value);
     let calculatedRent = '';
-    
+
     if (!isNaN(purchasePrice) && purchasePrice > 0) {
       // Calculate rent as 49.5% of purchase price, rounded to nearest 100
       const baseRent = purchasePrice * 0.495;
       const roundedRent = Math.round(baseRent / 100) * 100;
       calculatedRent = roundedRent.toString();
     }
-    
+
     setFormData({
       ...formData,
       purchase_price: value,
@@ -242,14 +518,23 @@ export default function InventoryPage() {
       const matchesCategory =
         !filterCategory || (p as any).gender === filterCategory;
 
-      // Size filter
-      const matchesSize = !filterSize || (p as any).size === filterSize;
+      // Size filter — check if any size in available_sizes matches
+      const matchesSize = !filterSize || (p.available_sizes || []).includes(filterSize);
 
-      // Tracking status filter — treat null/undefined as in_house
-      const currentStatus: TrackingStatus = (p.tracking_status as TrackingStatus) || 'in_house';
+      // Tracking status filter — use size_tracking_map
+      const sizeTrackingMap = p.size_tracking_map || {};
+      const trackingValues = Object.values(sizeTrackingMap);
       const matchesTrackingStatus =
         filterTrackingStatus.length === 0 ||
-        filterTrackingStatus.includes(currentStatus);
+        filterTrackingStatus.some(fs => {
+          if (fs === 'in_house') {
+            // Product matches if any size is in_house (or has no tracking map = all in_house)
+            const availSizes = p.available_sizes || [];
+            if (availSizes.length === 0) return trackingValues.length === 0 || trackingValues.includes('in_house');
+            return availSizes.some(sz => !sizeTrackingMap[sz] || sizeTrackingMap[sz] === 'in_house');
+          }
+          return trackingValues.includes(fs);
+        });
 
       // Status filter (archived vs available)
       const matchesStatus =
@@ -260,8 +545,10 @@ export default function InventoryPage() {
     })
     .sort((a, b) => {
       // Sort: out-of-house products first, then by newest product (highest id = newest)
-      const aOut = a.tracking_status && a.tracking_status !== 'in_house';
-      const bOut = b.tracking_status && b.tracking_status !== 'in_house';
+      const aMap = a.size_tracking_map || {};
+      const bMap = b.size_tracking_map || {};
+      const aOut = Object.values(aMap).some(v => v !== 'in_house');
+      const bOut = Object.values(bMap).some(v => v !== 'in_house');
       if (aOut && !bOut) return -1;
       if (!aOut && bOut) return 1;
       // Use id as reliable newest-first sort (auto-increment, higher = newer)
@@ -272,9 +559,12 @@ export default function InventoryPage() {
     return <div className="text-center py-12">Loading inventory...</div>;
   }
 
-  // Products currently out (any status except in_house)
-  const outCount = products.filter(p => p.tracking_status && p.tracking_status !== 'in_house').length;
-  const outProducts = products.filter(p => p.tracking_status && p.tracking_status !== 'in_house');
+  // Products currently out (any size has status except in_house)
+  const outProducts = products.filter(p => {
+    const map = p.size_tracking_map || {};
+    return Object.values(map).some(v => v !== 'in_house');
+  });
+  const outCount = outProducts.length;
 
   return (
     <div className="space-y-6">
@@ -305,8 +595,11 @@ export default function InventoryPage() {
                 </h3>
                 <p className="text-sm text-orange-700 mt-1">
                   {outProducts.slice(0, 3).map(p => {
-                    const label = TRACKING_STATUS_LABELS[p.tracking_status as TrackingStatus] || '❓ Unknown';
-                    return `${p.code} (${label})`;
+                    const map = p.size_tracking_map || {};
+                    const outStatuses = Object.entries(map)
+                      .filter(([, v]) => v !== 'in_house')
+                      .map(([sz, v]) => `${sz}: ${TRACKING_STATUS_LABELS[v as TrackingStatus] || v}`);
+                    return `${p.code} (${outStatuses.join(', ')})`;
                   }).join(', ')}
                   {outCount > 3 && ` and ${outCount - 3} more...`}
                 </p>
@@ -348,7 +641,7 @@ export default function InventoryPage() {
             Showing: {filteredProducts.length} / {products.length}
           </span>
         </div>
-        
+
         {/* Filter Row */}
         <div className="space-y-3">
           {/* First Row - Product Type, Category, Size */}
@@ -373,7 +666,7 @@ export default function InventoryPage() {
                 <option value="Other">Other</option>
               </select>
             </div>
-            
+
             <div className="flex-1">
               <label className="block text-xs text-gray-600 mb-1">Category</label>
               <select
@@ -386,7 +679,7 @@ export default function InventoryPage() {
                 <option value="Female">Female</option>
               </select>
             </div>
-            
+
             <div className="flex-1">
               <label className="block text-xs text-gray-600 mb-1">Size</label>
               <select
@@ -425,7 +718,7 @@ export default function InventoryPage() {
                 </optgroup>
               </select>
             </div>
-            
+
             <div className="flex-1">
               <label className="block text-xs text-gray-600 mb-1">Tracking Status</label>
               <div className="flex flex-wrap gap-1">
@@ -439,11 +732,10 @@ export default function InventoryPage() {
                           : [...prev, status]
                       );
                     }}
-                    className={`px-2 py-1 text-xs rounded-full border transition-colors ${
-                      filterTrackingStatus.includes(status)
-                        ? 'bg-indigo-600 text-white border-indigo-600'
-                        : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'
-                    }`}
+                    className={`px-2 py-1 text-xs rounded-full border transition-colors ${filterTrackingStatus.includes(status)
+                      ? 'bg-indigo-600 text-white border-indigo-600'
+                      : 'bg-white text-gray-600 border-gray-300 hover:border-indigo-400'
+                      }`}
                   >
                     {TRACKING_STATUS_LABELS[status]}
                   </button>
@@ -470,11 +762,11 @@ export default function InventoryPage() {
             <div className="flex-1">
               {/* Empty spacer */}
             </div>
-            
+
             <div className="flex-1">
               {/* Empty spacer */}
             </div>
-            
+
             <div className="flex-1">
               {/* Empty spacer */}
             </div>
@@ -517,16 +809,13 @@ export default function InventoryPage() {
                 Category
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Size
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Tracking Status
+                Sizes &amp; Tracking
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Rent per day
+                Base Rent
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Check Availability
@@ -538,156 +827,164 @@ export default function InventoryPage() {
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredProducts.map((product) => {
-              const isOutOfHouse = product.tracking_status && product.tracking_status !== 'in_house';
+              const sizeTrackingMap = product.size_tracking_map || {};
+              const isOutOfHouse = Object.values(sizeTrackingMap).some(v => v !== 'in_house');
+
+              const trackingColorMap: Record<string, string> = {
+                in_house: 'bg-green-100 text-green-800 border-green-300',
+                picked_by_customer: 'bg-blue-100 text-blue-800 border-blue-300',
+                going_to_dry_clean: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                alternation_related_work: 'bg-purple-100 text-purple-800 border-purple-300',
+                repair: 'bg-orange-100 text-orange-800 border-orange-300',
+                other_work: 'bg-gray-200 text-gray-800 border-gray-400',
+              };
 
               return (
-              <tr
-                key={product.id}
-                className={`hover:bg-gray-50 ${isOutOfHouse ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
-              >
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {(() => {
-                    // Helper to get first image from array or single image
-                    const getFirstImage = (img: any): string | null => {
-                      if (!img) return null;
-                      if (Array.isArray(img)) {
-                        return img.length > 0 ? img[0] : null;
-                      }
-                      // Try to parse as JSON array
-                      if (typeof img === 'string' && img.startsWith('[')) {
-                        try {
-                          const parsed = JSON.parse(img);
-                          if (Array.isArray(parsed) && parsed.length > 0) {
-                            return parsed[0];
-                          }
-                        } catch (e) {
-                          // Not JSON, treat as single image
+                <tr
+                  key={product.id}
+                  className={`hover:bg-gray-50 ${isOutOfHouse ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
+                >
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {(() => {
+                      // Helper to get first image from array or single image
+                      const getFirstImage = (img: any): string | null => {
+                        if (!img) return null;
+                        if (Array.isArray(img)) {
+                          return img.length > 0 ? img[0] : null;
                         }
-                      }
-                      return img;
-                    };
-                    
-                    const firstImage = getFirstImage((product as any).image);
-                    const imageUrl = firstImage ? getImageUrl(firstImage) : null;
-                    
-                    return imageUrl ? (
-                      <div className="relative">
-                        <img 
-                          src={imageUrl} 
-                      alt={product.name}
-                      className="w-12 h-12 object-cover rounded-md border border-gray-200"
-                    />
-                        {Array.isArray((product as any).image) && (product as any).image.length > 1 && (
-                          <div className="absolute -top-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
-                            {(product as any).image.length}
-                          </div>
-                        )}
+                        // Try to parse as JSON array
+                        if (typeof img === 'string' && img.startsWith('[')) {
+                          try {
+                            const parsed = JSON.parse(img);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                              return parsed[0];
+                            }
+                          } catch (e) {
+                            // Not JSON, treat as single image
+                          }
+                        }
+                        return img;
+                      };
+
+                      const firstImage = getFirstImage((product as any).image);
+                      const imageUrl = firstImage ? getImageUrl(firstImage) : null;
+
+                      return imageUrl ? (
+                        <img
+                          src={imageUrl}
+                          alt={product.name}
+                          className="w-12 h-12 object-cover rounded-md border border-gray-200"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 bg-gray-100 rounded-md flex items-center justify-center border border-gray-200">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                      );
+                    })()}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                    {product.name}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.code}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {(product as any).gender || <span className="text-gray-400">N/A</span>}
+                  </td>
+                  <td className="px-6 py-3">
+                    {/* Sizes & Tracking — circle pills per size */}
+                    {(product.available_sizes && product.available_sizes.length > 0) ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {product.available_sizes.map(sz => {
+                          const ts = sizeTrackingMap[sz] || 'in_house';
+                          const colors = trackingColorMap[ts] || trackingColorMap['in_house'];
+                          const rentsBySize = (product as any).rents_by_size || {};
+                          const sizeRent = rentsBySize[sz] ?? product.rent;
+                          const isOverridden = sizeRent !== product.rent;
+                          return (
+                            <span
+                              key={sz}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border ${colors}`}
+                              title={`${sz}: ${TRACKING_STATUS_LABELS[ts as TrackingStatus] || ts}${isOverridden ? ` · ₹${sizeRent}` : ''}`}
+                            >
+                              {sz}
+                              {isOverridden && <span className="text-[10px] opacity-70">₹{sizeRent}</span>}
+                            </span>
+                          );
+                        })}
                       </div>
-                  ) : (
-                    <div className="w-12 h-12 bg-gray-100 rounded-md flex items-center justify-center border border-gray-200">
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                    );
-                  })()}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                  {product.name}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.code}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {(product as any).gender || <span className="text-gray-400">N/A</span>}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  {(product as any).size || <span className="text-gray-400">N/A</span>}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {(() => {
-                    const ts: TrackingStatus = (product.tracking_status as TrackingStatus) || 'in_house';
-                    const colorMap: Record<TrackingStatus, string> = {
-                      in_house: 'bg-green-100 text-green-800',
-                      picked_by_customer: 'bg-blue-100 text-blue-800',
-                      going_to_dry_clean: 'bg-yellow-100 text-yellow-800',
-                      alternation_related_work: 'bg-purple-100 text-purple-800',
-                      repair: 'bg-orange-100 text-orange-800',
-                      other_work: 'bg-gray-100 text-gray-800',
-                    };
-                    return (
-                      <span className={`px-2 py-1 rounded-full text-xs font-semibold ${colorMap[ts]}`}>
-                        {TRACKING_STATUS_LABELS[ts]}
-                      </span>
-                    );
-                  })()}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap">
-                  {product.status === 'available' ? (
-                    <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">✅ Available</span>
-                  ) : (
-                    <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">🗃️ Archived</span>
-                  )}
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                  ₹{product.rent}
-                </td>
-                <td className="px-4 py-4 whitespace-nowrap">
-                  <DateRangePicker
-                    startDate=""
-                    endDate=""
-                    onStartDateChange={() => {}}
-                    onEndDateChange={() => {}}
-                    bookings={productBookings[product.id] || []}
-                    onOpen={() => fetchProductBookings(product.id)}
-                    compact
-                    label=""
-                    readOnly
-                  />
-                </td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setViewingProduct(product)}
-                      className="p-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none flex items-center justify-center"
-                      title="View Details"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                        <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => handleEdit(product)}
-                      className="px-3 py-2 text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      id={`track-btn-${product.id}`}
-                      onClick={() => setTrackingProduct(product)}
-                      className="px-3 py-2 text-indigo-600 hover:text-indigo-900 hover:bg-indigo-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                      title="Track product status"
-                    >
-                      🗺️ Track
-                    </button>
-                    {product.status === 'archived' ? (
-                      <button
-                        onClick={() => handleRestore(product.id)}
-                        className="px-3 py-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                      >
-                        Restore
-                      </button>
                     ) : (
-                      <button
-                        onClick={() => handleArchive(product.id)}
-                        className="px-3 py-2 text-orange-600 hover:text-orange-900 hover:bg-orange-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                      >
-                        Archive
-                      </button>
+                      <span className="text-gray-400 text-xs">No sizes</span>
                     )}
-                  </div>
-                </td>
-              </tr>
-            );
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    {product.status === 'available' ? (
+                      <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">✅ Available</span>
+                    ) : (
+                      <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">🗃️ Archived</span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    ₹{product.rent}
+                  </td>
+                  <td className="px-4 py-4 whitespace-nowrap">
+                    <DateRangePicker
+                      startDate=""
+                      endDate=""
+                      onStartDateChange={() => { }}
+                      onEndDateChange={() => { }}
+                      bookings={productBookings[product.id] || []}
+                      onOpen={() => fetchProductBookings(product.id)}
+                      compact
+                      label=""
+                      readOnly
+                    />
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setViewingProduct(product)}
+                        className="p-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none flex items-center justify-center"
+                        title="View Details"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                          <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                          <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => handleEdit(product)}
+                        className="px-3 py-2 text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        id={`track-btn-${product.id}`}
+                        onClick={() => setTrackingProduct(product)}
+                        className="px-3 py-2 text-indigo-600 hover:text-indigo-900 hover:bg-indigo-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                        title="Track product status"
+                      >
+                        🗺️ Track
+                      </button>
+                      {product.status === 'archived' ? (
+                        <button
+                          onClick={() => handleRestore(product.id)}
+                          className="px-3 py-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                        >
+                          Restore
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleArchive(product.id)}
+                          className="px-3 py-2 text-orange-600 hover:text-orange-900 hover:bg-orange-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                        >
+                          Archive
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
             })}
           </tbody>
         </table>
@@ -710,11 +1007,11 @@ export default function InventoryPage() {
                   value={formData.name}
                   onChange={(e) => {
                     const newName = e.target.value;
-                    
+
                     // Auto-detect gender based on product type
-                    const maleProducts = ['Sherwani', 'Indo Western', 'Suit', 'Kurta Pajama'];
-                    const femaleProducts = ['Lehenga', 'Girlish Crop Top', 'Gowns'];
-                    
+                    const maleProducts = MALE_PRODUCT_TYPES;
+                    const femaleProducts = FEMALE_PRODUCT_TYPES;
+
                     let autoGender = '';
                     if (maleProducts.includes(newName)) {
                       autoGender = 'Male';
@@ -724,13 +1021,13 @@ export default function InventoryPage() {
                       autoGender = 'Female'; // Set gender but no size required
                     }
                     // For "Other" and other special categories (except Fancy Costumes), gender remains empty and needs to be selected
-                    
-                    setFormData({ ...formData, name: newName, gender: autoGender, size: '' });
+
+                    setFormData({ ...formData, name: newName, gender: autoGender, available_sizes: [], rent_overrides: {} });
                   }}
                   required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500"
                 >
-                  <option value="">Select Product Type</option>
+
                   <optgroup label="Male">
                     <option value="Sherwani">Sherwani</option>
                     <option value="Indo Western">Indo Western</option>
@@ -763,7 +1060,7 @@ export default function InventoryPage() {
                         name="gender"
                         value="Male"
                         checked={formData.gender === 'Male'}
-                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, size: '' })}
+                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, available_sizes: [], rent_overrides: {} })}
                         className="mr-2"
                       />
                       <span className="text-sm">Male</span>
@@ -774,7 +1071,7 @@ export default function InventoryPage() {
                         name="gender"
                         value="Female"
                         checked={formData.gender === 'Female'}
-                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, size: '' })}
+                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, available_sizes: [], rent_overrides: {} })}
                         className="mr-2"
                       />
                       <span className="text-sm">Female</span>
@@ -785,7 +1082,7 @@ export default function InventoryPage() {
                         name="gender"
                         value=""
                         checked={formData.gender === ''}
-                        onChange={(e) => setFormData({ ...formData, gender: '', size: '' })}
+                        onChange={(e) => setFormData({ ...formData, gender: '', available_sizes: [], rent_overrides: {} })}
                         className="mr-2"
                       />
                       <span className="text-sm">None</span>
@@ -794,84 +1091,179 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {/* Size Selection for Fancy Costumes - Age-based sizes */}
-              {formData.name === 'Fancy Costumes' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Size (Age/Category)*
-                  </label>
-                  <select
-                    value={formData.size}
-                    onChange={(e) => setFormData({ ...formData, size: e.target.value })}
-                    required
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select Size</option>
-                    <option value="2-3 years">2-3 years</option>
-                    <option value="3-4 years">3-4 years</option>
-                    <option value="3-5 years">3-5 years</option>
-                    <option value="4-6 years">4-6 years</option>
-                    <option value="5-6 years">5-6 years</option>
-                    <option value="5-7 years">5-7 years</option>
-                    <option value="8-10 years">8-10 years</option>
-                    <option value="12-14 years">12-14 years</option>
-                    <option value="14-16 years">14-16 years</option>
-                    <option value="Adult Size">Adult Size</option>
-                  </select>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Age-based sizing for fancy costumes
+              {/* Product Code — enabled only after product type is chosen */}
+              <div ref={codeInputRef} className="relative">
+                <Input
+                  label="Product Code*"
+                  value={formData.code}
+                  disabled={!formData.name}
+                  onChange={(e) => {
+                    const newCode = e.target.value.toUpperCase();
+                    setFormData({ ...formData, code: newCode });
+                    setCodeDropdownOpen(newCode.trim().length >= 1);
+                    setCodeWrongType(false);
+                    checkCodeDuplicate(newCode, editingProduct?.id);
+                  }}
+                  onFocus={() => { if (formData.code.trim()) setCodeDropdownOpen(true); }}
+                  onBlur={() => setTimeout(() => {
+                    setCodeDropdownOpen(false);
+                    const typedCode = formData.code.trim().toUpperCase();
+                    if (typedCode && formData.name) {
+                      const conflict = products.some(
+                        p => p.code.toUpperCase() === typedCode && p.name !== formData.name
+                      );
+                      setCodeWrongType(conflict);
+                      // Auto-fill even when code is typed manually (not from dropdown)
+                      if (!conflict) autofillFromExistingCode(typedCode, formData);
+                    }
+                  }, 150)}
+                  required
+                  placeholder={formData.name ? 'e.g. SHR-001' : 'Select product type first'}
+                />
+                {/* Code autocomplete dropdown */}
+                {codeDropdownOpen && formData.name && (() => {
+                  const q = formData.code.trim().toUpperCase();
+                  const uniqueCodes = [...new Set(
+                    products
+                      .filter(p => p.code.toUpperCase().startsWith(q) && p.code.toUpperCase() !== q)
+                      .map(p => p.code.toUpperCase())
+                  )];
+                  return uniqueCodes.length > 0 ? (
+                    <ul className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {uniqueCodes.map(code => {
+                        const sameTypeVariants = products.filter(p => p.code.toUpperCase() === code && p.name === formData.name);
+                        const otherTypeVariants = products.filter(p => p.code.toUpperCase() === code && p.name !== formData.name);
+                        const isOtherType = sameTypeVariants.length === 0 && otherTypeVariants.length > 0;
+                        return (
+                          <li
+                            key={code}
+                            onMouseDown={isOtherType ? undefined : () => {
+                              setFormData({ ...formData, code });
+                              setCodeWrongType(false);
+                              checkCodeDuplicate(code, editingProduct?.id);
+                              setCodeDropdownOpen(false);
+                              // Auto-fill shared fields from the first existing variant
+                              autofillFromExistingCode(code, { ...formData, code });
+                            }}
+                            className={`px-3 py-2 flex items-center justify-between text-sm ${isOtherType
+                                ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                : 'cursor-pointer hover:bg-red-50'
+                              }`}
+                          >
+                            <div>
+                              <span className="font-medium text-gray-800">{code}</span>
+                              {isOtherType && (
+                                <span className="ml-2 text-xs text-gray-400">
+                                  {[...new Set(otherTypeVariants.map(p => p.name))].join(', ')}
+                                </span>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : null;
+                })()}
+                {/* Wrong-type code error */}
+                {codeWrongType && (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    This product code is already in use for a different product type.
                   </p>
-                </div>
-              )}
+                )}
+                {codeCheckStatus === 'checking' && (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs text-gray-400">
+                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                    </svg>
+                    Checking code availability…
+                  </p>
+                )}
+                {codeCheckStatus === 'taken' && !editingProduct && (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    A product with this code already exists.
+                  </p>
+                )}
+                {codeCheckStatus === 'available' && (
+                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-green-600">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    Product code is available ✓
+                  </p>
+                )}
+              </div>
 
-              {/* Size Selection - Auto-shown based on product type (Standard products) */}
-              {formData.name && formData.name !== 'Fancy Costumes' && formData.name !== 'Artificial Jewelleries' && formData.gender && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Size{formData.name === 'Other' ? ' (Optional)' : '*'}
-                  </label>
-                  <select
-                    value={formData.size}
-                    onChange={(e) => setFormData({ ...formData, size: e.target.value })}
-                    required={formData.name !== 'Other'}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select Size</option>
-                    {formData.gender === 'Male' && formData.name !== 'Kurta Pajama' ? (
-                      <>
-                        <option value="34">34</option>
-                        <option value="36">36</option>
-                        <option value="38">38</option>
-                        <option value="40">40</option>
-                        <option value="42">42</option>
-                        <option value="44">44</option>
-                        <option value="46">46</option>
-                      </>
-                    ) : (
-                      <>
-                        <option value="S">Small (S)</option>
-                        <option value="M">Medium (M)</option>
-                        <option value="L">Large (L)</option>
-                        <option value="XL">Extra Large (XL)</option>
-                        <option value="XXL">XX Large (XXL)</option>
-                      </>
+              {/* Multi-Select Size Pills — shown for all sized product types */}
+              {formData.name && !NO_SIZE_TYPES.includes(formData.name) && (() => {
+                const possibleSizes = getSizesForProduct(formData.name, formData.gender);
+                if (possibleSizes.length === 0) return null;
+                const toggleSize = (sz: string) => {
+                  const current = formData.available_sizes;
+                  const next = current.includes(sz)
+                    ? current.filter(s => s !== sz)
+                    : [...current, sz];
+                  // Also clean up rent_overrides for removed sizes
+                  const newOverrides = { ...formData.rent_overrides };
+                  if (!next.includes(sz)) delete newOverrides[sz];
+                  setFormData({ ...formData, available_sizes: next, rent_overrides: newOverrides });
+                };
+                const selectAll = () => {
+                  setFormData({ ...formData, available_sizes: [...possibleSizes] });
+                };
+                const clearAll = () => {
+                  setFormData({ ...formData, available_sizes: [], rent_overrides: {} });
+                };
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-700">
+                        Available Sizes{formData.name !== 'Other' ? '*' : ' (Optional)'}
+                      </label>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={selectAll} className="text-xs text-blue-600 hover:text-blue-800">Select All</button>
+                        <button type="button" onClick={clearAll} className="text-xs text-gray-500 hover:text-gray-700">Clear</button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {possibleSizes.map(sz => {
+                        const isSelected = formData.available_sizes.includes(sz);
+                        return (
+                          <button
+                            key={sz}
+                            type="button"
+                            onClick={() => toggleSize(sz)}
+                            className={`px-3 py-1.5 rounded-full text-sm font-medium border-2 transition-all duration-200 ${isSelected
+                                ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                                : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
+                              }`}
+                          >
+                            {sz}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {formData.available_sizes.length > 0 && (
+                      <p className="text-xs text-gray-500 mt-1">
+                        {formData.available_sizes.length} size{formData.available_sizes.length > 1 ? 's' : ''} selected
+                      </p>
                     )}
-                  </select>
-                </div>
-              )}
-              <Input
-                label="Product Code*"
-                value={formData.code}
-                onChange={(e) => setFormData({ ...formData, code: e.target.value })}
-                required
-              />
+                  </div>
+                );
+              })()}
 
               {/* Product Images Upload - Multiple Images */}
               <MultipleImageUpload
                 value={formData.images.length > 0 ? formData.images : (formData.image ? formData.image : [])}
                 onChange={(images) => {
-                  setFormData({ 
-                    ...formData, 
+                  setFormData({
+                    ...formData,
                     images: images,
                     image: images.length > 0 ? images[0] : '' // Keep first image for backward compat
                   });
@@ -911,6 +1303,69 @@ export default function InventoryPage() {
                 </p>
               </div>
 
+              {/* Rent Overrides — per-size rent for selected sizes */}
+              {formData.available_sizes.length > 0 && (
+                <div>
+                  {!showRentOverrides ? (
+                    <button
+                      type="button"
+                      onClick={() => setShowRentOverrides(true)}
+                      className="text-xs text-blue-600 hover:text-blue-800 underline"
+                    >
+                      Set different rent for specific sizes →
+                    </button>
+                  ) : (
+                    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <label className="text-sm font-medium text-gray-700">Per-Size Rent Overrides</label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowRentOverrides(false);
+                            setFormData({ ...formData, rent_overrides: {} });
+                          }}
+                          className="text-xs text-gray-500 hover:text-gray-700"
+                        >
+                          Clear & Hide
+                        </button>
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        Only change sizes that differ from base rent (₹{formData.rent || 0}). Leave unchanged for base rent.
+                      </p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {formData.available_sizes.map(sz => {
+                          const overrideValue = formData.rent_overrides[sz];
+                          const baseRent = parseInt(formData.rent) || 0;
+                          return (
+                            <div key={sz} className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-gray-600 w-12 text-right">{sz}:</span>
+                              <input
+                                type="number"
+                                step="100"
+                                value={overrideValue ?? ''}
+                                placeholder={`₹${baseRent}`}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  const newOverrides = { ...formData.rent_overrides };
+                                  if (val === '' || parseInt(val) === baseRent) {
+                                    delete newOverrides[sz];
+                                  } else {
+                                    newOverrides[sz] = parseInt(val);
+                                  }
+                                  setFormData({ ...formData, rent_overrides: newOverrides });
+                                }}
+                                className={`w-24 px-2 py-1 text-sm border rounded-md focus:outline-none focus:ring-1 focus:ring-red-500 ${overrideValue !== undefined ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
+                                  }`}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Security Deposit */}
               <div>
                 <Input
@@ -944,12 +1399,12 @@ export default function InventoryPage() {
                       <p className="text-sm font-semibold text-blue-900 mb-1">Rental Policy</p>
                       {formData.name === 'Fancy Costumes' ? (
                         <p className="text-xs text-blue-800">
-                          <strong>24-Hour Rental:</strong> This product follows a 24-hour rental policy. 
+                          <strong>24-Hour Rental:</strong> This product follows a 24-hour rental policy.
                           Rental duration is calculated from the time of bill generation.
                         </p>
                       ) : (
                         <p className="text-xs text-blue-800">
-                          <strong>3-Day Rental:</strong> This rental price includes 3 days by default. 
+                          <strong>3-Day Rental:</strong> This rental price includes 3 days by default.
                           This is the standard policy for all products except Fancy Costumes.
                         </p>
                       )}
@@ -973,12 +1428,120 @@ export default function InventoryPage() {
                 <textarea
                   value={formData.description}
                   onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500"
                   rows={3}
                 />
               </div>
+              {/* ── Vendor Section ── */}
+              <div className="border-t border-gray-200 pt-4 mt-2">
+                <h3 className="text-sm font-semibold text-gray-800 mb-3">Vendor Information (Optional)</h3>
+
+                {/* Vendor Name Search */}
+                <div className="relative mb-3">
+                  <Input
+                    label="Vendor Name"
+                    value={vendorSearchQuery}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      handleVendorSearch(val);
+                      setVendorFormData(prev => ({ ...prev, name: val }));
+                      // If name was changed from a selected vendor, clear selection
+                      if (selectedVendor && val !== selectedVendor.name) {
+                        setSelectedVendor(null);
+                        setFormData(prev => ({ ...prev, vendor_id: null }));
+                      }
+                    }}
+                    placeholder="Search or enter vendor name"
+                  />
+                  {/* Search results dropdown */}
+                  {showVendorDropdown && vendorSearchResults.length > 0 && (
+                    <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {vendorSearchResults.map((vendor) => (
+                        <button
+                          key={vendor.id}
+                          type="button"
+                          onClick={() => handleVendorSelect(vendor)}
+                          className="w-full text-left px-4 py-3 hover:bg-red-50 transition-colors border-b last:border-0"
+                        >
+                          <p className="font-medium text-gray-900">{vendor.name}</p>
+                          <p className="text-sm text-gray-500">{vendor.phone}{vendor.gst_number ? ` · GST: ${vendor.gst_number}` : ''}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {isVendorSearching && (
+                    <p className="text-xs text-gray-400 mt-1">Searching vendors...</p>
+                  )}
+                </div>
+
+                {/* Selected vendor indicator */}
+                {selectedVendor && (
+                  <div className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm bg-green-50 border-green-300 mb-3">
+                    <span className="text-green-600">✓</span>
+                    <span className="font-medium text-green-800">Existing vendor: {selectedVendor.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedVendor(null);
+                        setVendorSearchQuery('');
+                        setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
+                        setFormData(prev => ({ ...prev, vendor_id: null }));
+                      }}
+                      className="ml-auto text-gray-400 hover:text-red-500 text-xs"
+                    >
+                      ✕ Clear
+                    </button>
+                  </div>
+                )}
+
+                {/* Vendor detail fields — shown when name is typed */}
+                {vendorFormData.name.trim() && (
+                  <div className="space-y-3 p-3 bg-gray-50 rounded-lg">
+                    <Input
+                      label="Phone*"
+                      value={vendorFormData.phone}
+                      onChange={(e) => setVendorFormData({ ...vendorFormData, phone: e.target.value })}
+                      placeholder="9876543210"
+                      required
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input
+                        label="GST Number"
+                        value={vendorFormData.gst_number}
+                        onChange={(e) => setVendorFormData({ ...vendorFormData, gst_number: e.target.value })}
+                        placeholder="22AAAAA0000A1Z5"
+                      />
+                      <Input
+                        label="PAN Number"
+                        value={vendorFormData.pan_number}
+                        onChange={(e) => setVendorFormData({ ...vendorFormData, pan_number: e.target.value })}
+                        placeholder="ABCDE1234F"
+                      />
+                    </div>
+                    <Input
+                      label="Address"
+                      value={vendorFormData.address}
+                      onChange={(e) => setVendorFormData({ ...vendorFormData, address: e.target.value })}
+                      placeholder="Vendor address"
+                    />
+                    <Input
+                      label="Notes"
+                      value={vendorFormData.notes}
+                      onChange={(e) => setVendorFormData({ ...vendorFormData, notes: e.target.value })}
+                      placeholder="Any notes about this vendor"
+                    />
+                  </div>
+                )}
+              </div>
+
+
               <div className="flex space-x-3">
-                <Button type="submit">{editingProduct ? 'Update' : 'Create'}</Button>
+                <Button
+                  type="submit"
+                  disabled={!formData.name || codeWrongType}
+                >
+                  {editingProduct ? 'Update' : 'Create'}
+                </Button>
                 <Button
                   type="button"
                   variant="secondary"
@@ -1011,7 +1574,7 @@ export default function InventoryPage() {
                 </svg>
               </button>
             </div>
-            
+
             <div className="space-y-4">
               {/* Product Images - Carousel for Multiple Images */}
               {(() => {
@@ -1031,30 +1594,30 @@ export default function InventoryPage() {
                   // Single image
                   return img ? [img] : [];
                 };
-                
+
                 const images = getImages((viewingProduct as any).image);
                 const imageUrls = images.map(img => getImageUrl(img)).filter(Boolean) as string[];
-                
+
                 if (imageUrls.length === 0) return null;
-                
+
                 if (imageUrls.length === 1) {
                   return (
-                <div className="flex justify-center">
-                  <img 
-                        src={imageUrls[0]} 
-                    alt={viewingProduct.name}
-                    className="w-64 h-64 object-contain rounded-lg border-2 border-gray-200 bg-white"
-                  />
-                </div>
+                    <div className="flex justify-center">
+                      <img
+                        src={imageUrls[0]}
+                        alt={viewingProduct.name}
+                        className="w-64 h-64 object-contain rounded-lg border-2 border-gray-200 bg-white"
+                      />
+                    </div>
                   );
                 }
-                
+
                 // Multiple images - show carousel
                 return (
                   <div className="space-y-2">
                     <div className="flex justify-center relative">
-                      <img 
-                        src={imageUrls[currentImageIndex >= imageUrls.length ? 0 : currentImageIndex]} 
+                      <img
+                        src={imageUrls[currentImageIndex >= imageUrls.length ? 0 : currentImageIndex]}
                         alt={`${viewingProduct.name} - Image ${(currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) + 1}`}
                         className="w-64 h-64 object-contain rounded-lg border-2 border-gray-200 bg-white"
                       />
@@ -1087,9 +1650,8 @@ export default function InventoryPage() {
                         <button
                           key={index}
                           onClick={() => setCurrentImageIndex(index)}
-                          className={`w-2 h-2 rounded-full transition-colors ${
-                            index === (currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) ? 'bg-blue-600' : 'bg-gray-300'
-                          }`}
+                          className={`w-2 h-2 rounded-full transition-colors ${index === (currentImageIndex >= imageUrls.length ? 0 : currentImageIndex) ? 'bg-blue-600' : 'bg-gray-300'
+                            }`}
                           title={`Image ${index + 1}`}
                         />
                       ))}
@@ -1120,12 +1682,41 @@ export default function InventoryPage() {
                   </p>
                 </div>
                 <div className="bg-gray-50 p-3 rounded-lg">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Size</p>
-                  <p className="text-sm font-semibold text-gray-900 mt-1">
-                    {(viewingProduct as any).size || <span className="text-gray-400">N/A</span>}
-                  </p>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Base Rent</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.rent}/day</p>
                 </div>
               </div>
+
+              {/* Available Sizes with Tracking */}
+              {viewingProduct.available_sizes && viewingProduct.available_sizes.length > 0 && (
+                <div className="bg-gray-50 p-3 rounded-lg">
+                  <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Sizes & Tracking</p>
+                  <div className="flex flex-wrap gap-2">
+                    {viewingProduct.available_sizes.map(sz => {
+                      const sizeMap = viewingProduct.size_tracking_map || {};
+                      const ts = sizeMap[sz] || 'in_house';
+                      const colorMap: Record<string, string> = {
+                        in_house: 'bg-green-100 text-green-800 border-green-300',
+                        picked_by_customer: 'bg-blue-100 text-blue-800 border-blue-300',
+                        going_to_dry_clean: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                        alternation_related_work: 'bg-purple-100 text-purple-800 border-purple-300',
+                        repair: 'bg-orange-100 text-orange-800 border-orange-300',
+                        other_work: 'bg-gray-200 text-gray-800 border-gray-400',
+                      };
+                      const rentsBySize = viewingProduct.rents_by_size || {};
+                      const sizeRent = rentsBySize[sz] ?? viewingProduct.rent;
+                      const isOverridden = sizeRent !== viewingProduct.rent;
+                      return (
+                        <div key={sz} className={`inline-flex flex-col items-center px-3 py-1.5 rounded-lg border ${colorMap[ts] || colorMap['in_house']}`}>
+                          <span className="text-sm font-semibold">{sz}</span>
+                          <span className="text-[10px]">{TRACKING_STATUS_LABELS[ts as TrackingStatus] || ts}</span>
+                          {isOverridden && <span className="text-[10px] font-medium">₹{sizeRent}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-gray-50 p-3 rounded-lg">
@@ -1135,8 +1726,8 @@ export default function InventoryPage() {
                   </p>
                 </div>
                 <div className="bg-gray-50 p-3 rounded-lg">
-                  <p className="text-xs text-gray-500 uppercase tracking-wide">Rent per Day</p>
-                  <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.rent}</p>
+                  <p className="text-xs text-gray-500 uppercase tracking-wide">Security Deposit</p>
+                  <p className="text-sm font-semibold text-gray-900 mt-1">₹{viewingProduct.security_deposit || 0}</p>
                 </div>
               </div>
 
@@ -1157,16 +1748,23 @@ export default function InventoryPage() {
               <div className="bg-gray-50 p-3 rounded-lg">
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Status</p>
                 <span
-                  className={`inline-flex mt-1 px-2 py-1 text-xs font-semibold rounded-full ${
-                    viewingProduct.status === 'available'
-                      ? 'bg-green-100 text-green-800'
-                      : 'bg-gray-100 text-gray-600'
-                  }`}
+                  className={`inline-flex mt-1 px-2 py-1 text-xs font-semibold rounded-full ${viewingProduct.status === 'available'
+                    ? 'bg-green-100 text-green-800'
+                    : 'bg-gray-100 text-gray-600'
+                    }`}
                 >
                   {viewingProduct.status === 'available' ? '✅ Available' : '🗃️ Archived'}
                 </span>
               </div>
             </div>
+
+            {/* Vendor Information */}
+            {(viewingProduct as any).vendor_name && (
+              <div className="bg-gray-50 p-3 rounded-lg border border-gray-200">
+                <p className="text-xs text-gray-500 uppercase tracking-wide">Vendor</p>
+                <p className="text-sm font-semibold text-gray-900 mt-1">{(viewingProduct as any).vendor_name}</p>
+              </div>
+            )}
 
             <div className="mt-6 flex justify-end">
               <Button
@@ -1195,10 +1793,83 @@ export default function InventoryPage() {
           productCode={trackingProduct.code}
           onClose={() => {
             setTrackingProduct(null);
-            // Refresh products to get updated tracking_status
+            // Refresh products to get updated size_tracking_map
             fetchProducts();
           }}
         />
+      )}
+      {/* Vendor Details Change Confirm Dialog */}
+      {showVendorConfirmDialog && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg max-w-md w-full p-6">
+            <h3 className="text-lg font-bold text-gray-900 mb-2">Update Vendor Details?</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              You've changed some details for vendor "<strong>{selectedVendor?.name}</strong>". Do you want to update their record?
+            </p>
+            <div className="space-y-2 mb-6 bg-gray-50 rounded-lg p-3">
+              {vendorConfirmDiff.map((d, i) => (
+                <div key={i} className="text-sm">
+                  <span className="font-medium text-gray-700">{d.field}:</span>{' '}
+                  <span className="line-through text-red-500">{d.old}</span>
+                  {' → '}
+                  <span className="text-green-700 font-medium">{d.new}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  // Revert vendor form to saved values and stay on page
+                  if (selectedVendor) {
+                    setVendorFormData({
+                      name: selectedVendor.name,
+                      phone: selectedVendor.phone,
+                      address: selectedVendor.address || '',
+                      gst_number: selectedVendor.gst_number || '',
+                      pan_number: selectedVendor.pan_number || '',
+                      notes: selectedVendor.notes || '',
+                    });
+                  }
+                  setShowVendorConfirmDialog(false);
+                  setPendingSubmitData(null);
+                  toast.info('Vendor details reverted. Review and submit when ready.');
+                }}
+                className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Keep Old Details
+              </button>
+              <button
+                onClick={async () => {
+                  setShowVendorConfirmDialog(false);
+                  try {
+                    // Update vendor then submit product
+                    if (selectedVendor) {
+                      await vendorsApi.update(selectedVendor.id, {
+                        name: vendorFormData.name.trim(),
+                        phone: vendorFormData.phone.trim(),
+                        address: vendorFormData.address.trim() || undefined,
+                        gst_number: vendorFormData.gst_number.trim() || undefined,
+                        pan_number: vendorFormData.pan_number.trim() || undefined,
+                        notes: vendorFormData.notes.trim() || undefined,
+                      });
+                    }
+                    if (pendingSubmitData) {
+                      pendingSubmitData.vendor_id = selectedVendor?.id || null;
+                      await submitProduct(pendingSubmitData);
+                    }
+                  } catch (error: any) {
+                    handleSubmitError(error);
+                  } finally {
+                    setPendingSubmitData(null);
+                  }
+                }}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium"
+              >
+                Update & Continue
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

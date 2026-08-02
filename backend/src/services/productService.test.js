@@ -68,6 +68,34 @@ describe('ProductService', () => {
       expect(products.length).toBeGreaterThanOrEqual(1);
       expect(products.every(p => p.category === 'test-category')).toBe(true);
     });
+
+    it('should include vendor_name via LEFT JOIN', async () => {
+      const vendorRes = await pool.query(
+        `INSERT INTO vendors (name, phone) VALUES ($1, $2) RETURNING id`,
+        ['TEST-PROD-LISTVENDOR', '9988776655']
+      );
+      const vendorId = vendorRes.rows[0].id;
+
+      await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, vendor_id, status)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        ['TEST-PROD-WITH-V', 'Product With Vendor', 10000, 5000, vendorId, 'available']
+      );
+
+      const products = await productService.getProducts({ search: 'TEST-PROD-WITH-V' });
+      expect(products.length).toBeGreaterThanOrEqual(1);
+      expect(products[0].vendor_name).toBe('TEST-PROD-LISTVENDOR');
+
+      // Cleanup
+      await pool.query(`DELETE FROM products WHERE code = 'TEST-PROD-WITH-V'`);
+      await pool.query(`DELETE FROM vendors WHERE id = $1`, [vendorId]);
+    });
+
+    it('should return null vendor_name when product has no vendor', async () => {
+      const products = await productService.getProducts({ search: 'TEST-PROD-001' });
+      expect(products.length).toBeGreaterThanOrEqual(1);
+      expect(products[0].vendor_name).toBeNull();
+    });
   });
 
   describe('getProductById', () => {
@@ -106,7 +134,7 @@ describe('ProductService', () => {
         security_deposit: 5000,
         category: 'test',
         gender: 'unisex',
-        size: 'M',
+        available_sizes: ['M'],
         description: 'Test description',
       };
 
@@ -116,6 +144,7 @@ describe('ProductService', () => {
       expect(product.name).toBe('Test New Product');
       expect(product.rent).toBe(10000);
       expect(product.status).toBe('available');
+      expect(product.available_sizes).toEqual(['M']);
     });
 
     it('should create a product with image', async () => {
@@ -133,19 +162,107 @@ describe('ProductService', () => {
       expect(product.image).toBe('/uploads/test-image.jpg');
     });
 
-    it('should throw error for duplicate product code', async () => {
+    it('should throw DUPLICATE_CODE error when code matches', async () => {
       const productData = {
         name: 'Test Product',
         code: 'TEST-PROD-DUP',
+        available_sizes: ['M'],
         rent: 10000,
         security_deposit: 5000
       };
 
       await productService.createProduct(productData);
 
-      await expect(productService.createProduct(productData))
-        .rejects
-        .toThrow();
+      const err = await productService.createProduct({
+        name: 'Test Product',
+        code: 'TEST-PROD-DUP',
+        available_sizes: ['L'],
+        rent: 10000,
+        security_deposit: 5000
+      }).catch(e => e);
+      expect(err.code).toBe('DUPLICATE_CODE');
+    });
+
+    it('should throw DUPLICATE_CODE error for sizeless duplicate', async () => {
+      await productService.createProduct({
+        name: 'Test Product',
+        code: 'TEST-PROD-DUP-NULLSIZE',
+        available_sizes: null,
+        rent: 10000,
+        security_deposit: 5000
+      });
+
+      const err = await productService.createProduct({
+        name: 'Test Product',
+        code: 'TEST-PROD-DUP-NULLSIZE',
+        available_sizes: null,
+        rent: 10000,
+        security_deposit: 5000
+      }).catch(e => e);
+      expect(err.code).toBe('DUPLICATE_CODE');
+    });
+
+    it('should create a product with available_sizes array', async () => {
+      const product = await productService.createProduct({
+        name: 'Test Multi Size',
+        code: 'TEST-PROD-MULTI-SZ',
+        available_sizes: ['S', 'M', 'L', 'XL'],
+        rent: 10000,
+        security_deposit: 5000
+      });
+
+      expect(product.available_sizes).toEqual(['S', 'M', 'L', 'XL']);
+      expect(product.rents_by_size).toEqual({ S: 10000, M: 10000, L: 10000, XL: 10000 });
+    });
+
+    it('should create a product with rent_overrides and compute rents_by_size', async () => {
+      const product = await productService.createProduct({
+        name: 'Test Override',
+        code: 'TEST-PROD-OVERRIDE',
+        available_sizes: ['36', '38', '44'],
+        rent: 1200,
+        rent_overrides: { '44': 1500 },
+        security_deposit: 5000
+      });
+
+      expect(product.rents_by_size).toEqual({ '36': 1200, '38': 1200, '44': 1500 });
+      // rent_overrides should NOT be in the response
+      expect(product.rent_overrides).toBeUndefined();
+    });
+
+    it('should create a sizeless product with null available_sizes', async () => {
+      const product = await productService.createProduct({
+        name: 'Test Jewellery',
+        code: 'TEST-PROD-JEWEL',
+        available_sizes: null,
+        rent: 5000,
+        security_deposit: 2000
+      });
+
+      expect(product.available_sizes).toBeNull();
+      expect(product.rents_by_size).toBeNull();
+    });
+
+    it('should create a product linked to a vendor', async () => {
+      // Create a vendor first
+      const vendorRes = await pool.query(
+        `INSERT INTO vendors (name, phone) VALUES ($1, $2) RETURNING id`,
+        ['TEST-PROD-VENDOR', '1234567890']
+      );
+      const vendorId = vendorRes.rows[0].id;
+
+      const product = await productService.createProduct({
+        name: 'Test Product',
+        code: 'TEST-PROD-WITH-VENDOR',
+        rent: 10000,
+        security_deposit: 5000,
+        vendor_id: vendorId,
+      });
+
+      expect(product.vendor_id).toBe(vendorId);
+
+      // Cleanup vendor
+      await pool.query(`DELETE FROM vendors WHERE id = $1`, [vendorId]);
     });
   });
 
@@ -174,6 +291,88 @@ describe('ProductService', () => {
       expect(product.name).toBe('Updated Name');
       expect(product.rent).toBe(15000);
       expect(product.category).toBe('updated-category');
+    });
+
+    it('should update available_sizes to add a new size', async () => {
+      // First set initial sizes
+      await productService.updateProduct(testProductId, {
+        name: 'Original Name',
+        code: 'TEST-PROD-UPD-001',
+        rent: 10000,
+        security_deposit: 5000,
+        available_sizes: ['36', '38'],
+      });
+
+      // Now add a size
+      const product = await productService.updateProduct(testProductId, {
+        name: 'Original Name',
+        code: 'TEST-PROD-UPD-001',
+        rent: 10000,
+        security_deposit: 5000,
+        available_sizes: ['36', '38', '40'],
+      });
+
+      expect(product.available_sizes).toEqual(['36', '38', '40']);
+      expect(product.rents_by_size).toEqual({ '36': 10000, '38': 10000, '40': 10000 });
+    });
+
+    it('should update rent_overrides and reflect in rents_by_size', async () => {
+      const product = await productService.updateProduct(testProductId, {
+        name: 'Original Name',
+        code: 'TEST-PROD-UPD-001',
+        rent: 1200,
+        security_deposit: 5000,
+        available_sizes: ['36', '38', '44'],
+        rent_overrides: { '44': 1500 },
+      });
+
+      expect(product.rents_by_size).toEqual({ '36': 1200, '38': 1200, '44': 1500 });
+      expect(product.rent_overrides).toBeUndefined();
+    });
+
+    it('should update vendor_id on a product', async () => {
+      const vendorRes = await pool.query(
+        `INSERT INTO vendors (name, phone) VALUES ($1, $2) RETURNING id`,
+        ['TEST-PROD-UPD-VENDOR', '9876543210']
+      );
+      const vendorId = vendorRes.rows[0].id;
+
+      const product = await productService.updateProduct(testProductId, {
+        name: 'Updated Name',
+        code: 'TEST-PROD-UPD-001',
+        rent: 15000,
+        security_deposit: 7500,
+        vendor_id: vendorId,
+      });
+
+      expect(product.vendor_id).toBe(vendorId);
+
+      // Cleanup vendor
+      await pool.query(`DELETE FROM vendors WHERE id = $1`, [vendorId]);
+    });
+
+    it('should allow clearing vendor_id (set to null)', async () => {
+      // First assign a vendor
+      const vendorRes = await pool.query(
+        `INSERT INTO vendors (name, phone) VALUES ($1, $2) RETURNING id`,
+        ['TEST-PROD-UPD-VENDOR2', '1111222233']
+      );
+      const vendorId = vendorRes.rows[0].id;
+      await pool.query(`UPDATE products SET vendor_id = $1 WHERE id = $2`, [vendorId, testProductId]);
+
+      // Now clear the vendor
+      const product = await productService.updateProduct(testProductId, {
+        name: 'Updated Name',
+        code: 'TEST-PROD-UPD-001',
+        rent: 15000,
+        security_deposit: 7500,
+        vendor_id: null,
+      });
+
+      expect(product.vendor_id).toBeNull();
+
+      // Cleanup vendor
+      await pool.query(`DELETE FROM vendors WHERE id = $1`, [vendorId]);
     });
 
     it('should throw error if security_deposit is missing', async () => {

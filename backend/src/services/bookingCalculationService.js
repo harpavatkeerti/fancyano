@@ -6,6 +6,7 @@
 
 const discountCalculator = require('../utils/discountCalculator');
 const pool = require('../database/connection');
+const { ProductService } = require('./productService');
 
 class BookingCalculationService {
   /**
@@ -15,7 +16,7 @@ class BookingCalculationService {
    */
   async fetchProductDetails(productIds) {
     const result = await pool.query(
-      'SELECT id, name, code, rent, security_deposit FROM products WHERE id = ANY($1)',
+      'SELECT id, name, code, rent, security_deposit, rent_overrides FROM products WHERE id = ANY($1)',
       [productIds]
     );
 
@@ -43,7 +44,7 @@ class BookingCalculationService {
         throw new Error(`Product with id ${productInput.id} not found`);
       }
 
-      const rent = product.rent || 0;
+      const rent = ProductService.getProductRent(product, productInput.size || null);
       const securityDeposit = product.security_deposit || 0;
 
       // Calculate effective rent with discount using centralized calculator

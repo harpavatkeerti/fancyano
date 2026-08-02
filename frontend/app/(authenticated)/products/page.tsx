@@ -295,6 +295,15 @@ export default function ProductsPage() {
                   <h3 className="font-semibold text-gray-900 mb-1 line-clamp-2">
                     {product.name}
                   </h3>
+                  {product.available_sizes && product.available_sizes.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {product.available_sizes.map((sz: string) => (
+                        <span key={sz} className="px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 text-gray-600 rounded">
+                          {sz}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <p className="text-xs text-gray-600 mb-1">
                     {(product as any).gender ? `For ${(product as any).gender}` : ''}
                   </p>

@@ -3,6 +3,7 @@ import { createApiClient, ApiConfig } from './client';
 import { createProductsApi } from './products';
 import { createBookingsApi } from './bookings';
 import { createUsersApi } from './users';
+import { createVendorsApi } from './vendors';
 import { createPaymentTransactionsApi } from './paymentTransactions';
 import { createAvailabilityApi } from './availability';
 import { createLifecycleApi } from './lifecycle';
@@ -20,6 +21,7 @@ export interface Api {
   products: ReturnType<typeof createProductsApi>;
   bookings: ReturnType<typeof createBookingsApi>;
   users: ReturnType<typeof createUsersApi>;
+  vendors: ReturnType<typeof createVendorsApi>;
   paymentTransactions: ReturnType<typeof createPaymentTransactionsApi>;
   availability: ReturnType<typeof createAvailabilityApi>;
   lifecycle: ReturnType<typeof createLifecycleApi>;
@@ -42,6 +44,7 @@ export function createApi(config: ApiConfig): Api {
     products: createProductsApi(apiClient),
     bookings: createBookingsApi(apiClient),
     users: createUsersApi(apiClient),
+    vendors: createVendorsApi(apiClient),
     paymentTransactions: createPaymentTransactionsApi(apiClient),
     availability: createAvailabilityApi(apiClient),
     lifecycle: createLifecycleApi(apiClient),
@@ -62,6 +65,7 @@ export * from './client';
 export * from './products';
 export * from './bookings';
 export * from './users';
+export * from './vendors';
 export * from './paymentTransactions';
 export * from './availability';
 export * from './lifecycle';

@@ -82,6 +82,9 @@ export default function BookingsPage() {
   const [lastProductDates, setLastProductDates] = useState<{ from: string; to: string } | null>(null);
   const [showDateConfirmModal, setShowDateConfirmModal] = useState(false);
   const [pendingProduct, setPendingProduct] = useState<any>(null);
+  // Size selection for add-product flow (when product has available_sizes)
+  const [showSizeSelectModal, setShowSizeSelectModal] = useState(false);
+  const [sizeSelectProduct, setSizeSelectProduct] = useState<Product | null>(null);
   const [phoneNumberError, setPhoneNumberError] = useState('');
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [productSearchCode, setProductSearchCode] = useState('');
@@ -356,9 +359,9 @@ export default function BookingsPage() {
   }
 
   // Fetch bookings for a specific product to check availability
-  async function fetchProductBookings(productId: number) {
+  async function fetchProductBookings(productId: number, size?: string | null) {
     try {
-      const response = await bookingsApi.getByProductId(productId);
+      const response = await bookingsApi.getByProductId(productId, size || undefined);
       const bookingsData = response.data || [];
       setProductBookings(prev => ({
         ...prev,
@@ -391,7 +394,7 @@ export default function BookingsPage() {
     const products = Array.isArray(booking.products) ? booking.products : [];
     for (const product of products) {
       try {
-        const response = await bookingsApi.getByProductId(product.id);
+        const response = await bookingsApi.getByProductId(product.id, product.size || undefined);
         // Filter out the current booking's dates and format for DateRangePicker
         const bookings = (response.data || []).filter((b: any) => b.id !== booking.id).map((b: any) => ({
           booked_from: b.booked_from,
@@ -614,6 +617,18 @@ export default function BookingsPage() {
   }
 
   async function handleAddProduct(product: Product) {
+    // If product has available_sizes, show size selector first
+    if (product.available_sizes && product.available_sizes.length > 0) {
+      setSizeSelectProduct(product);
+      setShowSizeSelectModal(true);
+      return;
+    }
+
+    // Sizeless product — add directly
+    await addProductWithSize(product, null);
+  }
+
+  async function addProductWithSize(product: Product, size: string | null) {
     // Fetch availability for this product FIRST
     await fetchProductBookings(product.id);
 
@@ -624,7 +639,7 @@ export default function BookingsPage() {
         id: product.id,
         name: product.name,
         code: product.code,
-        size: product.size,
+        size: size,
         rent: product.rent,
       });
       setShowDateConfirmModal(true);
@@ -636,7 +651,7 @@ export default function BookingsPage() {
           id: product.id,
           name: product.name,
           code: product.code,
-          size: product.size,
+          size: size,
           rent: product.rent,
           booked_from: '',
           booked_to: '',
@@ -1611,7 +1626,7 @@ export default function BookingsPage() {
                             <div>
                               <h4 className="font-semibold text-gray-900">{product.name}</h4>
                               <p className="text-xs text-gray-600 mt-1">
-                                <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {product.code}</span>
+                                <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {product.code}{product.size ? ` · ${product.size}` : ''}</span>
                               </p>
                               <p className="text-xs text-gray-500 mt-1">
                                 Current: {product.booked_from ? new Date(product.booked_from).toLocaleDateString('en-GB') : 'N/A'} - {product.booked_to ? new Date(product.booked_to).toLocaleDateString('en-GB') : 'N/A'}
@@ -1904,6 +1919,44 @@ export default function BookingsPage() {
         )
       }
 
+      {/* Size Selection Modal — shown when adding a sized product */}
+      {showSizeSelectModal && sizeSelectProduct && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
+          <div className="bg-white rounded-lg p-6 max-w-md mx-4 shadow-xl">
+            <h3 className="text-xl font-bold mb-2 text-gray-900">Select Size</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Choose a size for <strong>{sizeSelectProduct.name}</strong> ({sizeSelectProduct.code})
+            </p>
+            <div className="flex flex-wrap gap-2 mb-6">
+              {sizeSelectProduct.available_sizes!.map((sz: string) => (
+                <button
+                  key={sz}
+                  onClick={async () => {
+                    setShowSizeSelectModal(false);
+                    const product = sizeSelectProduct;
+                    setSizeSelectProduct(null);
+                    await addProductWithSize(product, sz);
+                    toast.success(`${product.name} (Size ${sz}) added!`);
+                  }}
+                  className="px-5 py-2.5 rounded-full text-sm font-medium border-2 bg-white text-gray-700 border-gray-300 hover:bg-red-600 hover:text-white hover:border-red-600 transition-all duration-200"
+                >
+                  {sz}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                setShowSizeSelectModal(false);
+                setSizeSelectProduct(null);
+              }}
+              className="w-full py-2 text-gray-500 hover:text-gray-700 text-sm font-medium"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* QR Scanner Modal */}
       {
         showQRScanner && (
@@ -2097,10 +2150,8 @@ export default function BookingsPage() {
                                       <span className="px-2 py-0.5 bg-orange-100 text-orange-800 rounded-full text-xs font-semibold">🔄 Exchanged</span>
                                     )}
                                   </div>
-                                  <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span></p>
-                                  {product.size && (
-                                    <p className="text-sm text-gray-600">Size: <span className="font-semibold">{product.size}</span></p>
-                                  )}
+                                  <p className="text-sm text-gray-600 mt-1">Code: <span className="font-mono font-semibold">{product.code || 'N/A'}</span>{product.size && <span className="ml-2">· Size: <span className="font-semibold">{product.size}</span></span>}</p>
+
                                   {product.rent && (
                                     <p className="text-sm text-gray-600">Rate: <span className="font-semibold text-green-600">₹{Math.floor(product.rent)}/day</span></p>
                                   )}
@@ -2270,7 +2321,7 @@ export default function BookingsPage() {
                               <div className="flex flex-col items-start">
                                 {/* Product Code Badge */}
                                 <span className="text-xs font-bold text-pink-700 bg-pink-100 px-2 py-0.5 rounded mb-1">
-                                  {product.code}
+                                  {product.code}{product.size ? ` · ${product.size}` : ''}
                                 </span>
                                 <h3 className="text-lg font-semibold text-gray-800 flex items-center">
                                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1 text-pink-600">

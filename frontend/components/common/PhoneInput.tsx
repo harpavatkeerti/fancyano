@@ -91,7 +91,6 @@ export default function PhoneInput({
     event.stopPropagation();
     onCountryCodeChange(isoCode);
     setError('');
-    onValueChange('');
     setIsOpen(false);
     setSearchQuery('');
   };

@@ -12,6 +12,7 @@ import type { User } from '@/lib/api';
 
 interface CartItem {
   product: any;
+  size: string | null;
   dateFrom: string;
   dateTo: string;
   specialNotes: string;
@@ -182,6 +183,7 @@ export default function CartPage() {
         const response = await bookingsApi.getPreview({
           products: cartItems.map(item => ({
             id: item.product.id,
+            size: item.size || null,
             discountType: item.discountType || null,
             discountValue: item.discountValue || 0
           })),
@@ -254,8 +256,8 @@ export default function CartPage() {
       }
 
       try {
-        // Fetch current bookings for this product
-        const response = await bookingsApi.getByProductId(item.product.id);
+        // Fetch current bookings for this product (filtered by size if applicable)
+        const response = await bookingsApi.getByProductId(item.product.id, item.size || undefined);
         const bookings = response.data || [];
 
         const fromDate = new Date(item.dateFrom);
@@ -280,10 +282,12 @@ export default function CartPage() {
           }
         }
 
-        // Check for duplicate products in cart with overlapping dates
+        // Check for duplicate products in cart with overlapping dates (same product+size)
         for (const otherItem of cartItems) {
           if (otherItem === item) continue;
           if (otherItem.product.id !== item.product.id) continue;
+          // Only consider overlap if same size (or both sizeless)
+          if ((otherItem.size || null) !== (item.size || null)) continue;
           if (!otherItem.dateFrom || !otherItem.dateTo) continue;
 
           const otherFrom = new Date(otherItem.dateFrom);
@@ -293,7 +297,7 @@ export default function CartPage() {
 
           if (fromDate <= otherTo && toDate >= otherFrom) {
             errors.push(
-              `${item.product.name} (${item.product.code || 'N/A'}): Duplicate in cart with overlapping dates (${new Date(otherItem.dateFrom).toLocaleDateString('en-GB')} to ${new Date(otherItem.dateTo).toLocaleDateString('en-GB')})`
+              `${item.product.name} (${item.product.code || 'N/A'}${item.size ? ` / ${item.size}` : ''}): Duplicate in cart with overlapping dates (${new Date(otherItem.dateFrom).toLocaleDateString('en-GB')} to ${new Date(otherItem.dateTo).toLocaleDateString('en-GB')})`
             );
           }
         }
@@ -490,6 +494,7 @@ export default function CartPage() {
 
       const products = cartItems.map(item => ({
         product_id: item.product.id,
+        size: item.size || null,
         date_from: item.dateFrom,
         date_to: item.dateTo
       }));
@@ -593,6 +598,7 @@ export default function CartPage() {
           id: item.product.id,
           booked_from: item.dateFrom,
           booked_to: item.dateTo,
+          size: item.size || null,
           discountType: item.discountType || null,
           discountValue: item.discountValue || 0
         })),
@@ -713,13 +719,16 @@ export default function CartPage() {
                   <div className="mb-1">
                     <h3 className="font-semibold text-gray-900 text-lg">{item.product.name}</h3>
                     {item.product.code && (
-                      <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {item.product.code}</p>
+                      <p className="text-xs text-gray-500 font-mono mt-0.5">
+                        Code: {item.product.code}
+                        {item.size && <span className="ml-2 px-1.5 py-0.5 bg-gray-100 rounded text-gray-700 font-sans font-medium">Size: {item.size}</span>}
+                      </p>
                     )}
                   </div>
                   <div className="text-sm text-gray-600 mt-1">
                     {(() => {
                       // Use backend preview if available
-                      const previewProduct = bookingPreview?.products?.find((p: any) => p.id === item.product.id);
+                      const previewProduct = bookingPreview?.products?.find((p: any) => p.id === item.product.id && (!item.size || p.size === item.size));
                       if (previewProduct) {
                         const hasDiscount = previewProduct.discount_amount > 0;
                         return (
@@ -743,10 +752,12 @@ export default function CartPage() {
                           </div>
                         );
                       }
-                      // Fallback display (before preview loads)
+                      // Fallback display (before preview loads) — use size-specific rent if available
+                      const rentsBySize = item.product.rents_by_size || {};
+                      const displayRent = (item.size && rentsBySize[item.size]) ? rentsBySize[item.size] : item.product.rent;
                       return (
                         <div>
-                          <span>₹{Math.floor(item.product.rent || 0)}</span>
+                          <span>₹{Math.floor(displayRent || 0)}</span>
                           {item.product.security_deposit > 0 && (
                             <p className="text-xs text-gray-500 mt-0.5">Security: ₹{Math.floor(item.product.security_deposit).toLocaleString('en-IN')}</p>
                           )}

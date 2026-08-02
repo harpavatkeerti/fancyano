@@ -53,8 +53,11 @@ router.post('/', async (req, res) => {
     const product = await productService.createProduct(productData);
     res.status(201).json(product);
   } catch (error) {
-    if (error.code === '23505') { // Unique violation
-      return res.status(409).json({ error: 'Product code already exists' });
+    if (error.code === 'DUPLICATE_CODE') {
+      return res.status(409).json({ error: error.message, hint: 'duplicate_code' });
+    }
+    if (error.code === '23505') { // DB safety net
+      return res.status(409).json({ error: 'A product with this code already exists' });
     }
     console.error('❌ Error creating product:', error);
     res.status(500).json({ error: 'Failed to create product', details: error.message });
@@ -64,7 +67,7 @@ router.post('/', async (req, res) => {
 // PUT update product details
 router.put('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = parseInt(req.params.id);
     const productData = req.body;
 
     const product = await productService.updateProduct(id, productData);
@@ -76,8 +79,11 @@ router.put('/:id', async (req, res) => {
     if (error.message === 'security_deposit is required') {
       return res.status(400).json({ error: error.message });
     }
-    if (error.code === '23505') {
-      return res.status(409).json({ error: 'Product code already exists' });
+    if (error.code === 'DUPLICATE_CODE') {
+      return res.status(409).json({ error: error.message, hint: 'duplicate_code' });
+    }
+    if (error.code === '23505') { // DB safety net
+      return res.status(409).json({ error: 'A product with this code already exists' });
     }
     console.error('Error updating product:', error);
     res.status(500).json({ error: 'Failed to update product' });

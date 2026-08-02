@@ -3,17 +3,19 @@ const router = express.Router();
 const productLifecycleService = require('../services/productLifecycleService');
 const chargeAccountingService = require('../services/chargeAccountingService');
 const bookingService = require('../services/bookingService');
+const bookingCalculationService = require('../services/bookingCalculationService');
+const { ProductService } = require('../services/productService');
 const checkSalesmanPermission = require('../middleware/checkSalesmanPermission');
 
 // GET exchange eligibility check for a booking product
 router.get('/eligibility/:booking_product_id', async (req, res) => {
   try {
     const { booking_product_id } = req.params;
-    
+
     const eligibility = await productLifecycleService.validateExchangeEligibility(
       parseInt(booking_product_id)
     );
-    
+
     res.json(eligibility);
   } catch (error) {
     console.error('Error checking exchange eligibility:', error);
@@ -26,21 +28,21 @@ router.get('/preview/:old_booking_product_id', async (req, res) => {
   try {
     const { old_booking_product_id } = req.params;
     const { new_product_id, additional_product_ids } = req.query;
-    
+
     if (!new_product_id) {
       return res.status(400).json({ error: 'new_product_id query parameter is required' });
     }
-    
-    const additionalIds = additional_product_ids 
-      ? additional_product_ids.split(',').map(id => parseInt(id)) 
+
+    const additionalIds = additional_product_ids
+      ? additional_product_ids.split(',').map(id => parseInt(id))
       : [];
-    
+
     const preview = await productLifecycleService.calculateExchangePreview(
       parseInt(old_booking_product_id),
       parseInt(new_product_id),
       additionalIds
     );
-    
+
     res.json(preview);
   } catch (error) {
     console.error('Error calculating exchange preview:', error);
@@ -53,7 +55,7 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
   try {
     const {
       old_booking_product_id,
-      new_product_ids, // Array of { product_id, booked_from, booked_to, rent, security_deposit }
+      new_product_ids, // Array of { product_id, booked_from, booked_to }
       exchange_penalty,
       downgrade_penalty,
       exchange_reason,
@@ -64,13 +66,13 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
       payment_notes,
       payment_recorded_by
     } = req.body;
-    
+
     if (!old_booking_product_id || !new_product_ids || !Array.isArray(new_product_ids) || new_product_ids.length === 0) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'old_booking_product_id and new_product_ids array are required',
-        example: { 
-          old_booking_product_id: 1, 
-          new_product_ids: [{ product_id: 2, booked_from: '2024-01-01', booked_to: '2024-01-05', rent: 500, security_deposit: 200 }],
+        example: {
+          old_booking_product_id: 1,
+          new_product_ids: [{ product_id: 2, booked_from: '2024-01-01', booked_to: '2024-01-05' }],
           exchange_penalty: 100,
           downgrade_penalty: 50
         }
@@ -87,15 +89,27 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
         });
       }
     }
-    
+
+    // Look up rent and security_deposit from DB (same pattern as booking creation route)
+    const productIds = new_product_ids.map(p => p.product_id);
+    const productMap = await bookingCalculationService.fetchProductDetails(productIds);
+
     // Map snake_case API fields to camelCase expected by service
-    const mappedProducts = new_product_ids.map(p => ({
-      productId: p.product_id,
-      bookedFrom: p.booked_from,
-      bookedTo: p.booked_to,
-      rent: p.rent,
-      securityDeposit: p.security_deposit,
-    }));
+    const mappedProducts = new_product_ids.map(p => {
+      const productDetails = productMap[p.product_id];
+      if (!productDetails) {
+        throw new Error(`Product with id ${p.product_id} not found`);
+      }
+      const size = p.size || null;
+      return {
+        productId: p.product_id,
+        bookedFrom: p.booked_from,
+        bookedTo: p.booked_to,
+        rent: ProductService.getProductRent(productDetails, size),
+        securityDeposit: productDetails.security_deposit,
+        size,
+      };
+    });
 
     // Perform exchange (with optional atomic payment)
     const result = await productLifecycleService.exchangeProduct(
@@ -110,7 +124,7 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
         notes: payment_notes
       }
     );
-    
+
     res.json({
       message: 'Product exchange completed successfully',
       exchange_details: result
@@ -129,15 +143,15 @@ router.get('/penalty-suggestion/:booking_product_id', async (req, res) => {
   try {
     const { booking_product_id } = req.params;
     const { new_product_rent } = req.query;
-    
+
     if (!new_product_rent) {
       return res.status(400).json({ error: 'new_product_rent query parameter is required' });
     }
-    
+
     const suggestion = await productLifecycleService.getExchangePenaltySuggestion(
       parseInt(booking_product_id),
     );
-    
+
     res.json(suggestion);
   } catch (error) {
     if (error.message === 'Booking product not found') {

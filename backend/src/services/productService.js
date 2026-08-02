@@ -23,16 +23,19 @@ class ProductService {
     const { search, category, includeArchived } = filters;
     let query = `
       SELECT p.*,
-             lt.tracking_status,
-             lt.booking_id AS tracking_booking_id
+             lt.size_tracking_map,
+             v.name AS vendor_name
       FROM products p
       LEFT JOIN LATERAL (
-        SELECT tracking_status, booking_id
-        FROM product_tracking
-        WHERE product_id = p.id
-        ORDER BY created_at DESC
-        LIMIT 1
+        SELECT json_object_agg(sub.size, sub.tracking_status) AS size_tracking_map
+        FROM (
+          SELECT DISTINCT ON (size) size, tracking_status
+          FROM product_tracking
+          WHERE product_id = p.id
+          ORDER BY size, created_at DESC
+        ) sub
       ) lt ON true
+      LEFT JOIN vendors v ON v.id = p.vendor_id
       WHERE 1=1`;
     const params = [];
     let paramCount = 0;
@@ -59,7 +62,7 @@ class ProductService {
     query += ' ORDER BY p.id DESC';
 
     const result = await pool.query(query, params);
-    return result.rows.map(product => this._parseProductImages(product));
+    return result.rows.map(product => this._formatProduct(product));
   }
 
 
@@ -69,13 +72,30 @@ class ProductService {
    * @returns {Promise<Object>} - Product details
    */
   async getProductById(productId) {
-    const result = await pool.query('SELECT * FROM products WHERE id = $1', [productId]);
+    const result = await pool.query(
+      `SELECT p.*,
+              lt.size_tracking_map,
+              v.name AS vendor_name
+       FROM products p
+       LEFT JOIN LATERAL (
+         SELECT json_object_agg(sub.size, sub.tracking_status) AS size_tracking_map
+         FROM (
+           SELECT DISTINCT ON (size) size, tracking_status
+           FROM product_tracking
+           WHERE product_id = p.id
+           ORDER BY size, created_at DESC
+         ) sub
+       ) lt ON true
+       LEFT JOIN vendors v ON v.id = p.vendor_id
+       WHERE p.id = $1`,
+      [productId]
+    );
 
     if (result.rows.length === 0) {
       throw new Error('Product not found');
     }
 
-    return this._parseProductImages(result.rows[0]);
+    return this._formatProduct(result.rows[0]);
   }
 
   /**
@@ -92,11 +112,26 @@ class ProductService {
       security_deposit,
       category,
       gender,
-      size,
+      available_sizes,
+      rent_overrides,
       description,
       image,
-      images
+      images,
+      vendor_id,
     } = productData;
+
+    // ── Authoritative uniqueness check: code only ────────────────────────
+    const dupCheck = await pool.query(
+      `SELECT id FROM products
+       WHERE LOWER(code) = LOWER($1)
+       AND status != 'archived'`,
+      [code]
+    );
+    if (dupCheck.rows.length > 0) {
+      const err = new Error(`A product with code "${code}" already exists`);
+      err.code = 'DUPLICATE_CODE';
+      throw err;
+    }
 
     // Process images
     const imageData = await this._processImages(images, image, code);
@@ -104,8 +139,8 @@ class ProductService {
     const result = await pool.query(
       `INSERT INTO products 
         (name, code, purchase_price, rent, security_deposit, 
-         category, gender, size, description, status, image) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) 
+         category, gender, available_sizes, rent_overrides, description, status, image, vendor_id) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
        RETURNING *`,
       [
         name,
@@ -115,14 +150,16 @@ class ProductService {
         security_deposit || 0,
         category || null,
         gender || null,
-        size || null,
+        available_sizes || null,
+        rent_overrides ? JSON.stringify(rent_overrides) : null,
         description || null,
         PRODUCT_STATUS.AVAILABLE,
-        imageData
+        imageData,
+        vendor_id || null
       ]
     );
 
-    return this._parseProductImages(result.rows[0]);
+    return this._formatProduct(result.rows[0]);
   }
 
   /**
@@ -140,10 +177,12 @@ class ProductService {
       security_deposit,
       category,
       gender,
-      size,
+      available_sizes,
+      rent_overrides,
       description,
       image,
-      images
+      images,
+      vendor_id,
     } = productData;
 
     if (security_deposit === undefined || security_deposit === null) {
@@ -157,9 +196,58 @@ class ProductService {
       throw new Error('Product not found');
     }
 
-    // Delete old images if new images are provided
-    if (images || image) {
-      await this._deleteOldImages(existingProduct.rows[0].image);
+    // Smart image deletion: only delete files that were removed from the images list.
+    // Avoid deleting images the user is still keeping (they'll be passed as existing /uploads/ paths).
+    if (images !== undefined || image !== undefined) {
+      const oldRaw = existingProduct.rows[0].image;
+      let oldImages = [];
+      if (oldRaw) {
+        try {
+          const parsed = JSON.parse(oldRaw);
+          oldImages = Array.isArray(parsed) ? parsed : [oldRaw];
+        } catch (e) {
+          oldImages = [oldRaw];
+        }
+      }
+
+      // Build the set of server paths the user wants to KEEP.
+      // Normalize absolute URLs → relative paths for comparison.
+      const normalizeToPath = (url) => {
+        if (!url) return null;
+        // Strip any http://host:port prefix, keep from /uploads/ onwards
+        const match = String(url).match(/(\/uploads\/.*)/);
+        return match ? match[1] : url;
+      };
+
+      const incomingImages = Array.isArray(images) ? images : (image ? [image] : []);
+      const keptPaths = new Set(
+        incomingImages
+          .filter(img => img && !String(img).startsWith('data:image'))
+          .map(normalizeToPath)
+          .filter(Boolean)
+      );
+
+      // Delete only images that are gone from the new list
+      for (const oldImg of oldImages) {
+        const oldPath = normalizeToPath(oldImg);
+        if (oldPath && oldPath.startsWith('/uploads/') && !keptPaths.has(oldPath)) {
+          await imageStorage.deleteImage(oldPath);
+        }
+      }
+    }
+
+    // ── Authoritative uniqueness check: code only — exclude self ────────
+    const dupCheck = await pool.query(
+      `SELECT id FROM products
+       WHERE LOWER(code) = LOWER($1)
+       AND id != $2
+       AND status != 'archived'`,
+      [code, productId]
+    );
+    if (dupCheck.rows.length > 0) {
+      const err = new Error(`A product with code "${code}" already exists`);
+      err.code = 'DUPLICATE_CODE';
+      throw err;
     }
 
     // Process new images
@@ -169,9 +257,10 @@ class ProductService {
       `UPDATE products 
        SET name = $1, code = $2, purchase_price = $3, rent = $4, 
            security_deposit = $5, category = $6, gender = $7, 
-           size = $8, description = $9, image = $10, 
+           available_sizes = $8, rent_overrides = $9, description = $10, image = $11, 
+           vendor_id = $12,
            updated_at = CURRENT_TIMESTAMP 
-       WHERE id = $11 
+       WHERE id = $13 
        RETURNING *`,
       [
         name,
@@ -181,14 +270,16 @@ class ProductService {
         security_deposit || 0,
         category,
         gender,
-        size,
+        available_sizes || null,
+        rent_overrides ? JSON.stringify(rent_overrides) : null,
         description,
         imageData,
+        vendor_id !== undefined ? (vendor_id || null) : null,
         productId
       ]
     );
 
-    return this._parseProductImages(result.rows[0]);
+    return this._formatProduct(result.rows[0]);
   }
 
   /**
@@ -256,6 +347,45 @@ class ProductService {
   }
 
   /**
+   * Get the effective rent for a product at a given size.
+   * Single source of truth for rent resolution.
+   * @param {Object} product - Product object with rent and rent_overrides
+   * @param {string|null} size - Size string, or null/undefined for sizeless products
+   * @returns {number} - The effective rent
+   */
+  static getProductRent(product, size) {
+    if (size && product.rent_overrides && product.rent_overrides[size] !== undefined) {
+      return product.rent_overrides[size];
+    }
+    return product.rent;
+  }
+
+  /**
+   * Format product for API response:
+   * - Parse images from JSON
+   * - Compute rents_by_size from available_sizes + getProductRent
+   * - Strip rent_overrides (backend-internal)
+   * @private
+   */
+  _formatProduct(product) {
+    // Parse images
+    this._parseProductImages(product);
+
+    // Compute rents_by_size
+    let rents_by_size = null;
+    if (product.available_sizes && Array.isArray(product.available_sizes) && product.available_sizes.length > 0) {
+      rents_by_size = product.available_sizes.reduce((map, size) => {
+        map[size] = ProductService.getProductRent(product, size);
+        return map;
+      }, {});
+    }
+
+    // Return a new object without rent_overrides (backend-internal)
+    const { rent_overrides, ...rest } = product;
+    return { ...rest, rents_by_size };
+  }
+
+  /**
    * Parse product images from JSON if needed
    * @private
    */
@@ -280,6 +410,13 @@ class ProductService {
   async _processImages(images, image, code) {
     let imageData = null;
 
+    // Helper: normalize any full http://host/uploads/... URL to a relative /uploads/... path
+    const toServerPath = (url) => {
+      if (!url || typeof url !== 'string') return url;
+      const match = url.match(/(\/uploads\/.*)/);
+      return match ? match[1] : url;
+    };
+
     // If images array is provided, process multiple images
     if (images && Array.isArray(images) && images.length > 0) {
       const imageUrls = [];
@@ -293,8 +430,8 @@ class ProductService {
           const imageUrl = await imageStorage.saveImage(img, code);
           imageUrls.push(imageUrl);
         } else if (img && typeof img === 'string') {
-          // Already a URL/path, keep it
-          imageUrls.push(img);
+          // Already a URL/path — normalize to a relative server path before storing
+          imageUrls.push(toServerPath(img));
         }
       }
       imageData = imageUrls.length > 0 ? JSON.stringify(imageUrls) : null;
@@ -304,8 +441,8 @@ class ProductService {
       if (image.startsWith('data:image')) {
         imageData = await imageStorage.saveImage(image, code);
       } else if (typeof image === 'string') {
-        // Already a URL/path
-        imageData = image;
+        // Already a URL/path — normalize before storing
+        imageData = toServerPath(image);
       }
     }
 
@@ -342,3 +479,4 @@ class ProductService {
 
 module.exports = new ProductService();
 module.exports.PRODUCT_STATUS = PRODUCT_STATUS;
+module.exports.ProductService = ProductService;

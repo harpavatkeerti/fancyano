@@ -33,13 +33,14 @@ export function createBookingsApi(api: AxiosInstance) {
       api.get<PaymentSummary>(`/payment-transactions/summary/${id}`),
     
     // Get bookings for a product (for calendar/availability display)
-    getByProductId: (productId: number) => 
-      api.get<Booking[]>(`/bookings/by-product/${productId}`),
+    getByProductId: (productId: number, size?: string) => 
+      api.get<Booking[]>(`/bookings/by-product/${productId}`, { params: size ? { size } : undefined }),
     
     // Preview booking calculation (no data persistence)
     getPreview: (data: {
       products: Array<{
         id: number;
+        size?: string;
         discountType?: 'percentage' | 'fixed' | null;
         discountValue?: number;
       }>;

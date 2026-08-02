@@ -20,8 +20,8 @@ describe('ChargeAccountingService', () => {
 
       // Create test product
       const productResult = await client.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product', 'TEST001', 'Test', 'M', 500, 1000)
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product', 'TEST001', 'Test', '{M}', 500, 1000)
          RETURNING id`
       );
       const productId = productResult.rows[0].id;

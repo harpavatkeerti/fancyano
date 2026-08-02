@@ -27,7 +27,7 @@ describe('BookingCalculationService', () => {
       const result = await bookingCalculationService.fetchProductDetails([1, 2]);
 
       expect(pool.query).toHaveBeenCalledWith(
-        'SELECT id, name, code, rent, security_deposit FROM products WHERE id = ANY($1)',
+        'SELECT id, name, code, rent, security_deposit, rent_overrides FROM products WHERE id = ANY($1)',
         [[1, 2]]
       );
       expect(result).toEqual({

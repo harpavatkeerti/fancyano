@@ -22,6 +22,7 @@ export default function ProductDetailPage() {
   const [isAvailable, setIsAvailable] = useState(true);
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [availabilityError, setAvailabilityError] = useState<string>('');
+  const [selectedSize, setSelectedSize] = useState<string | null>(null);
   
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
@@ -31,9 +32,21 @@ export default function ProductDetailPage() {
   useEffect(() => {
     if (params.id) {
       fetchProduct();
-      fetchProductBookings();
     }
   }, [params.id]);
+
+  // Re-fetch bookings when size changes (or on initial load for sizeless products)
+  useEffect(() => {
+    if (params.id && product) {
+      const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+      if (!hasSizes || selectedSize) {
+        fetchProductBookings(selectedSize);
+      } else {
+        // Clear bookings until a size is selected
+        setProductBookings([]);
+      }
+    }
+  }, [params.id, product, selectedSize]);
 
   // Reset image index when product changes
   useEffect(() => {
@@ -77,9 +90,9 @@ export default function ProductDetailPage() {
     }
   }
 
-  async function fetchProductBookings() {
+  async function fetchProductBookings(size?: string | null) {
     try {
-      const response = await bookingsApi.getByProductId(Number(params.id));
+      const response = await bookingsApi.getByProductId(Number(params.id), size || undefined);
       setProductBookings(response.data || []);
     } catch (error) {
       console.error('Error fetching product bookings:', error);
@@ -242,6 +255,13 @@ export default function ProductDetailPage() {
       return false;
     }
 
+    // Require size for sized products
+    const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+    if (hasSizes && !selectedSize) {
+      toast.warning('Please select a size first');
+      return false;
+    }
+
     // Check availability before adding to cart
     const availability = checkAvailability(dateFrom, dateTo, product.id);
     
@@ -275,6 +295,7 @@ export default function ProductDetailPage() {
     // Add to cart logic
     const cartItem = {
       product,
+      size: selectedSize,
       dateFrom,
       dateTo,
       specialNotes: '', // Will be set on cart page
@@ -444,19 +465,71 @@ export default function ProductDetailPage() {
 
         {/* Product Info */}
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">{product.name}</h1>
+          <h1 className="text-3xl font-bold text-gray-900 mb-1">{product.name}</h1>
+          <p className="text-sm text-gray-500 mb-3">
+            Code: {product.code}
+            {selectedSize && <span className="ml-2">· Size: {selectedSize}</span>}
+          </p>
           <p className="text-2xl font-bold text-gray-900 mb-1">
-            ₹{Math.floor(product.rent)} / Day
+            {(() => {
+              const rentsBySize = (product as any).rents_by_size || {};
+              const displayRent = (selectedSize && rentsBySize[selectedSize]) ? rentsBySize[selectedSize] : product.rent;
+              return `₹${Math.floor(displayRent)} / Day`;
+            })()}
           </p>
           {(product as any).security_deposit > 0 && (
             <p className="text-gray-600 text-base mb-1">
               Security Deposit: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}
             </p>
           )}
-          <p className="text-gray-600 mb-6">
-            Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
-            incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam
-          </p>
+          {product.description && (
+            <p className="text-gray-600 mb-6">{product.description}</p>
+          )}
+          {!product.description && (
+            <p className="text-gray-600 mb-6">
+              Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor
+              incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam
+            </p>
+          )}
+
+          {/* Size Selector — shown for sized products */}
+          {product.available_sizes && product.available_sizes.length > 0 && (
+            <div className="mb-6">
+              <h3 className="text-sm font-semibold text-gray-700 mb-3">Select Size *</h3>
+              <div className="flex flex-wrap gap-2">
+                {product.available_sizes.map(sz => {
+                  const isSelected = selectedSize === sz;
+                  const rentsBySize = (product as any).rents_by_size || {};
+                  const sizeRent = rentsBySize[sz] ?? product.rent;
+                  const isOverridden = sizeRent !== product.rent;
+                  return (
+                    <button
+                      key={sz}
+                      onClick={() => {
+                        setSelectedSize(sz);
+                        // Reset dates when size changes
+                        setDateFrom('');
+                        setDateTo('');
+                        setAvailabilityError('');
+                        setIsAvailable(true);
+                      }}
+                      className={`px-4 py-2 rounded-full text-sm font-medium border-2 transition-all duration-200 ${
+                        isSelected
+                          ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                          : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
+                      }`}
+                    >
+                      {sz}
+                      {isOverridden && <span className="text-xs ml-1 opacity-70">₹{sizeRent}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              {!selectedSize && (
+                <p className="text-xs text-orange-600 mt-2">⚠️ Please select a size to check availability</p>
+              )}
+            </div>
+          )}
 
           {/* Color Selection */}
           <div className="mb-6">
@@ -475,56 +548,69 @@ export default function ProductDetailPage() {
             </div>
           </div>
 
-          {/* Check Availability */}
-          <div className="mb-6">
-            <h3 className="text-sm font-semibold text-gray-700 mb-3">Check Availability</h3>
-            <DateRangePicker
-              label=""
-              startDate={dateFrom}
-              endDate={dateTo}
-              onStartDateChange={(date) => setDateFrom(date)}
-              onEndDateChange={(date) => setDateTo(date)}
-              bookings={productBookings}
-              productName={product.name}
-              minDate={new Date().toISOString().split('T')[0]}
-            />
-            {availabilityError && (
-              <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <div className="flex items-start">
-                  <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                  <p className="text-sm text-red-700 font-medium">{availabilityError}</p>
-                </div>
+          {/* Check Availability — disabled until size is selected for sized products */}
+          {(() => {
+            const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+            const sizeReady = !hasSizes || !!selectedSize;
+            return (
+              <div className={`mb-6 ${!sizeReady ? 'opacity-50 pointer-events-none' : ''}`}>
+                <h3 className="text-sm font-semibold text-gray-700 mb-3">Check Availability</h3>
+                <DateRangePicker
+                  label=""
+                  startDate={dateFrom}
+                  endDate={dateTo}
+                  onStartDateChange={(date) => setDateFrom(date)}
+                  onEndDateChange={(date) => setDateTo(date)}
+                  bookings={productBookings}
+                  productName={product.name}
+                  minDate={new Date().toISOString().split('T')[0]}
+                />
+                {availabilityError && (
+                  <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
+                    <div className="flex items-start">
+                      <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <p className="text-sm text-red-700 font-medium">{availabilityError}</p>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            );
+          })()}
 
           {/* Action Buttons */}
-          <div className="flex gap-4">
-            <button
-              onClick={handleAddToCart}
-              disabled={!isAvailable || !dateFrom || !dateTo}
-              className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
-                !isAvailable || !dateFrom || !dateTo
-                  ? 'text-gray-400 bg-gray-100 border-2 border-gray-300 cursor-not-allowed'
-                  : 'text-red-600 bg-white border-2 border-red-600 hover:bg-red-50'
-              }`}
-            >
-              🛒 ADD TO CART
-            </button>
-            <button
-              onClick={handleBookNow}
-              disabled={!isAvailable || !dateFrom || !dateTo}
-              className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
-                !isAvailable || !dateFrom || !dateTo
-                  ? 'text-gray-400 bg-gray-300 cursor-not-allowed'
-                  : 'text-white bg-red-600 hover:bg-red-700'
-              }`}
-            >
-              BOOK NOW
-            </button>
-          </div>
+          {(() => {
+            const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+            const needsSize = hasSizes && !selectedSize;
+            const isDisabled = !isAvailable || !dateFrom || !dateTo || needsSize;
+            return (
+              <div className="flex gap-4">
+                <button
+                  onClick={handleAddToCart}
+                  disabled={isDisabled}
+                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
+                    isDisabled
+                      ? 'text-gray-400 bg-gray-100 border-2 border-gray-300 cursor-not-allowed'
+                      : 'text-red-600 bg-white border-2 border-red-600 hover:bg-red-50'
+                  }`}
+                >
+                  🛒 ADD TO CART
+                </button>
+                <button
+                  onClick={handleBookNow}
+                  disabled={isDisabled}
+                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
+                    isDisabled
+                      ? 'text-gray-400 bg-gray-300 cursor-not-allowed'
+                      : 'text-white bg-red-600 hover:bg-red-700'
+                  }`}
+                >
+                  BOOK NOW
+                </button>
+              </div>
+            );
+          })()}
         </div>
       </div>
 

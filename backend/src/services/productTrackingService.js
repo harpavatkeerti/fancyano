@@ -27,7 +27,6 @@ const TRACKING_SELECT = `
     pt.*,
     p.name AS product_name,
     p.code AS product_code_ref,
-    p.size AS product_size,
     usr.name AS customer_name,
     b.id     AS booking_ref_id
   FROM product_tracking pt
@@ -43,13 +42,12 @@ async function listTrackingRecords() {
   return result.rows;
 }
 
-async function getCurrentTrackingForProduct(productId) {
+async function getCurrentTrackingForProduct(productId, size = null) {
   const result = await pool.query(`
     SELECT
       pt.*,
       p.name AS product_name,
       p.code AS product_code_ref,
-      p.size AS product_size,
       usr.name AS customer_name,
       b.id     AS booking_ref_id
     FROM product_tracking pt
@@ -57,9 +55,10 @@ async function getCurrentTrackingForProduct(productId) {
     LEFT JOIN bookings b   ON pt.booking_id  = b.id
     LEFT JOIN users    usr ON b.user_id      = usr.id
     WHERE pt.product_id = $1
+      AND ($2::text IS NULL OR pt.size = $2)
     ORDER BY pt.created_at DESC, pt.id DESC
     LIMIT 1`,
-    [productId]
+    [productId, size]
   );
   // null means no history — product is implicitly in_house
   return result.rows[0] || null;
@@ -85,7 +84,7 @@ async function getTrackingHistoryByProductCode(code) {
   return result.rows;
 }
 
-async function createTrackingRecord({ product_id, booking_id, product_code, tracking_status, notes }) {
+async function createTrackingRecord({ product_id, booking_id, product_code, tracking_status, notes, size }) {
   if (!product_code || !tracking_status) {
     const err = new Error('product_code and tracking_status are required');
     err.status = 400;
@@ -110,10 +109,10 @@ async function createTrackingRecord({ product_id, booking_id, product_code, trac
 
   const result = await pool.query(
     `INSERT INTO product_tracking
-       (product_id, booking_id, product_code, tracking_status, notes)
-     VALUES ($1, $2, $3, $4, $5)
+       (product_id, booking_id, product_code, tracking_status, notes, size)
+     VALUES ($1, $2, $3, $4, $5, $6)
      RETURNING *`,
-    [product_id, booking_id || null, product_code, tracking_status, notes || null]
+    [product_id, booking_id || null, product_code, tracking_status, notes || null, size || null]
   );
   return result.rows[0];
 }
@@ -124,13 +123,12 @@ async function listActiveTrackingRecords() {
       latest.*,
       p.name  AS product_name,
       p.code  AS product_code_ref,
-      p.size  AS product_size,
       usr.name AS customer_name,
       b.id     AS booking_ref_id
     FROM (
-      SELECT DISTINCT ON (product_id) *
+      SELECT DISTINCT ON (product_id, size) *
       FROM product_tracking
-      ORDER BY product_id, created_at DESC, id DESC
+      ORDER BY product_id, size, created_at DESC, id DESC
     ) latest
     LEFT JOIN products p   ON latest.product_id  = p.id
     LEFT JOIN bookings b   ON latest.booking_id  = b.id
@@ -143,7 +141,7 @@ async function listActiveTrackingRecords() {
 
 async function returnTrackingRecord(id, notes) {
   const existing = await pool.query(
-    'SELECT product_id, product_code FROM product_tracking WHERE id = $1',
+    'SELECT product_id, product_code, size FROM product_tracking WHERE id = $1',
     [id]
   );
   if (existing.rows.length === 0) {
@@ -152,15 +150,15 @@ async function returnTrackingRecord(id, notes) {
     throw err;
   }
 
-  const { product_id, product_code } = existing.rows[0];
+  const { product_id, product_code, size } = existing.rows[0];
 
   // Insert a new in_house row — preserves full audit history
   const result = await pool.query(
     `INSERT INTO product_tracking
-       (product_id, product_code, tracking_status, notes)
-     VALUES ($1, $2, 'in_house', $3)
+       (product_id, product_code, tracking_status, notes, size)
+     VALUES ($1, $2, 'in_house', $3, $4)
      RETURNING *`,
-    [product_id, product_code, notes || null]
+    [product_id, product_code, notes || null, size || null]
   );
   return result.rows[0];
 }

@@ -36,17 +36,17 @@ describe('ProductLifecycleService', () => {
       
       // Create test products (ON CONFLICT handles leftover data from previous runs)
       const product1 = await client.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product 1', 'TEST001', 'Test', 'M', 500, 1000)
-         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product 1', 'TEST001', 'Test', '{M}', 500, 1000)
+         ON CONFLICT ((LOWER(code))) WHERE status != 'archived' DO UPDATE SET name = EXCLUDED.name
          RETURNING id`
       );
       testProductId1 = product1.rows[0].id;
       
       const product2 = await client.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product 2', 'TEST002', 'Test', 'L', 600, 1200)
-         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product 2', 'TEST002', 'Test', '{L}', 600, 1200)
+         ON CONFLICT ((LOWER(code))) WHERE status != 'archived' DO UPDATE SET name = EXCLUDED.name
          RETURNING id`
       );
       testProductId2 = product2.rows[0].id;
@@ -106,7 +106,7 @@ describe('ProductLifecycleService', () => {
       const result = await productLifecycleService.exchangeProduct(
         testBookingProductId,
         [
-          { productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }
+          { productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }
         ],
         'Customer requested different size',
         String(testUserId)
@@ -153,8 +153,8 @@ describe('ProductLifecycleService', () => {
       
       // Create another product for testing
       const product3 = await pool.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product 3', 'TEST003', 'Test', 'XL', 700, 1400)
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product 3', 'TEST003', 'Test', '{XL}', 700, 1400)
          RETURNING id`
       );
       const testProductId3 = product3.rows[0].id;
@@ -162,8 +162,8 @@ describe('ProductLifecycleService', () => {
       const result = await productLifecycleService.exchangeProduct(
         testBookingProductId,
         [
-          { productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 1500, securityDeposit: 600 },
-          { productId: testProductId3, bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 500 }
+          { productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 1500, securityDeposit: 600 },
+          { productId: testProductId3, size: 'XL', bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 500 }
         ],
         'Split into multiple products',
         String(testUserId)
@@ -192,7 +192,7 @@ describe('ProductLifecycleService', () => {
       const result = await productLifecycleService.exchangeProduct(
         testBookingProductId,
         [
-          { productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 500 }
+          { productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 500 }
         ],
         'Downgrade',
         String(testUserId)
@@ -228,7 +228,7 @@ describe('ProductLifecycleService', () => {
       await expect(
         productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', rent: 3000, securityDeposit: 1200 }],
           'Test',
           String(testUserId)
         )
@@ -246,7 +246,7 @@ describe('ProductLifecycleService', () => {
       await expect(
         productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', rent: 3000, securityDeposit: 1200 }],
           'Test',
           String(testUserId)
         )
@@ -257,7 +257,7 @@ describe('ProductLifecycleService', () => {
     test('should create activity log entry', async () => {
       await productLifecycleService.exchangeProduct(
         testBookingProductId,
-        [{ productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
+        [{ productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
         'Test',
         String(testUserId)
       );
@@ -280,9 +280,9 @@ describe('ProductLifecycleService', () => {
     test('should correctly settle exchange finances with payment: no adjustment, penalty paid, new rent funded, pre-existing unchanged', async () => {
       // Create a third product for use as exchange target (testProductId2 is used as the pre-existing product)
       const product3 = await pool.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product 3', 'TEST003', 'Test', 'XL', 700, 1400)
-         ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product 3', 'TEST003', 'Test', '{XL}', 700, 1400)
+         ON CONFLICT ((LOWER(code))) WHERE status != 'archived' DO UPDATE SET name = EXCLUDED.name
          RETURNING id`
       );
       const testProductId3 = product3.rows[0].id;
@@ -324,7 +324,7 @@ describe('ProductLifecycleService', () => {
       // Exchange testBookingProductId (product1) → testProductId3 (not testProductId2, which is already in the booking)
       const result = await productLifecycleService.exchangeProduct(
         testBookingProductId,
-        [{ productId: testProductId3, bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
+        [{ productId: testProductId3, size: 'XL', bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
         'Test exchange with payment',
         String(testUserId),
         { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
@@ -404,7 +404,7 @@ describe('ProductLifecycleService', () => {
         const exchangePayment = 2050;
         await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
           'Financial invariant test',
           String(testUserId),
           { amount: exchangePayment, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
@@ -436,7 +436,7 @@ describe('ProductLifecycleService', () => {
 
         const result = await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 3000, securityDeposit: 1200 }],
           'Zero redistribution test',
           String(testUserId),
           { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
@@ -475,8 +475,8 @@ describe('ProductLifecycleService', () => {
       test('1-to-2 exchange: pool fills highest-rent new product first, remainder to second', async () => {
         await pool.query(`DELETE FROM products WHERE code = 'TEST003'`);
         const product3 = await pool.query(
-          `INSERT INTO products (name, code, category, size, rent, security_deposit)
-           VALUES ('Test Product 3', 'TEST003', 'Test', 'S', 400, 800)
+          `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+           VALUES ('Test Product 3', 'TEST003', 'Test', '{S}', 400, 800)
            RETURNING id`
         );
         const testProductId3 = product3.rows[0].id;
@@ -494,8 +494,8 @@ describe('ProductLifecycleService', () => {
           const result = await productLifecycleService.exchangeProduct(
             testBookingProductId,
             [
-              { productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 1500, securityDeposit: 600 },
-              { productId: testProductId3, bookedFrom: today, bookedTo: in5days, rent: 2500, securityDeposit: 1000 }
+              { productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 1500, securityDeposit: 600 },
+              { productId: testProductId3, size: 'S', bookedFrom: today, bookedTo: in5days, rent: 2500, securityDeposit: 1000 }
             ],
             '1-to-2 exchange sequential fill test',
             String(testUserId),
@@ -543,7 +543,7 @@ describe('ProductLifecycleService', () => {
 
         const result = await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 400 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: today, bookedTo: in5days, rent: 1000, securityDeposit: 400 }],
           'Downgrade to lower rent product',
           String(testUserId),
           { amount: paymentAmount, method: 'Cash', recorded_by: String(testUserId), notes: 'Exchange payment' }
@@ -596,8 +596,8 @@ describe('ProductLifecycleService', () => {
         const blockerBookingId = blocker.rows[0].id;
         await pool.query(
           `INSERT INTO booking_products
-             (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
-           VALUES ($1, $2, 1, $3, $4, 'confirmed', 600, 1200, 600)`,
+             (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent, size)
+           VALUES ($1, $2, 1, $3, $4, 'confirmed', 600, 1200, 600, 'L')`,
           [blockerBookingId, testProductId2, from, to]
         );
 
@@ -605,7 +605,7 @@ describe('ProductLifecycleService', () => {
           await expect(
             productLifecycleService.exchangeProduct(
               testBookingProductId,
-              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              [{ productId: testProductId2, size: 'L', bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
               'Exchange to booked product',
               String(testUserId)
             )
@@ -624,7 +624,7 @@ describe('ProductLifecycleService', () => {
         await expect(
           productLifecycleService.exchangeProduct(
             testBookingProductId,
-            [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+            [{ productId: testProductId2, size: 'L', bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
             'Exchange to free product',
             String(testUserId)
           )
@@ -653,7 +653,7 @@ describe('ProductLifecycleService', () => {
           await expect(
             productLifecycleService.exchangeProduct(
               testBookingProductId,
-              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              [{ productId: testProductId2, size: 'L', bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
               'Exchange past a cancelled overlap',
               String(testUserId)
             )
@@ -675,7 +675,7 @@ describe('ProductLifecycleService', () => {
           await expect(
             productLifecycleService.exchangeProduct(
               testBookingProductId,
-              [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+              [{ productId: testProductId2, size: 'L', bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
               'Exchange to archived product',
               String(testUserId)
             )
@@ -694,7 +694,7 @@ describe('ProductLifecycleService', () => {
 
         const result = await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: from, bookedTo: to, rent: 3000, securityDeposit: 1200 }],
           'Exchange to available product',
           String(testUserId)
         );
@@ -715,7 +715,7 @@ describe('ProductLifecycleService', () => {
 
         await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
           'Date-range recalc test',
           String(testUserId)
         );
@@ -737,7 +737,7 @@ describe('ProductLifecycleService', () => {
         // Exchange testProductId1 (booked oldFrom–oldTo) for testProductId2 (booked newFrom–newTo)
         await productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: newFrom, bookedTo: newTo, rent: 3000, securityDeposit: 1200 }],
           'Free-up old dates test',
           String(testUserId)
         );
@@ -1388,7 +1388,7 @@ describe('ProductLifecycleService', () => {
       const t5 = new Date(Date.now() + 5 * 864e5).toISOString().slice(0, 10);
       const result = await productLifecycleService.exchangeProduct(
         testBookingProductId,
-        [{ productId: testProductId2, bookedFrom: t, bookedTo: t5, rent: 3000, securityDeposit: 1200 }],
+        [{ productId: testProductId2, size: 'L', bookedFrom: t, bookedTo: t5, rent: 3000, securityDeposit: 1200 }],
         'Test exchange with no security',
         String(testUserId)
       );
@@ -1409,7 +1409,7 @@ describe('ProductLifecycleService', () => {
       await expect(
         productLifecycleService.exchangeProduct(
           testBookingProductId,
-          [{ productId: testProductId2, bookedFrom: t, bookedTo: t5, rent: 3000, securityDeposit: 1200 }],
+          [{ productId: testProductId2, size: 'L', bookedFrom: t, bookedTo: t5, rent: 3000, securityDeposit: 1200 }],
           'Test exchange with security paid',
           String(testUserId)
         )
@@ -1533,8 +1533,8 @@ describe('ProductLifecycleService', () => {
     test('should calculate exchange preview for downgrade', async () => {
       // Create a product with lower rent
       const lowRentProduct = await pool.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Low Rent Product', 'TEST-LOW', 'Test', 'S', 1000, 500)
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Low Rent Product', 'TEST-LOW', 'Test', '{S}', 1000, 500)
          RETURNING id`
       );
       const lowRentProductId = lowRentProduct.rows[0].id;
@@ -1560,8 +1560,8 @@ describe('ProductLifecycleService', () => {
     test('should include additional products in calculations (one-to-many)', async () => {
       // Create another product for testing
       const product3 = await pool.query(
-        `INSERT INTO products (name, code, category, size, rent, security_deposit)
-         VALUES ('Test Product 3', 'TEST003', 'Test', 'XL', 700, 1400)
+        `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+         VALUES ('Test Product 3', 'TEST003', 'Test', '{XL}', 700, 1400)
          RETURNING id`
       );
       const testProductId3 = product3.rows[0].id;

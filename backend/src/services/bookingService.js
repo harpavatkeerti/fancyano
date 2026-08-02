@@ -90,6 +90,7 @@ class BookingService {
           bookedTo,
           rent,
           securityDeposit,
+          size,
           quantity = 1,
           measurements,
           specialRequirements,
@@ -110,7 +111,7 @@ class BookingService {
 
         // Guard: reject if the product is archived
         const productInfo = await client.query(
-          'SELECT name, code, status FROM products WHERE id = $1',
+          'SELECT name, code, status, available_sizes FROM products WHERE id = $1',
           [productId]
         );
         if (!productInfo.rows[0]) {
@@ -120,8 +121,16 @@ class BookingService {
           throw new Error(`Product "${productInfo.rows[0].name}" (${productInfo.rows[0].code}) is archived and cannot be booked`);
         }
 
-        // Guard: reject if the product is already booked over this date range
-        await checkProductAvailability(productId, bookedFrom, bookedTo, { client });
+        // Guard: validate size against product's available_sizes
+        const availableSizes = productInfo.rows[0].available_sizes;
+        if (availableSizes && availableSizes.length > 0) {
+          if (!size || !availableSizes.includes(size)) {
+            throw new Error(`Invalid size "${size}" for product "${productInfo.rows[0].name}". Available: ${availableSizes.join(', ')}`);
+          }
+        }
+
+        // Guard: reject if the product is already booked over this date range (for this size)
+        await checkProductAvailability(productId, bookedFrom, bookedTo, { client, size: size || null });
 
         // Create booking_product entry with discount information
         const bpResult = await client.query(
@@ -129,8 +138,8 @@ class BookingService {
             booking_id, product_id, quantity, booked_from, booked_to,
             status, rent, security_deposit, effective_rent,
             discount_amount, discount_type,
-            measurements, special_requirements
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            measurements, special_requirements, size
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
           RETURNING id`,
           [
             bookingId,
@@ -145,7 +154,8 @@ class BookingService {
             discountAmount,       // Store calculated discount amount
             discountType || null, // Store discount type (null if no discount)
             measurements ? JSON.stringify(measurements) : null,
-            specialRequirements || null
+            specialRequirements || null,
+            size || null
           ]
         );
 
@@ -654,7 +664,8 @@ class BookingService {
             'measurements', bp.measurements,
             'special_requirements', bp.special_requirements,
             'picked_up_at', bp.picked_up_at,
-            'returned_at', bp.returned_at
+            'returned_at', bp.returned_at,
+            'size', bp.size
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
        FROM bookings b
@@ -734,7 +745,8 @@ class BookingService {
             'security_deposit', bp.security_deposit,
             'status', bp.status,
             'booked_from', bp.booked_from,
-            'booked_to', bp.booked_to
+            'booked_to', bp.booked_to,
+            'size', bp.size
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
       FROM bookings b
@@ -992,8 +1004,14 @@ class BookingService {
    * Get bookings for a specific product (for availability checking)
    * Returns only active bookings with non-cancelled/exchanged products
    */
-  async getBookingsByProductId(productId) {
+  async getBookingsByProductId(productId, size = null) {
     try {
+      const params = [productId];
+      let sizeClause = '';
+      if (size) {
+        sizeClause = ' AND bp.size = $2';
+        params.push(size);
+      }
       const result = await pool.query(
         `SELECT b.id, b.booking_date, b.status,
                 json_build_object(
@@ -1002,15 +1020,15 @@ class BookingService {
                   'phone', u.phone
                 ) AS user,
                 bp.id AS booking_product_id, bp.status AS product_status,
-                bp.booked_from, bp.booked_to
+                bp.booked_from, bp.booked_to, bp.size
          FROM bookings b
          JOIN users u ON b.user_id = u.id
          JOIN booking_products bp ON bp.booking_id = b.id
          WHERE bp.product_id = $1
            AND bp.status NOT IN ('cancelled', 'exchanged', 'completed')
-           AND b.status NOT IN ('cancelled')
+           AND b.status NOT IN ('cancelled')${sizeClause}
          ORDER BY bp.booked_from`,
-        [productId]
+        params
       );
       return result.rows;
     } catch (error) {
