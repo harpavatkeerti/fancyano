@@ -44,8 +44,7 @@ export default function SettingsPage() {
     discount_allowed: false,
   });
 
-  const [lateCharges, setLateCharges] = useState<string>('');
-  const [exchangeCharges, setExchangeCharges] = useState<string>('');
+
 
   // Late fee policy (from rental_policies table)
   const [lateFeePolicy, setLateFeePolicy] = useState<any>(null);
@@ -122,21 +121,7 @@ export default function SettingsPage() {
         }
       } catch { }
 
-      // Fetch late charges
-      try {
-        const lateData = await settingsApi.getByKey('late_charges_per_day');
-        if (lateData.data?.setting_value) {
-          setLateCharges(lateData.data.setting_value);
-        }
-      } catch { }
 
-      // Fetch exchange charges
-      try {
-        const exchangeData = await settingsApi.getByKey('exchange_charges');
-        if (exchangeData.data?.setting_value) {
-          setExchangeCharges(exchangeData.data.setting_value);
-        }
-      } catch { }
 
       // Fetch payment QR codes (rent + security)
       try {
@@ -234,20 +219,7 @@ export default function SettingsPage() {
           category: 'permissions',
           description: 'Salesman permissions settings',
         },
-        {
-          key: 'late_charges_per_day',
-          value: lateCharges,
-          type: 'number',
-          category: 'charges',
-          description: 'Late charges per day per apparel',
-        },
-        {
-          key: 'exchange_charges',
-          value: exchangeCharges,
-          type: 'number',
-          category: 'charges',
-          description: 'Exchange charges',
-        },
+
         {
           key: 'payment_qr_rent',
           value: rentQrCode,
@@ -556,47 +528,6 @@ export default function SettingsPage() {
                   }`}
               />
             </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Charges Section */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-800 mb-5">Charges</h2>
-        <div className="space-y-5">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Late Charges per Day per Apparel*
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">₹</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={lateCharges}
-                onChange={(e) => setLateCharges(e.target.value)}
-                placeholder="Enter"
-                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Exchange Charges*
-            </label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-600 font-medium">₹</span>
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                value={exchangeCharges}
-                onChange={(e) => setExchangeCharges(e.target.value)}
-                placeholder="Enter"
-                className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
-              />
-            </div>
           </div>
         </div>
       </div>
