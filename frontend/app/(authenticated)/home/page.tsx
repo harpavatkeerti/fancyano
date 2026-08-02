@@ -115,28 +115,38 @@ export default function SalesmanHome() {
           </Link>
         </div>
         <div className="grid grid-cols-4 gap-6">
-          {filteredProducts.slice(0, 4).map((product, idx) => (
-            <Link
-              key={product.id}
-              href={`/products/${product.id}`}
-              className="group"
-            >
-              <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-3 bg-gray-100">
-                {getImageUrl((product as any).image) ? (
-                  <img
-                    src={getImageUrl((product as any).image)!}
-                    alt={product.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                    <span className="text-4xl">👔</span>
-                  </div>
-                )}
-              </div>
-              <h3 className="font-semibold text-gray-900">{product.name}</h3>
-            </Link>
-          ))}
+          {(() => {
+            // Deduplicate by product name — show one card per unique name
+            const seen = new Set<string>();
+            const uniqueCategories = filteredProducts.filter((p) => {
+              if (seen.has(p.name)) return false;
+              seen.add(p.name);
+              return true;
+            }).slice(0, 4);
+
+            return uniqueCategories.map((product) => (
+              <Link
+                key={product.name}
+                href={`/products?search=${encodeURIComponent(product.name)}`}
+                className="group"
+              >
+                <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-3 bg-gray-100">
+                  {getImageUrl((product as any).image) ? (
+                    <img
+                      src={getImageUrl((product as any).image)!}
+                      alt={product.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center bg-gray-200">
+                      <span className="text-4xl">👔</span>
+                    </div>
+                  )}
+                </div>
+                <h3 className="font-semibold text-gray-900">{product.name}</h3>
+              </Link>
+            ));
+          })()}
         </div>
       </div>
 

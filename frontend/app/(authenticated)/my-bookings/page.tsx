@@ -138,8 +138,11 @@ export default function MyBookingsPage() {
       // Search by Customer Name
       const customerNameMatch = booking.user.name.toLowerCase().includes(searchTerm);
       
-      // Search by Mobile Number (remove country code and search)
-      const phoneMatch = booking.user.phone.replace(/\D/g, '').includes(searchTerm.replace(/\D/g, ''));
+      // Search by Mobile Number (only when search term contains digits)
+      const digitsOnly = searchTerm.replace(/\D/g, '');
+      const phoneMatch = digitsOnly.length > 0
+        ? booking.user.phone.replace(/\D/g, '').includes(digitsOnly)
+        : false;
       
       return bookingIdMatch || customerNameMatch || phoneMatch;
     });
@@ -412,9 +415,9 @@ export default function MyBookingsPage() {
 
       {/* Display appropriate bookings list */}
       {(() => {
-        const displayBookings = (isSearching ? searchResults : bookings)
+        const displayBookings = (isSearching ? searchResults : allBookings)
           .filter(b => statusFilter === 'all' || b.status === statusFilter);
-        const listTitle = isSearching ? 'Search Results' : 'My Bookings';
+        const listTitle = isSearching ? 'Search Results' : 'All Bookings';
         
         return (
           <>
