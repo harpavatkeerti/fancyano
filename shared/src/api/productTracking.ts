@@ -57,10 +57,10 @@ export interface CreateTrackingData {
 export function createProductTrackingApi(api: AxiosInstance) {
   return {
     getAll: () => api.get<ProductTracking[]>('/product-tracking'),
-    getCurrentStatus: (productId: number) =>
-      api.get<ProductTracking>(`/product-tracking/current/${productId}`),
-    getByProductId: (productId: number) =>
-      api.get<ProductTracking[]>(`/product-tracking/product/${productId}`),
+    getCurrentStatus: (productId: number, size?: string | null) =>
+      api.get<ProductTracking>(`/product-tracking/current/${productId}${size ? `?size=${encodeURIComponent(size)}` : ''}`),
+    getByProductId: (productId: number, size?: string | null) =>
+      api.get<ProductTracking[]>(`/product-tracking/product/${productId}${size ? `?size=${encodeURIComponent(size)}` : ''}`),
     getByCode: (code: string) => api.get<ProductTracking[]>(`/product-tracking/code/${code}`),
     create: (data: CreateTrackingData) => api.post<ProductTracking>('/product-tracking', data),
     markReturned: (id: number, notes?: string) =>

@@ -64,12 +64,13 @@ async function getCurrentTrackingForProduct(productId, size = null) {
   return result.rows[0] || null;
 }
 
-async function getTrackingHistoryByProductId(productId) {
+async function getTrackingHistoryByProductId(productId, size = null) {
   const result = await pool.query(
     `${TRACKING_SELECT}
      WHERE pt.product_id = $1
+     AND ($2::text IS NULL OR pt.size = $2)
      ORDER BY pt.created_at DESC`,
-    [productId]
+    [productId, size]
   );
   return result.rows;
 }

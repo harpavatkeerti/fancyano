@@ -13,10 +13,11 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /product-tracking/current/:productId
+// GET /product-tracking/current/:productId?size=XXL
 router.get('/current/:productId', async (req, res) => {
   try {
-    const record = await productTrackingService.getCurrentTrackingForProduct(req.params.productId);
+    const size = req.query.size || null;
+    const record = await productTrackingService.getCurrentTrackingForProduct(req.params.productId, size);
     res.json({ data: record });
   } catch (error) {
     console.error('Error fetching current tracking:', error);
@@ -24,10 +25,11 @@ router.get('/current/:productId', async (req, res) => {
   }
 });
 
-// GET /product-tracking/product/:productId
+// GET /product-tracking/product/:productId?size=XXL
 router.get('/product/:productId', async (req, res) => {
   try {
-    const records = await productTrackingService.getTrackingHistoryByProductId(req.params.productId);
+    const size = req.query.size || null;
+    const records = await productTrackingService.getTrackingHistoryByProductId(req.params.productId, size);
     res.json({ data: records });
   } catch (error) {
     console.error('Error fetching product tracking:', error);

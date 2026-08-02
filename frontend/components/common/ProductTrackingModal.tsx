@@ -32,7 +32,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
     } else if (productCode) {
       searchByCode(productCode);
     }
-  }, [productId, productCode]);
+  }, [productId, productCode, size]);  // re-fetch when size changes
 
   async function fetchProductById(id: number) {
     try {
@@ -49,7 +49,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
 
   async function fetchTrackingHistory(id: number) {
     try {
-      const histResponse = await productTrackingApi.getByProductId(id);
+      const histResponse = await productTrackingApi.getByProductId(id, size);
       let data: ProductTracking[] = [];
       if (histResponse.data && Array.isArray(histResponse.data.data)) {
         data = histResponse.data.data;
@@ -58,8 +58,8 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
       }
       setTrackingHistory(data);
 
-      // Fetch current (latest) record separately
-      const currentResponse = await productTrackingApi.getCurrentStatus(id);
+      // Fetch current (latest) record separately, filtered by size
+      const currentResponse = await productTrackingApi.getCurrentStatus(id, size);
       const current = currentResponse.data?.data ?? null;
       setCurrentRecord(current);
     } catch (error) {
@@ -157,9 +157,9 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
       <div className="bg-white rounded-lg p-6 w-full max-w-3xl my-8 max-h-[90vh] overflow-y-auto">
         {/* Header */}
-        <div className="flex justify-between items-center mb-6">
+        <div className="flex justify-between items-center mb-4">
           <h2 className="text-2xl font-bold text-gray-800">
-            🗺️ Product Tracking{size ? ` · Size ${size}` : ''}
+            🗺️ Product Tracking
           </h2>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-3xl font-bold">
             ×
@@ -178,10 +178,10 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
                 <p className="text-xs text-gray-500 uppercase tracking-wide">Product Code</p>
                 <p className="text-base font-semibold text-gray-900 font-mono">{selectedProduct.code}</p>
               </div>
-              {selectedProduct.size && (
+              {(size || selectedProduct.size) && (
                 <div>
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Size</p>
-                  <p className="text-base font-semibold text-gray-900">{selectedProduct.size}</p>
+                  <p className="text-base font-semibold text-gray-900">{size || selectedProduct.size}</p>
                 </div>
               )}
               <div>

@@ -1,7 +1,7 @@
 'use client';
 
 import { productsApi, bookingsApi, vendorsApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, Vendor } from '@/lib/api';
-import { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   MALE_PRODUCT_TYPES, FEMALE_PRODUCT_TYPES,
   MALE_NUMERIC_SIZES, STANDARD_SIZES, FANCY_COSTUME_SIZES,
@@ -20,10 +20,12 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [addStep, setAddStep] = useState<1 | 2>(1);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
   const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
+  const [trackingSize, setTrackingSize] = useState<string | null>(null);
   const [showQRScanner, setShowQRScanner] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
 
@@ -461,6 +463,7 @@ export default function InventoryPage() {
     setCodeDropdownOpen(false);
     setCodeWrongType(false);
     setShowRentOverrides(false);
+    setAddStep(1);
     if (codeCheckTimerRef.current) clearTimeout(codeCheckTimerRef.current);
     // Reset vendor state
     setSelectedVendor(null);
@@ -809,9 +812,6 @@ export default function InventoryPage() {
                 Category
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                Sizes &amp; Tracking
-              </th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Status
               </th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -823,11 +823,16 @@ export default function InventoryPage() {
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                 Actions
               </th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                Sizes &amp; Tracking
+              </th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredProducts.map((product) => {
               const sizeTrackingMap = product.size_tracking_map || {};
+              // Sizeless products get key '_' in the map (via COALESCE in SQL)
+              const sizelessStatus = sizeTrackingMap['_'] as TrackingStatus | undefined;
               const isOutOfHouse = Object.values(sizeTrackingMap).some(v => v !== 'in_house');
 
               const trackingColorMap: Record<string, string> = {
@@ -839,151 +844,174 @@ export default function InventoryPage() {
                 other_work: 'bg-gray-200 text-gray-800 border-gray-400',
               };
 
+              const sizes = product.available_sizes || [];
+              const hasSizes = sizes.length > 0;
+
               return (
-                <tr
-                  key={product.id}
-                  className={`hover:bg-gray-50 ${isOutOfHouse ? 'bg-orange-50 border-l-4 border-orange-500' : ''}`}
-                >
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {(() => {
-                      // Helper to get first image from array or single image
-                      const getFirstImage = (img: any): string | null => {
-                        if (!img) return null;
-                        if (Array.isArray(img)) {
-                          return img.length > 0 ? img[0] : null;
-                        }
-                        // Try to parse as JSON array
-                        if (typeof img === 'string' && img.startsWith('[')) {
-                          try {
-                            const parsed = JSON.parse(img);
-                            if (Array.isArray(parsed) && parsed.length > 0) {
-                              return parsed[0];
-                            }
-                          } catch (e) {
-                            // Not JSON, treat as single image
+                <React.Fragment key={product.id}>
+                  {/* ── Main product row ── */}
+                  <tr className={`${isOutOfHouse ? 'bg-orange-50 border-l-4 border-orange-500' : 'hover:bg-gray-50'}`}>
+                    {/* Image */}
+                    <td className="px-6 py-4 whitespace-nowrap" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      {(() => {
+                        const getFirstImage = (img: any): string | null => {
+                          if (!img) return null;
+                          if (Array.isArray(img)) return img.length > 0 ? img[0] : null;
+                          if (typeof img === 'string' && img.startsWith('[')) {
+                            try { const parsed = JSON.parse(img); if (Array.isArray(parsed) && parsed.length > 0) return parsed[0]; } catch (e) {}
                           }
-                        }
-                        return img;
-                      };
-
-                      const firstImage = getFirstImage((product as any).image);
-                      const imageUrl = firstImage ? getImageUrl(firstImage) : null;
-
-                      return imageUrl ? (
-                        <img
-                          src={imageUrl}
-                          alt={product.name}
-                          className="w-12 h-12 object-cover rounded-md border border-gray-200"
-                        />
+                          return img;
+                        };
+                        const imageUrl = getFirstImage((product as any).image) ? getImageUrl(getFirstImage((product as any).image)!) : null;
+                        return imageUrl ? (
+                          <img src={imageUrl} alt={product.name} className="w-12 h-12 object-cover rounded-md border border-gray-200" />
+                        ) : (
+                          <div className="w-12 h-12 bg-gray-100 rounded-md flex items-center justify-center border border-gray-200">
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                        );
+                      })()}
+                    </td>
+                    {/* Product Type */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      {product.name}
+                    </td>
+                    {/* Code */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      {product.code}
+                    </td>
+                    {/* Category */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      {(product as any).gender || <span className="text-gray-400">N/A</span>}
+                    </td>
+                    {/* Status */}
+                    <td className="px-6 py-4 whitespace-nowrap" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      {product.status === 'available' ? (
+                        <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">✅ Available</span>
                       ) : (
-                        <div className="w-12 h-12 bg-gray-100 rounded-md flex items-center justify-center border border-gray-200">
-                          <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">🗃️ Archived</span>
+                      )}
+                    </td>
+                    {/* Base Rent */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      ₹{product.rent}
+                    </td>
+                    {/* Availability calendar */}
+                    <td className="px-4 py-4 whitespace-nowrap" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      <DateRangePicker
+                        startDate=""
+                        endDate=""
+                        onStartDateChange={() => { }}
+                        onEndDateChange={() => { }}
+                        bookings={productBookings[product.id] || []}
+                        onOpen={() => fetchProductBookings(product.id)}
+                        compact
+                        label=""
+                        readOnly
+                      />
+                    </td>
+                    {/* Actions */}
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium" rowSpan={hasSizes ? sizes.length + 1 : 1}>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => setViewingProduct(product)}
+                          className="p-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none flex items-center justify-center"
+                          title="View Details"
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
+                            <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
                           </svg>
-                        </div>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                    {product.name}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{product.code}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {(product as any).gender || <span className="text-gray-400">N/A</span>}
-                  </td>
-                  <td className="px-6 py-3">
-                    {/* Sizes & Tracking — circle pills per size */}
-                    {(product.available_sizes && product.available_sizes.length > 0) ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {product.available_sizes.map(sz => {
-                          const ts = sizeTrackingMap[sz] || 'in_house';
-                          const colors = trackingColorMap[ts] || trackingColorMap['in_house'];
-                          const rentsBySize = (product as any).rents_by_size || {};
-                          const sizeRent = rentsBySize[sz] ?? product.rent;
-                          const isOverridden = sizeRent !== product.rent;
+                        </button>
+                        <button
+                          onClick={() => handleEdit(product)}
+                          className="px-3 py-2 text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                        >
+                          Edit
+                        </button>
+                        {/* Single Track button for no-size products */}
+                        {!hasSizes && (
+                          <button
+                            id={`track-btn-${product.id}`}
+                            onClick={() => { setTrackingSize(null); setTrackingProduct(product); }}
+                            className="px-3 py-2 text-indigo-600 hover:text-indigo-900 hover:bg-indigo-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                            title="Track product status"
+                          >
+                            🗺️ Track
+                          </button>
+                        )}
+                        {product.status === 'archived' ? (
+                          <button
+                            onClick={() => handleRestore(product.id)}
+                            className="px-3 py-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                          >
+                            Restore
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleArchive(product.id)}
+                            className="px-3 py-2 text-orange-600 hover:text-orange-900 hover:bg-orange-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
+                          >
+                            Archive
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    {/* Sizes & Tracking — last column */}
+                    <td className="px-6 py-3">
+                      {!hasSizes ? (
+                        (() => {
+                          const st = sizelessStatus || 'in_house';
+                          const colors = trackingColorMap[st] || trackingColorMap['in_house'];
                           return (
-                            <span
-                              key={sz}
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold border ${colors}`}
-                              title={`${sz}: ${TRACKING_STATUS_LABELS[ts as TrackingStatus] || ts}${isOverridden ? ` · ₹${sizeRent}` : ''}`}
-                            >
-                              {sz}
-                              {isOverridden && <span className="text-[10px] opacity-70">₹{sizeRent}</span>}
+                            <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold border ${colors}`}>
+                              {TRACKING_STATUS_LABELS[st as TrackingStatus]}
                             </span>
                           );
-                        })}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400 text-xs">No sizes</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {product.status === 'available' ? (
-                      <span className="px-2 py-1 rounded-full text-xs font-semibold bg-green-100 text-green-800">✅ Available</span>
-                    ) : (
-                      <span className="px-2 py-1 rounded-full text-xs font-semibold bg-gray-100 text-gray-600">🗃️ Archived</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    ₹{product.rent}
-                  </td>
-                  <td className="px-4 py-4 whitespace-nowrap">
-                    <DateRangePicker
-                      startDate=""
-                      endDate=""
-                      onStartDateChange={() => { }}
-                      onEndDateChange={() => { }}
-                      bookings={productBookings[product.id] || []}
-                      onOpen={() => fetchProductBookings(product.id)}
-                      compact
-                      label=""
-                      readOnly
-                    />
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setViewingProduct(product)}
-                        className="p-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none flex items-center justify-center"
-                        title="View Details"
+                        })()
+                      ) : null}
+                    </td>
+                  </tr>
+
+                  {/* ── Per-size sub-rows ── */}
+                  {hasSizes && sizes.map((sz, szIdx) => {
+                    const ts = (sizeTrackingMap[sz] || 'in_house') as TrackingStatus;
+                    const colors = trackingColorMap[ts] || trackingColorMap['in_house'];
+                    const rentsBySize = (product as any).rents_by_size || {};
+                    const sizeRent = rentsBySize[sz] ?? product.rent;
+                    const isOverridden = sizeRent !== product.rent;
+                    const isSzOut = ts !== 'in_house';
+                    return (
+                      <tr
+                        key={`${product.id}-${sz}`}
+                        className={`border-t border-dashed border-gray-100 ${isSzOut ? 'bg-orange-50' : 'bg-gray-50/60'} ${szIdx === sizes.length - 1 ? 'border-b-2 border-b-gray-200' : ''}`}
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                          <path d="M10 12a2 2 0 100-4 2 2 0 000 4z" />
-                          <path fillRule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clipRule="evenodd" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => handleEdit(product)}
-                        className="px-3 py-2 text-blue-600 hover:text-blue-900 hover:bg-blue-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        id={`track-btn-${product.id}`}
-                        onClick={() => setTrackingProduct(product)}
-                        className="px-3 py-2 text-indigo-600 hover:text-indigo-900 hover:bg-indigo-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                        title="Track product status"
-                      >
-                        🗺️ Track
-                      </button>
-                      {product.status === 'archived' ? (
-                        <button
-                          onClick={() => handleRestore(product.id)}
-                          className="px-3 py-2 text-green-600 hover:text-green-900 hover:bg-green-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                        >
-                          Restore
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleArchive(product.id)}
-                          className="px-3 py-2 text-orange-600 hover:text-orange-900 hover:bg-orange-50 rounded-md transition-all duration-200 hover:scale-110 flex items-center justify-center min-w-[60px]"
-                        >
-                          Archive
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                        {/* Single cell for last column: Sizes & Tracking */}
+                        <td className="px-6 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border ${colors}`}>
+                              {sz}
+                              {isOverridden && <span className="text-[10px] opacity-70 ml-0.5">₹{sizeRent}</span>}
+                            </span>
+                            <span className={`text-xs font-medium ${isSzOut ? 'text-orange-700' : 'text-green-700'}`}>
+                              {TRACKING_STATUS_LABELS[ts]}
+                            </span>
+                            <button
+                              id={`track-btn-${product.id}-${sz}`}
+                              onClick={() => { setTrackingSize(sz); setTrackingProduct(product); }}
+                              className={`ml-auto p-1 rounded-md transition-all duration-200 hover:scale-110 ${isSzOut ? 'text-orange-600 hover:bg-orange-100' : 'text-indigo-500 hover:bg-indigo-50'}`}
+                              title={`Track ${sz} — ${TRACKING_STATUS_LABELS[ts]}`}
+                            >
+                              📍
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                 </React.Fragment>
               );
             })}
           </tbody>
@@ -992,572 +1020,539 @@ export default function InventoryPage() {
 
       {/* Add/Edit Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md my-8 mx-4 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold mb-4">
-              {editingProduct ? 'Edit Product' : 'Add Product'}
-            </h2>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              {/* Product Type Selection - First Step */}
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 overflow-y-auto p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl my-8 overflow-hidden">
+
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-8 py-5 border-b border-gray-100">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Product Type*
-                </label>
-                <select
-                  value={formData.name}
-                  onChange={(e) => {
-                    const newName = e.target.value;
-
-                    // Auto-detect gender based on product type
-                    const maleProducts = MALE_PRODUCT_TYPES;
-                    const femaleProducts = FEMALE_PRODUCT_TYPES;
-
-                    let autoGender = '';
-                    if (maleProducts.includes(newName)) {
-                      autoGender = 'Male';
-                    } else if (femaleProducts.includes(newName)) {
-                      autoGender = 'Female';
-                    } else if (newName === 'Artificial Jewelleries') {
-                      autoGender = 'Female'; // Set gender but no size required
-                    }
-                    // For "Other" and other special categories (except Fancy Costumes), gender remains empty and needs to be selected
-
-                    setFormData({ ...formData, name: newName, gender: autoGender, available_sizes: [], rent_overrides: {} });
-                  }}
-                  required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500"
-                >
-
-                  <optgroup label="Male">
-                    <option value="Sherwani">Sherwani</option>
-                    <option value="Indo Western">Indo Western</option>
-                    <option value="Suit">Suit</option>
-                    <option value="Kurta Pajama">Kurta Pajama</option>
-                  </optgroup>
-                  <optgroup label="Female">
-                    <option value="Lehenga">Lehenga</option>
-                    <option value="Girlish Crop Top">Girlish Crop Top</option>
-                    <option value="Gowns">Gowns</option>
-                    <option value="Artificial Jewelleries">Artificial Jewelleries</option>
-                  </optgroup>
-                  <optgroup label="Special Categories">
-                    <option value="Fancy Costumes">Fancy Costumes</option>
-                    <option value="Other">Other</option>
-                  </optgroup>
-                </select>
-              </div>
-
-              {/* Gender Selection - Show for "Other" (optional) */}
-              {formData.name === 'Other' && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Category (Optional)
-                  </label>
-                  <div className="flex space-x-4">
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name="gender"
-                        value="Male"
-                        checked={formData.gender === 'Male'}
-                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, available_sizes: [], rent_overrides: {} })}
-                        className="mr-2"
-                      />
-                      <span className="text-sm">Male</span>
-                    </label>
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name="gender"
-                        value="Female"
-                        checked={formData.gender === 'Female'}
-                        onChange={(e) => setFormData({ ...formData, gender: e.target.value, available_sizes: [], rent_overrides: {} })}
-                        className="mr-2"
-                      />
-                      <span className="text-sm">Female</span>
-                    </label>
-                    <label className="flex items-center">
-                      <input
-                        type="radio"
-                        name="gender"
-                        value=""
-                        checked={formData.gender === ''}
-                        onChange={(e) => setFormData({ ...formData, gender: '', available_sizes: [], rent_overrides: {} })}
-                        className="mr-2"
-                      />
-                      <span className="text-sm">None</span>
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Product Code — enabled only after product type is chosen */}
-              <div ref={codeInputRef} className="relative">
-                <Input
-                  label="Product Code*"
-                  value={formData.code}
-                  disabled={!formData.name}
-                  onChange={(e) => {
-                    const newCode = e.target.value.toUpperCase();
-                    setFormData({ ...formData, code: newCode });
-                    setCodeDropdownOpen(newCode.trim().length >= 1);
-                    setCodeWrongType(false);
-                    checkCodeDuplicate(newCode, editingProduct?.id);
-                  }}
-                  onFocus={() => { if (formData.code.trim()) setCodeDropdownOpen(true); }}
-                  onBlur={() => setTimeout(() => {
-                    setCodeDropdownOpen(false);
-                    const typedCode = formData.code.trim().toUpperCase();
-                    if (typedCode && formData.name) {
-                      const conflict = products.some(
-                        p => p.code.toUpperCase() === typedCode && p.name !== formData.name
-                      );
-                      setCodeWrongType(conflict);
-                      // Auto-fill even when code is typed manually (not from dropdown)
-                      if (!conflict) autofillFromExistingCode(typedCode, formData);
-                    }
-                  }, 150)}
-                  required
-                  placeholder={formData.name ? 'e.g. SHR-001' : 'Select product type first'}
-                />
-                {/* Code autocomplete dropdown */}
-                {codeDropdownOpen && formData.name && (() => {
-                  const q = formData.code.trim().toUpperCase();
-                  const uniqueCodes = [...new Set(
-                    products
-                      .filter(p => p.code.toUpperCase().startsWith(q) && p.code.toUpperCase() !== q)
-                      .map(p => p.code.toUpperCase())
-                  )];
-                  return uniqueCodes.length > 0 ? (
-                    <ul className="absolute z-50 left-0 right-0 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {uniqueCodes.map(code => {
-                        const sameTypeVariants = products.filter(p => p.code.toUpperCase() === code && p.name === formData.name);
-                        const otherTypeVariants = products.filter(p => p.code.toUpperCase() === code && p.name !== formData.name);
-                        const isOtherType = sameTypeVariants.length === 0 && otherTypeVariants.length > 0;
-                        return (
-                          <li
-                            key={code}
-                            onMouseDown={isOtherType ? undefined : () => {
-                              setFormData({ ...formData, code });
-                              setCodeWrongType(false);
-                              checkCodeDuplicate(code, editingProduct?.id);
-                              setCodeDropdownOpen(false);
-                              // Auto-fill shared fields from the first existing variant
-                              autofillFromExistingCode(code, { ...formData, code });
-                            }}
-                            className={`px-3 py-2 flex items-center justify-between text-sm ${isOtherType
-                                ? 'opacity-50 cursor-not-allowed bg-gray-50'
-                                : 'cursor-pointer hover:bg-red-50'
-                              }`}
-                          >
-                            <div>
-                              <span className="font-medium text-gray-800">{code}</span>
-                              {isOtherType && (
-                                <span className="ml-2 text-xs text-gray-400">
-                                  {[...new Set(otherTypeVariants.map(p => p.name))].join(', ')}
-                                </span>
-                              )}
-                            </div>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                  ) : null;
-                })()}
-                {/* Wrong-type code error */}
-                {codeWrongType && (
-                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    This product code is already in use for a different product type.
-                  </p>
-                )}
-                {codeCheckStatus === 'checking' && (
-                  <p className="mt-1 flex items-center gap-1.5 text-xs text-gray-400">
-                    <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                    </svg>
-                    Checking code availability…
-                  </p>
-                )}
-                {codeCheckStatus === 'taken' && !editingProduct && (
-                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    A product with this code already exists.
-                  </p>
-                )}
-                {codeCheckStatus === 'available' && (
-                  <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-green-600">
-                    <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                    </svg>
-                    Product code is available ✓
+                <h2 className="text-2xl font-bold text-gray-900">
+                  {editingProduct ? 'Edit Product' : 'Add Product'}
+                </h2>
+                {!editingProduct && (
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    Step {addStep} of 2 — {addStep === 1 ? 'Product type & code' : 'Product details'}
                   </p>
                 )}
               </div>
+              <button
+                type="button"
+                onClick={() => { setShowAddModal(false); setEditingProduct(null); resetForm(); }}
+                className="text-gray-400 hover:text-gray-600 transition-colors rounded-full p-1 hover:bg-gray-100"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
 
-              {/* Multi-Select Size Pills — shown for all sized product types */}
-              {formData.name && !NO_SIZE_TYPES.includes(formData.name) && (() => {
-                const possibleSizes = getSizesForProduct(formData.name, formData.gender);
-                if (possibleSizes.length === 0) return null;
-                const toggleSize = (sz: string) => {
-                  const current = formData.available_sizes;
-                  const next = current.includes(sz)
-                    ? current.filter(s => s !== sz)
-                    : [...current, sz];
-                  // Also clean up rent_overrides for removed sizes
-                  const newOverrides = { ...formData.rent_overrides };
-                  if (!next.includes(sz)) delete newOverrides[sz];
-                  setFormData({ ...formData, available_sizes: next, rent_overrides: newOverrides });
-                };
-                const selectAll = () => {
-                  setFormData({ ...formData, available_sizes: [...possibleSizes] });
-                };
-                const clearAll = () => {
-                  setFormData({ ...formData, available_sizes: [], rent_overrides: {} });
-                };
-                return (
+            {/* Step indicator (add mode only) */}
+            {!editingProduct && (
+              <div className="flex px-8 pt-4 gap-2">
+                <div className={`h-1 flex-1 rounded-full transition-colors ${addStep >= 1 ? 'bg-red-600' : 'bg-gray-200'}`} />
+                <div className={`h-1 flex-1 rounded-full transition-colors ${addStep >= 2 ? 'bg-red-600' : 'bg-gray-200'}`} />
+              </div>
+            )}
+
+            <form onSubmit={handleSubmit} className="px-8 py-6 space-y-6 max-h-[75vh] overflow-y-auto">
+
+              {/* ── STEP 1 (Add mode): Product Type + Code ── */}
+              {(!editingProduct && addStep === 1) && (
+                <div className="space-y-6">
+                  {/* Product Type grid */}
                   <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="block text-sm font-medium text-gray-700">
-                        Available Sizes{formData.name !== 'Other' ? '*' : ' (Optional)'}
-                      </label>
-                      <div className="flex gap-2">
-                        <button type="button" onClick={selectAll} className="text-xs text-blue-600 hover:text-blue-800">Select All</button>
-                        <button type="button" onClick={clearAll} className="text-xs text-gray-500 hover:text-gray-700">Clear</button>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {possibleSizes.map(sz => {
-                        const isSelected = formData.available_sizes.includes(sz);
-                        return (
-                          <button
-                            key={sz}
-                            type="button"
-                            onClick={() => toggleSize(sz)}
-                            className={`px-3 py-1.5 rounded-full text-sm font-medium border-2 transition-all duration-200 ${isSelected
-                                ? 'bg-red-600 text-white border-red-600 shadow-sm'
-                                : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
-                              }`}
-                          >
-                            {sz}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    {formData.available_sizes.length > 0 && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        {formData.available_sizes.length} size{formData.available_sizes.length > 1 ? 's' : ''} selected
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* Product Images Upload - Multiple Images */}
-              <MultipleImageUpload
-                value={formData.images.length > 0 ? formData.images : (formData.image ? formData.image : [])}
-                onChange={(images) => {
-                  setFormData({
-                    ...formData,
-                    images: images,
-                    image: images.length > 0 ? images[0] : '' // Keep first image for backward compat
-                  });
-                }}
-                label="Product Images (Optional)"
-                maxImages={10}
-              />
-
-              {/* Purchase Price */}
-              <div>
-                <Input
-                  label="Purchase Price (₹)*"
-                  type="number"
-                  step="0.01"
-                  value={formData.purchase_price}
-                  onChange={(e) => handlePurchasePriceChange(e.target.value)}
-                  required
-                  placeholder="Enter purchase price"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Rental price will be auto-calculated based on purchase price
-                </p>
-              </div>
-
-              {/* Rental Information */}
-              <div>
-                <Input
-                  label="Rent per Day (₹)*"
-                  type="number"
-                  step="100"
-                  value={formData.rent}
-                  onChange={(e) => setFormData({ ...formData, rent: e.target.value })}
-                  required
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Auto-calculated (rounded to nearest ₹100). Use arrow keys to adjust by ₹100.
-                </p>
-              </div>
-
-              {/* Rent Overrides — per-size rent for selected sizes */}
-              {formData.available_sizes.length > 0 && (
-                <div>
-                  {!showRentOverrides ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowRentOverrides(true)}
-                      className="text-xs text-blue-600 hover:text-blue-800 underline"
-                    >
-                      Set different rent for specific sizes →
-                    </button>
-                  ) : (
-                    <div className="border border-gray-200 rounded-lg p-3 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-medium text-gray-700">Per-Size Rent Overrides</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Product Type *</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['Sherwani', 'Indo Western', 'Suit', 'Kurta Pajama', 'Lehenga', 'Girlish Crop Top', 'Gowns', 'Artificial Jewelleries', 'Fancy Costumes', 'Other'] as const).map((type) => (
                         <button
+                          key={type}
                           type="button"
                           onClick={() => {
-                            setShowRentOverrides(false);
-                            setFormData({ ...formData, rent_overrides: {} });
+                            const maleProducts = MALE_PRODUCT_TYPES;
+                            const femaleProducts = FEMALE_PRODUCT_TYPES;
+                            let autoGender = '';
+                            if (maleProducts.includes(type)) autoGender = 'Male';
+                            else if (femaleProducts.includes(type)) autoGender = 'Female';
+                            else if (type === 'Artificial Jewelleries') autoGender = 'Female';
+                            setFormData({ ...formData, name: type, gender: autoGender, available_sizes: [], rent_overrides: {} });
                           }}
-                          className="text-xs text-gray-500 hover:text-gray-700"
+                          className={`px-4 py-2.5 rounded-xl text-sm font-medium border-2 text-left transition-all duration-150 ${
+                            formData.name === type
+                              ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                              : 'bg-white text-gray-700 border-gray-200 hover:border-red-300 hover:bg-red-50'
+                          }`}
                         >
-                          Clear & Hide
-                        </button>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        Only change sizes that differ from base rent (₹{formData.rent || 0}). Leave unchanged for base rent.
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {formData.available_sizes.map(sz => {
-                          const overrideValue = formData.rent_overrides[sz];
-                          const baseRent = parseInt(formData.rent) || 0;
-                          return (
-                            <div key={sz} className="flex items-center gap-2">
-                              <span className="text-xs font-medium text-gray-600 w-12 text-right">{sz}:</span>
-                              <input
-                                type="number"
-                                step="100"
-                                value={overrideValue ?? ''}
-                                placeholder={`₹${baseRent}`}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  const newOverrides = { ...formData.rent_overrides };
-                                  if (val === '' || parseInt(val) === baseRent) {
-                                    delete newOverrides[sz];
-                                  } else {
-                                    newOverrides[sz] = parseInt(val);
-                                  }
-                                  setFormData({ ...formData, rent_overrides: newOverrides });
-                                }}
-                                className={`w-24 px-2 py-1 text-sm border rounded-md focus:outline-none focus:ring-1 focus:ring-red-500 ${overrideValue !== undefined ? 'border-blue-400 bg-blue-50' : 'border-gray-300'
-                                  }`}
-                              />
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Security Deposit */}
-              <div>
-                <Input
-                  label="Security Deposit (₹)*"
-                  type="number"
-                  step="100"
-                  value={formData.security_deposit}
-                  onChange={(e) => setFormData({ ...formData, security_deposit: e.target.value })}
-                  onBlur={(e) => {
-                    const value = e.target.value;
-                    // Round to nearest 100 when user leaves the field
-                    if (value && !isNaN(parseFloat(value))) {
-                      const rounded = Math.round(parseFloat(value) / 100) * 100;
-                      setFormData({ ...formData, security_deposit: rounded.toString() });
-                    }
-                  }}
-                  required
-                  placeholder="Enter security deposit amount"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Rounded to nearest ₹100. Use arrow keys to adjust by ₹100.
-                </p>
-              </div>
-
-              {/* Rental Policy Information */}
-              <div>
-                <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                  <div className="flex items-start gap-2">
-                    <span className="text-blue-600 text-lg">ℹ️</span>
-                    <div className="flex-1">
-                      <p className="text-sm font-semibold text-blue-900 mb-1">Rental Policy</p>
-                      {formData.name === 'Fancy Costumes' ? (
-                        <p className="text-xs text-blue-800">
-                          <strong>24-Hour Rental:</strong> This product follows a 24-hour rental policy.
-                          Rental duration is calculated from the time of bill generation.
-                        </p>
-                      ) : (
-                        <p className="text-xs text-blue-800">
-                          <strong>3-Day Rental:</strong> This rental price includes 3 days by default.
-                          This is the standard policy for all products except Fancy Costumes.
-                        </p>
-                      )}
-                      <p className="text-xs text-blue-600 mt-2">
-                        💡 To change rental policies, go to <strong>Settings & Policies</strong> section.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <Input
-                label="Sub-Category (Optional)"
-                value={formData.category}
-                onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                placeholder="e.g., Formal, Casual, Traditional"
-              />
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500"
-                  rows={3}
-                />
-              </div>
-              {/* ── Vendor Section ── */}
-              <div className="border-t border-gray-200 pt-4 mt-2">
-                <h3 className="text-sm font-semibold text-gray-800 mb-3">Vendor Information (Optional)</h3>
-
-                {/* Vendor Name Search */}
-                <div className="relative mb-3">
-                  <Input
-                    label="Vendor Name"
-                    value={vendorSearchQuery}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      handleVendorSearch(val);
-                      setVendorFormData(prev => ({ ...prev, name: val }));
-                      // If name was changed from a selected vendor, clear selection
-                      if (selectedVendor && val !== selectedVendor.name) {
-                        setSelectedVendor(null);
-                        setFormData(prev => ({ ...prev, vendor_id: null }));
-                      }
-                    }}
-                    placeholder="Search or enter vendor name"
-                  />
-                  {/* Search results dropdown */}
-                  {showVendorDropdown && vendorSearchResults.length > 0 && (
-                    <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                      {vendorSearchResults.map((vendor) => (
-                        <button
-                          key={vendor.id}
-                          type="button"
-                          onClick={() => handleVendorSelect(vendor)}
-                          className="w-full text-left px-4 py-3 hover:bg-red-50 transition-colors border-b last:border-0"
-                        >
-                          <p className="font-medium text-gray-900">{vendor.name}</p>
-                          <p className="text-sm text-gray-500">{vendor.phone}{vendor.gst_number ? ` · GST: ${vendor.gst_number}` : ''}</p>
+                          {type}
                         </button>
                       ))}
                     </div>
-                  )}
-                  {isVendorSearching && (
-                    <p className="text-xs text-gray-400 mt-1">Searching vendors...</p>
-                  )}
-                </div>
+                    {/* Gender for "Other" */}
+                    {formData.name === 'Other' && (
+                      <div className="mt-3 flex gap-4">
+                        {(['Male', 'Female', ''] as const).map((g) => (
+                          <label key={g || 'none'} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                            <input
+                              type="radio"
+                              name="gender"
+                              value={g}
+                              checked={formData.gender === g}
+                              onChange={() => setFormData({ ...formData, gender: g, available_sizes: [], rent_overrides: {} })}
+                              className="accent-red-600"
+                            />
+                            {g || 'None'}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
-                {/* Selected vendor indicator */}
-                {selectedVendor && (
-                  <div className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm bg-green-50 border-green-300 mb-3">
-                    <span className="text-green-600">✓</span>
-                    <span className="font-medium text-green-800">Existing vendor: {selectedVendor.name}</span>
+                  {/* Product Code */}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Product Code *</label>
+                    <input
+                      type="text"
+                      value={formData.code}
+                      disabled={!formData.name}
+                      onChange={(e) => {
+                        const newCode = e.target.value.toUpperCase();
+                        setFormData({ ...formData, code: newCode });
+                        checkCodeDuplicate(newCode);
+                      }}
+                      placeholder={formData.name ? 'e.g. SHR-001' : 'Select product type first'}
+                      className={`w-full px-4 py-2.5 border-2 rounded-xl text-sm font-medium bg-white focus:outline-none transition-colors ${
+                        !formData.name
+                          ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50'
+                          : codeCheckStatus === 'taken'
+                            ? 'border-red-400 focus:border-red-500 text-gray-900'
+                            : codeCheckStatus === 'available'
+                              ? 'border-green-400 focus:border-green-500 text-gray-900'
+                              : 'border-gray-300 focus:border-red-500 text-gray-900'
+                      }`}
+                    />
+                    {codeCheckStatus === 'checking' && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-400">
+                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                        </svg>
+                        Checking code availability…
+                      </p>
+                    )}
+                    {codeCheckStatus === 'taken' && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-red-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                        </svg>
+                        A product with this code already exists — cannot proceed.
+                      </p>
+                    )}
+                    {codeCheckStatus === 'available' && formData.code.trim() && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-green-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                        Code is available ✓
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Step 1 Footer */}
+                  <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
                     <button
                       type="button"
-                      onClick={() => {
-                        setSelectedVendor(null);
-                        setVendorSearchQuery('');
-                        setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
-                        setFormData(prev => ({ ...prev, vendor_id: null }));
-                      }}
-                      className="ml-auto text-gray-400 hover:text-red-500 text-xs"
+                      onClick={() => { setShowAddModal(false); resetForm(); }}
+                      className="px-5 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
                     >
-                      ✕ Clear
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        !formData.name ||
+                        !formData.code.trim() ||
+                        codeCheckStatus === 'taken' ||
+                        codeCheckStatus === 'checking' ||
+                        codeCheckStatus === 'idle'
+                      }
+                      onClick={() => setAddStep(2)}
+                      className="px-6 py-2.5 text-sm font-semibold bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      Next
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
                     </button>
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* Vendor detail fields — shown when name is typed */}
-                {vendorFormData.name.trim() && (
-                  <div className="space-y-3 p-3 bg-gray-50 rounded-lg">
-                    <Input
-                      label="Phone*"
-                      value={vendorFormData.phone}
-                      onChange={(e) => setVendorFormData({ ...vendorFormData, phone: e.target.value })}
-                      placeholder="9876543210"
-                      required
-                    />
-                    <div className="grid grid-cols-2 gap-3">
+              {/* ── STEP 2 (Add) or full form (Edit) ── */}
+              {(editingProduct || addStep === 2) && (
+                <>
+                  {/* Step 2 summary pill — back button */}
+                  {!editingProduct && (
+                    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+                      <button
+                        type="button"
+                        onClick={() => setAddStep(1)}
+                        className="text-gray-400 hover:text-gray-600 transition-colors"
+                        title="Go back"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                      </button>
+                      <div>
+                        <p className="text-xs text-gray-500">Product Type &amp; Code</p>
+                        <p className="text-sm font-semibold text-gray-900">{formData.name} · <span className="font-mono">{formData.code}</span></p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Edit mode: product type select */}
+                  {editingProduct && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Product Type *</label>
+                      <select
+                        value={formData.name}
+                        onChange={(e) => {
+                          const newName = e.target.value;
+                          const maleProducts = MALE_PRODUCT_TYPES;
+                          const femaleProducts = FEMALE_PRODUCT_TYPES;
+                          let autoGender = '';
+                          if (maleProducts.includes(newName)) autoGender = 'Male';
+                          else if (femaleProducts.includes(newName)) autoGender = 'Female';
+                          else if (newName === 'Artificial Jewelleries') autoGender = 'Female';
+                          setFormData({ ...formData, name: newName, gender: autoGender, available_sizes: [], rent_overrides: {} });
+                        }}
+                        required
+                        className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500"
+                      >
+                        <optgroup label="Male">
+                          <option value="Sherwani">Sherwani</option>
+                          <option value="Indo Western">Indo Western</option>
+                          <option value="Suit">Suit</option>
+                          <option value="Kurta Pajama">Kurta Pajama</option>
+                        </optgroup>
+                        <optgroup label="Female">
+                          <option value="Lehenga">Lehenga</option>
+                          <option value="Girlish Crop Top">Girlish Crop Top</option>
+                          <option value="Gowns">Gowns</option>
+                          <option value="Artificial Jewelleries">Artificial Jewelleries</option>
+                        </optgroup>
+                        <optgroup label="Special Categories">
+                          <option value="Fancy Costumes">Fancy Costumes</option>
+                          <option value="Other">Other</option>
+                        </optgroup>
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Edit mode: gender for Other */}
+                  {editingProduct && formData.name === 'Other' && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">Category (Optional)</label>
+                      <div className="flex space-x-4">
+                        {(['Male', 'Female', ''] as const).map((g) => (
+                          <label key={g || 'none'} className="flex items-center">
+                            <input
+                              type="radio"
+                              name="gender"
+                              value={g}
+                              checked={formData.gender === g}
+                              onChange={() => setFormData({ ...formData, gender: g, available_sizes: [], rent_overrides: {} })}
+                              className="mr-2"
+                            />
+                            <span className="text-sm">{g || 'None'}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Edit mode: code field */}
+                  {editingProduct && (
+                    <div ref={codeInputRef} className="relative">
                       <Input
-                        label="GST Number"
-                        value={vendorFormData.gst_number}
-                        onChange={(e) => setVendorFormData({ ...vendorFormData, gst_number: e.target.value })}
-                        placeholder="22AAAAA0000A1Z5"
+                        label="Product Code *"
+                        value={formData.code}
+                        onChange={(e) => {
+                          const newCode = e.target.value.toUpperCase();
+                          setFormData({ ...formData, code: newCode });
+                          checkCodeDuplicate(newCode, editingProduct?.id);
+                        }}
+                        required
+                        placeholder="e.g. SHR-001"
                       />
+                      {codeCheckStatus === 'taken' && (
+                        <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-red-600">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          A product with this code already exists.
+                        </p>
+                      )}
+                      {codeCheckStatus === 'available' && (
+                        <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-green-600">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          Product code is available ✓
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── Details grid (2 columns) ── */}
+                  <div className="grid grid-cols-2 gap-5">
+                    <div>
                       <Input
-                        label="PAN Number"
-                        value={vendorFormData.pan_number}
-                        onChange={(e) => setVendorFormData({ ...vendorFormData, pan_number: e.target.value })}
-                        placeholder="ABCDE1234F"
+                        label="Purchase Price (₹) *"
+                        type="number"
+                        step="0.01"
+                        value={formData.purchase_price}
+                        onChange={(e) => handlePurchasePriceChange(e.target.value)}
+                        required
+                        placeholder="Enter purchase price"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Rent auto-calculated</p>
+                    </div>
+                    <div>
+                      <Input
+                        label="Rent per Day (₹) *"
+                        type="number"
+                        step="100"
+                        value={formData.rent}
+                        onChange={(e) => setFormData({ ...formData, rent: e.target.value })}
+                        required
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Adjust by ₹100 increments</p>
+                    </div>
+                    <div>
+                      <Input
+                        label="Security Deposit (₹) *"
+                        type="number"
+                        step="100"
+                        value={formData.security_deposit}
+                        onChange={(e) => setFormData({ ...formData, security_deposit: e.target.value })}
+                        onBlur={(e) => {
+                          const value = e.target.value;
+                          if (value && !isNaN(parseFloat(value))) {
+                            const rounded = Math.round(parseFloat(value) / 100) * 100;
+                            setFormData({ ...formData, security_deposit: rounded.toString() });
+                          }
+                        }}
+                        required
+                        placeholder="Enter security deposit"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Rounded to nearest ₹100</p>
+                    </div>
+                    <div>
+                      <Input
+                        label="Sub-Category (Optional)"
+                        value={formData.category}
+                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                        placeholder="e.g., Formal, Casual"
                       />
                     </div>
-                    <Input
-                      label="Address"
-                      value={vendorFormData.address}
-                      onChange={(e) => setVendorFormData({ ...vendorFormData, address: e.target.value })}
-                      placeholder="Vendor address"
-                    />
-                    <Input
-                      label="Notes"
-                      value={vendorFormData.notes}
-                      onChange={(e) => setVendorFormData({ ...vendorFormData, notes: e.target.value })}
-                      placeholder="Any notes about this vendor"
+                  </div>
+
+                  {/* Sizes */}
+                  {formData.name && !NO_SIZE_TYPES.includes(formData.name) && (() => {
+                    const possibleSizes = getSizesForProduct(formData.name, formData.gender);
+                    if (possibleSizes.length === 0) return null;
+                    const toggleSize = (sz: string) => {
+                      const current = formData.available_sizes;
+                      const next = current.includes(sz) ? current.filter(s => s !== sz) : [...current, sz];
+                      const newOverrides = { ...formData.rent_overrides };
+                      if (!next.includes(sz)) delete newOverrides[sz];
+                      setFormData({ ...formData, available_sizes: next, rent_overrides: newOverrides });
+                    };
+                    return (
+                      <div>
+                        <div className="flex items-center justify-between mb-2">
+                          <label className="block text-sm font-semibold text-gray-700">
+                            Available Sizes{formData.name !== 'Other' ? ' *' : ' (Optional)'}
+                          </label>
+                          <div className="flex gap-3">
+                            <button type="button" onClick={() => setFormData({ ...formData, available_sizes: [...possibleSizes] })} className="text-xs text-blue-600 hover:text-blue-800">Select All</button>
+                            <button type="button" onClick={() => setFormData({ ...formData, available_sizes: [], rent_overrides: {} })} className="text-xs text-gray-500 hover:text-gray-700">Clear</button>
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {possibleSizes.map(sz => {
+                            const isSelected = formData.available_sizes.includes(sz);
+                            return (
+                              <button
+                                key={sz}
+                                type="button"
+                                onClick={() => toggleSize(sz)}
+                                className={`px-3 py-1.5 rounded-full text-sm font-medium border-2 transition-all duration-150 ${isSelected ? 'bg-red-600 text-white border-red-600 shadow-sm' : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'}`}
+                              >
+                                {sz}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {formData.available_sizes.length > 0 && (
+                          <p className="text-xs text-gray-500 mt-1">{formData.available_sizes.length} size{formData.available_sizes.length > 1 ? 's' : ''} selected</p>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* Rent overrides */}
+                  {formData.available_sizes.length > 0 && (
+                    <div>
+                      {!showRentOverrides ? (
+                        <button type="button" onClick={() => setShowRentOverrides(true)} className="text-xs text-blue-600 hover:text-blue-800 underline">
+                          Set different rent for specific sizes →
+                        </button>
+                      ) : (
+                        <div className="border border-gray-200 rounded-xl p-4 space-y-3">
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-semibold text-gray-700">Per-Size Rent Overrides</label>
+                            <button type="button" onClick={() => { setShowRentOverrides(false); setFormData({ ...formData, rent_overrides: {} }); }} className="text-xs text-gray-500 hover:text-gray-700">Clear &amp; Hide</button>
+                          </div>
+                          <p className="text-xs text-gray-500">Only change sizes that differ from base rent (₹{formData.rent || 0}).</p>
+                          <div className="grid grid-cols-3 gap-2">
+                            {formData.available_sizes.map(sz => {
+                              const overrideValue = formData.rent_overrides[sz];
+                              const baseRent = parseInt(formData.rent) || 0;
+                              return (
+                                <div key={sz} className="flex items-center gap-2">
+                                  <span className="text-xs font-medium text-gray-600 w-10 text-right">{sz}:</span>
+                                  <input
+                                    type="number"
+                                    step="100"
+                                    value={overrideValue ?? ''}
+                                    placeholder={`₹${baseRent}`}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const newOverrides = { ...formData.rent_overrides };
+                                      if (val === '' || parseInt(val) === baseRent) delete newOverrides[sz];
+                                      else newOverrides[sz] = parseInt(val);
+                                      setFormData({ ...formData, rent_overrides: newOverrides });
+                                    }}
+                                    className={`w-20 px-2 py-1 text-sm border rounded-lg focus:outline-none focus:ring-1 focus:ring-red-500 ${overrideValue !== undefined ? 'border-blue-400 bg-blue-50' : 'border-gray-300'}`}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Images */}
+                  <MultipleImageUpload
+                    value={formData.images.length > 0 ? formData.images : (formData.image ? formData.image : [])}
+                    onChange={(images) => setFormData({ ...formData, images, image: images.length > 0 ? images[0] : '' })}
+                    label="Product Images (Optional)"
+                    maxImages={10}
+                  />
+
+                  {/* Description */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                    <textarea
+                      value={formData.description}
+                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-red-500"
+                      rows={3}
                     />
                   </div>
-                )}
-              </div>
 
+                  {/* Rental Policy Info */}
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                    <div className="flex items-start gap-2">
+                      <span className="text-blue-600">ℹ️</span>
+                      <div>
+                        <p className="text-sm font-semibold text-blue-900 mb-0.5">Rental Policy</p>
+                        {formData.name === 'Fancy Costumes' ? (
+                          <p className="text-xs text-blue-800"><strong>24-Hour Rental</strong> — duration calculated from bill generation time.</p>
+                        ) : (
+                          <p className="text-xs text-blue-800"><strong>3-Day Rental</strong> — standard policy for all products except Fancy Costumes.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
 
-              <div className="flex space-x-3">
-                <Button
-                  type="submit"
-                  disabled={!formData.name || codeWrongType}
-                >
-                  {editingProduct ? 'Update' : 'Create'}
-                </Button>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => {
-                    setShowAddModal(false);
-                    setEditingProduct(null);
-                    resetForm();
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
+                  {/* Vendor Section */}
+                  <div className="border-t border-gray-100 pt-4">
+                    <h3 className="text-sm font-semibold text-gray-800 mb-3">Vendor Information (Optional)</h3>
+                    <div className="relative mb-3">
+                      <Input
+                        label="Vendor Name"
+                        value={vendorSearchQuery}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          handleVendorSearch(val);
+                          setVendorFormData(prev => ({ ...prev, name: val }));
+                          if (selectedVendor && val !== selectedVendor.name) {
+                            setSelectedVendor(null);
+                            setFormData(prev => ({ ...prev, vendor_id: null }));
+                          }
+                        }}
+                        placeholder="Search or enter vendor name"
+                      />
+                      {showVendorDropdown && vendorSearchResults.length > 0 && (
+                        <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                          {vendorSearchResults.map((vendor) => (
+                            <button key={vendor.id} type="button" onClick={() => handleVendorSelect(vendor)}
+                              className="w-full text-left px-4 py-3 hover:bg-red-50 transition-colors border-b last:border-0">
+                              <p className="font-medium text-gray-900">{vendor.name}</p>
+                              <p className="text-sm text-gray-500">{vendor.phone}{vendor.gst_number ? ` · GST: ${vendor.gst_number}` : ''}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {isVendorSearching && <p className="text-xs text-gray-400 mt-1">Searching vendors...</p>}
+                    </div>
+                    {selectedVendor && (
+                      <div className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm bg-green-50 border-green-300 mb-3">
+                        <span className="text-green-600">✓</span>
+                        <span className="font-medium text-green-800">Existing vendor: {selectedVendor.name}</span>
+                        <button type="button" onClick={() => { setSelectedVendor(null); setVendorSearchQuery(''); setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' }); setFormData(prev => ({ ...prev, vendor_id: null })); }} className="ml-auto text-gray-400 hover:text-red-500 text-xs">✕ Clear</button>
+                      </div>
+                    )}
+                    {vendorFormData.name.trim() && (
+                      <div className="space-y-3 p-3 bg-gray-50 rounded-lg">
+                        <Input label="Phone *" value={vendorFormData.phone} onChange={(e) => setVendorFormData({ ...vendorFormData, phone: e.target.value })} placeholder="9876543210" required />
+                        <div className="grid grid-cols-2 gap-3">
+                          <Input label="GST Number" value={vendorFormData.gst_number} onChange={(e) => setVendorFormData({ ...vendorFormData, gst_number: e.target.value })} placeholder="22AAAAA0000A1Z5" />
+                          <Input label="PAN Number" value={vendorFormData.pan_number} onChange={(e) => setVendorFormData({ ...vendorFormData, pan_number: e.target.value })} placeholder="ABCDE1234F" />
+                        </div>
+                        <Input label="Address" value={vendorFormData.address} onChange={(e) => setVendorFormData({ ...vendorFormData, address: e.target.value })} placeholder="Vendor address" />
+                        <Input label="Notes" value={vendorFormData.notes} onChange={(e) => setVendorFormData({ ...vendorFormData, notes: e.target.value })} placeholder="Any notes about this vendor" />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer */}
+                  <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+                    <button
+                      type="button"
+                      onClick={() => { setShowAddModal(false); setEditingProduct(null); resetForm(); }}
+                      className="px-5 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <Button
+                      type="submit"
+                      disabled={!formData.name || codeCheckStatus === 'taken'}
+                    >
+                      {editingProduct ? 'Update Product' : 'Create Product'}
+                    </Button>
+                  </div>
+                </>
+              )}
             </form>
           </div>
         </div>
       )}
+
 
       {/* View/Watch Modal */}
       {viewingProduct && (
@@ -1791,8 +1786,10 @@ export default function InventoryPage() {
         <ProductTrackingModal
           productId={trackingProduct.id}
           productCode={trackingProduct.code}
+          size={trackingSize}
           onClose={() => {
             setTrackingProduct(null);
+            setTrackingSize(null);
             // Refresh products to get updated size_tracking_map
             fetchProducts();
           }}

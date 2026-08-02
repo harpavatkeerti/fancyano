@@ -29,10 +29,10 @@ class ProductService {
       LEFT JOIN LATERAL (
         SELECT json_object_agg(sub.size, sub.tracking_status) AS size_tracking_map
         FROM (
-          SELECT DISTINCT ON (size) size, tracking_status
+          SELECT DISTINCT ON (COALESCE(size, '_')) COALESCE(size, '_') AS size, tracking_status
           FROM product_tracking
           WHERE product_id = p.id
-          ORDER BY size, created_at DESC
+          ORDER BY COALESCE(size, '_'), created_at DESC
         ) sub
       ) lt ON true
       LEFT JOIN vendors v ON v.id = p.vendor_id
@@ -80,10 +80,10 @@ class ProductService {
        LEFT JOIN LATERAL (
          SELECT json_object_agg(sub.size, sub.tracking_status) AS size_tracking_map
          FROM (
-           SELECT DISTINCT ON (size) size, tracking_status
+           SELECT DISTINCT ON (COALESCE(size, '_')) COALESCE(size, '_') AS size, tracking_status
            FROM product_tracking
            WHERE product_id = p.id
-           ORDER BY size, created_at DESC
+           ORDER BY COALESCE(size, '_'), created_at DESC
          ) sub
        ) lt ON true
        LEFT JOIN vendors v ON v.id = p.vendor_id
