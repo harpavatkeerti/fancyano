@@ -56,8 +56,8 @@ router.post('/:bookingId/products/return', async (req, res) => {
         error: 'returns array is required',
         example: {
           returns: [
-            { booking_product_id: 1, damage_fee: 0 },
-            { booking_product_id: 2, damage_fee: 500 }
+            { booking_product_id: 1 },
+            { booking_product_id: 2 }
           ],
           returned_by: 'user_id'
         }
@@ -75,8 +75,7 @@ router.post('/:bookingId/products/return', async (req, res) => {
 
     // Format returns for service
     const formattedReturns = returns.map(r => ({
-      bookingProductId: r.booking_product_id,
-      damageFee: r.damage_fee || 0
+      bookingProductId: r.booking_product_id
     }));
 
     const result = await productLifecycleService.returnProducts(
@@ -99,17 +98,19 @@ router.post('/:bookingId/products/return', async (req, res) => {
   }
 });
 // GET calculate security return amounts (read-only).
-// ?deduction_amount=<number> — pass the intended deduction so the backend computes
-// the full split (auto_adjust, remainder, eligible_security_products) server-side.
+// ?late_fee=<number>&damage_fee=<number> — pass the intended fees so the backend
+// computes the full split (auto_adjust, remainder, eligible_security_products) server-side.
 // The frontend MUST NOT compute any of these values itself.
 router.get('/:bookingId/products/:productId/security-refund/calculate', async (req, res) => {
   try {
     const { productId } = req.params;
-    const deductionAmount = Number(req.query.deduction_amount) || 0;
+    const lateFee = req.query.late_fee !== undefined ? Number(req.query.late_fee) : null;
+    const damageFee = Number(req.query.damage_fee) || 0;
 
     const result = await productLifecycleService.calculateSecurityReturn(
       parseInt(productId),
-      deductionAmount
+      lateFee,
+      damageFee
     );
 
     res.json({ success: true, security_calculation: result });
@@ -126,8 +127,8 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
   try {
     const { productId } = req.params;
     const {
-      deduction_amount = 0,
-      deduction_type = null,
+      late_fee = 0,
+      damage_fee = 0,
       adjust_non_security = 0,
       adjust_security_amount = 0,
       security_product_ids = [],
@@ -144,8 +145,8 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
     const result = await productLifecycleService.processSecurityReturn(
       parseInt(productId),
       {
-        deduction_amount: Number(deduction_amount),
-        deduction_type,
+        late_fee: Number(late_fee),
+        damage_fee: Number(damage_fee),
         adjust_non_security: Number(adjust_non_security),
         adjust_security_amount: Number(adjust_security_amount),
         security_product_ids: Array.isArray(security_product_ids) ? security_product_ids : [],
@@ -160,7 +161,7 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
   } catch (error) {
     const isClientError = [
       'not found', 'completed', 'sum to security', 'non-negative',
-      'deduction_type', 'security_product_ids'
+      'security_product_ids'
     ].some(s => error.message.includes(s));
 
     if (isClientError) {

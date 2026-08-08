@@ -758,8 +758,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 0,
-          deduction_type: null,
+          late_fee: 0,
+          damage_fee: 0,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],
@@ -788,8 +788,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 20000,
-          deduction_type: 'damage_fee',
+          late_fee: 0,
+          damage_fee: 20000,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],
@@ -825,6 +825,159 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
     });
   });
 
+  describe('processSecurityReturn: pure deduction (late fee)', () => {
+    it('creates a late_fee charge and marks it paid, no refund transaction', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          late_fee: 20000,
+          damage_fee: 0,
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 0,
+          payment_method: 'Cash',
+          recorded_by: 'Salesman',
+        });
+
+      expect(res.status).toBe(200);
+
+      // Late fee charge must exist and be fully paid
+      const charge = await pool.query(
+        `SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'late_fee'`,
+        [bookingProductId]
+      );
+      expect(charge.rows).toHaveLength(1);
+      expect(parseInt(charge.rows[0].due_amount)).toBe(20000);
+      expect(parseInt(charge.rows[0].paid_amount)).toBe(20000);
+
+      // No cash refund transaction
+      const refundTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(refundTx.rows).toHaveLength(0);
+
+      // Info-only adjustment transaction recorded
+      const adjTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment'`,
+        [bookingId]
+      );
+      expect(adjTx.rows.length).toBeGreaterThanOrEqual(1);
+      expect(adjTx.rows[0].notes).toMatch(/Late fee/);
+    });
+  });
+
+  describe('processSecurityReturn: both late fee and damage fee + refund', () => {
+    it('creates both charge types independently and refunds the remainder', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+      // late_fee=5000, damage_fee=3000, refund=12000 → total = 20000
+
+      const res = await request(app)
+        .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
+        .send({
+          late_fee: 5000,
+          damage_fee: 3000,
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 12000,
+          payment_method: 'Cash',
+          recorded_by: 'Admin',
+        });
+
+      expect(res.status).toBe(200);
+
+      // Late fee charge
+      const lateCharge = await pool.query(
+        `SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'late_fee'`,
+        [bookingProductId]
+      );
+      expect(lateCharge.rows).toHaveLength(1);
+      expect(parseInt(lateCharge.rows[0].due_amount)).toBe(5000);
+      expect(parseInt(lateCharge.rows[0].paid_amount)).toBe(5000);
+
+      // Damage fee charge
+      const damageCharge = await pool.query(
+        `SELECT * FROM product_charges WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
+        [bookingProductId]
+      );
+      expect(damageCharge.rows).toHaveLength(1);
+      expect(parseInt(damageCharge.rows[0].due_amount)).toBe(3000);
+      expect(parseInt(damageCharge.rows[0].paid_amount)).toBe(3000);
+
+      // Cash refund of 12000
+      const refundTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
+        [bookingId]
+      );
+      expect(refundTx.rows).toHaveLength(1);
+      expect(parseInt(refundTx.rows[0].amount)).toBe(12000);
+      // Refund notes mention both fees
+      expect(refundTx.rows[0].notes).toMatch(/late fee/i);
+      expect(refundTx.rows[0].notes).toMatch(/damage fee/i);
+
+      // Two adjustment transactions (one per fee)
+      const adjTx = await pool.query(
+        `SELECT * FROM payment_transactions WHERE booking_id = $1 AND type = 'adjustment' ORDER BY id`,
+        [bookingId]
+      );
+      expect(adjTx.rows.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe('calculateSecurityReturn: auto-applies suggested late fee', () => {
+    it('returns late_fee = suggested_late_fee when no explicit late_fee is passed', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+      // Set booked_to to 3 days ago to trigger suggested late fee
+      await pool.query(
+        `UPDATE booking_products
+         SET booked_from = CURRENT_DATE - INTERVAL '8 days',
+             booked_to = CURRENT_DATE - INTERVAL '3 days'
+         WHERE id = $1`,
+        [bookingProductId]
+      );
+
+      // Call without late_fee param (null → auto-apply)
+      const res = await request(app)
+        .get(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/calculate`);
+
+      expect(res.status).toBe(200);
+      const calc = res.body.security_calculation;
+      expect(calc.late_fee_days).toBe(3);
+      expect(calc.suggested_late_fee).toBeGreaterThan(0);
+      // late_fee should equal suggested_late_fee (auto-applied)
+      expect(calc.late_fee).toBe(calc.suggested_late_fee);
+      // net_security should account for the auto-applied late fee
+      expect(calc.net_security).toBe(calc.total_security - calc.late_fee);
+    });
+
+    it('respects explicit late_fee=0 even when suggested > 0', async () => {
+      const { bookingId, bookingProductId } = await makeCompletedProduct();
+      await pool.query(
+        `UPDATE booking_products
+         SET booked_from = CURRENT_DATE - INTERVAL '8 days',
+             booked_to = CURRENT_DATE - INTERVAL '3 days'
+         WHERE id = $1`,
+        [bookingProductId]
+      );
+
+      // Call with explicit late_fee=0
+      const res = await request(app)
+        .get(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/calculate?late_fee=0`);
+
+      expect(res.status).toBe(200);
+      const calc = res.body.security_calculation;
+      expect(calc.suggested_late_fee).toBeGreaterThan(0);
+      // late_fee should be 0 (admin explicitly chose zero)
+      expect(calc.late_fee).toBe(0);
+      // net_security should be full (no deduction)
+      expect(calc.net_security).toBe(calc.total_security);
+    });
+  });
+
   describe('processSecurityReturn: deduction + refund remainder', () => {
     it('retains deduction and refunds the remainder in cash', async () => {
       const { bookingId, bookingProductId } = await makeCompletedProduct();
@@ -833,8 +986,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 3000,
-          deduction_type: 'damage_fee',
+          late_fee: 0,
+          damage_fee: 3000,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],
@@ -877,8 +1030,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 0,
-          deduction_type: null,
+          late_fee: 0,
+          damage_fee: 0,
           adjust_non_security: 5000,
           adjust_security_amount: 0,
           security_product_ids: [],
@@ -912,8 +1065,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 5000,
-          deduction_type: 'damage_fee',
+          late_fee: 0,
+          damage_fee: 5000,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],
@@ -937,8 +1090,8 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
       const res = await request(app)
         .post(`/lifecycle/${bookingId}/products/${bookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 0,
-          deduction_type: null,
+          late_fee: 0,
+          damage_fee: 0,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],

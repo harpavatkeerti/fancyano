@@ -296,7 +296,7 @@ export function PaymentManagement({
       // Step 1: transition in_progress → completed if needed
       if (product.status === 'in_progress') {
         await lifecycleApi.returnProducts(bookingId, {
-          returns: [{ booking_product_id: refundProductId, damage_fee: 0 }],
+          returns: [{ booking_product_id: refundProductId }],
           returned_by: userRole === 'admin' ? 'Admin' : 'Salesman',
         });
       }
@@ -304,7 +304,6 @@ export function PaymentManagement({
       // Step 2: process the security return atomically
       await lifecycleApi.processSecurityRefund(bookingId, refundProductId, {
         ...settlement,
-        deduction_type: settlement.deduction_type ?? undefined,
         recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
       });
 

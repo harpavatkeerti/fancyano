@@ -197,31 +197,30 @@ describe('Product Lifecycle Routes', () => {
       expect(bpCheck.rows[0].status).toBe('completed');
     });
 
-    // Test: Applies damage fee correctly
-    it('should apply damage fee if provided', async () => {
+    // Test: No damage fee charge is created during return (deferred to security refund)
+    it('should NOT create damage fee during return (deferred to security refund)', async () => {
       const response = await request(app)
         .post(`/lifecycle/${testBookingId}/products/return`)
         .send({
           returns: [
-            { booking_product_id: testBookingProductId, damage_fee: 5000 }
+            { booking_product_id: testBookingProductId }
           ],
           returned_by: 'test-user'
         });
 
       expect(response.status).toBe(200);
 
-      // Verify damage fee charge added
+      // Verify NO damage fee charge added
       const chargeCheck = await pool.query(
         `SELECT * FROM product_charges 
          WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
         [testBookingProductId]
       );
-      expect(chargeCheck.rows.length).toBe(1);
-      expect(chargeCheck.rows[0].due_amount).toBe(5000);
+      expect(chargeCheck.rows.length).toBe(0);
     });
 
-    // Test: Calculates late fee for delayed returns
-    it('should calculate late fee for delayed return', async () => {
+    // Test: No late fee charge is created during return (deferred to security refund)
+    it('should NOT create late fee during return (deferred to security refund)', async () => {
       // Set booking dates to past (booked_from must be <= booked_to)
       await pool.query(
         `UPDATE booking_products 
@@ -235,21 +234,20 @@ describe('Product Lifecycle Routes', () => {
         .post(`/lifecycle/${testBookingId}/products/return`)
         .send({
           returns: [
-            { booking_product_id: testBookingProductId, damage_fee: 0 }
+            { booking_product_id: testBookingProductId }
           ],
           returned_by: 'test-user'
         });
 
       expect(response.status).toBe(200);
 
-      // Verify late fee charged (2 days * 200 = 400)
+      // Verify NO late fee charge added
       const chargeCheck = await pool.query(
         `SELECT * FROM product_charges 
          WHERE booking_product_id = $1 AND charge_type = 'late_fee'`,
         [testBookingProductId]
       );
-      expect(chargeCheck.rows.length).toBe(1);
-      expect(chargeCheck.rows[0].due_amount).toBeGreaterThanOrEqual(400);
+      expect(chargeCheck.rows.length).toBe(0);
     });
 
     // Test: Rejects return if product not in in_progress status
@@ -613,14 +611,15 @@ describe('Product Lifecycle Routes', () => {
         .send({ booking_product_ids: [testBookingProductId], picked_up_by: 'test-user' });
       await request(app)
         .post(`/lifecycle/${testBookingId}/products/return`)
-        .send({ returns: [{ booking_product_id: testBookingProductId, damage_fee: 0 }], returned_by: 'test-user' });
+        .send({ returns: [{ booking_product_id: testBookingProductId }], returned_by: 'test-user' });
 
       const userNotes = 'Customer requested refund via bank transfer, IFSC: SBIN0001234';
 
       const response = await request(app)
         .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
         .send({
-          deduction_amount: 0,
+          late_fee: 0,
+          damage_fee: 0,
           adjust_non_security: 0,
           adjust_security_amount: 0,
           security_product_ids: [],

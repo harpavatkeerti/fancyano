@@ -1013,14 +1013,12 @@ describe('ProductLifecycleService', () => {
     test('should mark products as returned', async () => {
       const result = await productLifecycleService.returnProducts(
         testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 0 }],
+        [{ bookingProductId: testBookingProductId }],
         String(testUserId)
       );
       
       expect(result.booking_id).toBe(testBookingId);
       expect(result.returned_count).toBe(1);
-      expect(result.total_late_fees).toBe(0);
-      expect(result.total_damage_fees).toBe(0);
       
       // Verify product status updated
       const product = await pool.query(
@@ -1040,8 +1038,8 @@ describe('ProductLifecycleService', () => {
       expect(tracking.rows[0].tracking_status).toBe('in_house');
     });
 
-    // Test: Calculates and applies late fees based on number of late days
-    test('should apply late fees for late return', async () => {
+    // Test: Late fee is NOT created during return — it's deferred to security refund
+    test('should NOT create late fee charge during return (deferred to security refund)', async () => {
       // Set booking period to past dates to simulate late return (ended 3 days ago)
       await pool.query(
         `UPDATE booking_products 
@@ -1053,62 +1051,48 @@ describe('ProductLifecycleService', () => {
       
       const result = await productLifecycleService.returnProducts(
         testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 0 }],
+        [{ bookingProductId: testBookingProductId }],
         String(testUserId)
       );
       
-      expect(result.total_late_fees).toBe(600); // 200 * 3 days
+      // No fee fields in result
+      expect(result.total_late_fees).toBeUndefined();
+      expect(result.total_damage_fees).toBeUndefined();
       
-      // Verify late fee charge was added
+      // Verify NO late fee charge was added
       const charge = await pool.query(
         `SELECT * FROM product_charges 
          WHERE booking_product_id = $1 AND charge_type = 'late_fee'`,
         [testBookingProductId]
       );
-      expect(charge.rows.length).toBe(1);
-      expect(charge.rows[0].due_amount).toBe(600);
-      expect(charge.rows[0].notes).toBe('Late return: 3 day(s)');
+      expect(charge.rows.length).toBe(0);
+
+      // But product should still be marked completed
+      const product = await pool.query(
+        'SELECT status FROM booking_products WHERE id = $1',
+        [testBookingProductId]
+      );
+      expect(product.rows[0].status).toBe('completed');
     });
 
-    // Test: Applies damage fees when product is returned with damage
-    test('should apply damage fees', async () => {
+    // Test: Damage fee is NOT created during return — it's deferred to security refund
+    test('should NOT create damage fee charge during return (deferred to security refund)', async () => {
       const result = await productLifecycleService.returnProducts(
         testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 500 }],
+        [{ bookingProductId: testBookingProductId }],
         String(testUserId)
       );
       
-      expect(result.total_damage_fees).toBe(500);
+      // No fee fields in result
+      expect(result.total_damage_fees).toBeUndefined();
       
-      // Verify damage fee charge was added
+      // Verify NO damage fee charge was added
       const charge = await pool.query(
         `SELECT * FROM product_charges 
          WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
         [testBookingProductId]
       );
-      expect(charge.rows.length).toBe(1);
-      expect(charge.rows[0].due_amount).toBe(500);
-    });
-
-    // Test: Applies both late fees and damage fees when both conditions exist
-    test('should apply both late and damage fees', async () => {
-      // Set booking period to past dates to simulate late return (ended 2 days ago)
-      await pool.query(
-        `UPDATE booking_products 
-         SET booked_from = CURRENT_DATE - INTERVAL '7 days',
-             booked_to = CURRENT_DATE - INTERVAL '2 days'
-         WHERE id = $1`,
-        [testBookingProductId]
-      );
-      
-      const result = await productLifecycleService.returnProducts(
-        testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 300 }],
-        String(testUserId)
-      );
-      
-      expect(result.total_late_fees).toBe(400); // 200 * 2
-      expect(result.total_damage_fees).toBe(300);
+      expect(charge.rows.length).toBe(0);
     });
 
     // Test: Booking remains in_progress if some products haven't been returned
@@ -1128,7 +1112,7 @@ describe('ProductLifecycleService', () => {
       
       const result = await productLifecycleService.returnProducts(
         testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 0 }],
+        [{ bookingProductId: testBookingProductId }],
         String(testUserId)
       );
       
@@ -1153,26 +1137,17 @@ describe('ProductLifecycleService', () => {
       await expect(
         productLifecycleService.returnProducts(
           testBookingId,
-          [{ bookingProductId: testBookingProductId, damageFee: 0 }],
+          [{ bookingProductId: testBookingProductId }],
           String(testUserId)
         )
       ).rejects.toThrow('not in in_progress status');
     });
 
-    // Test: Creates activity log entry tracking the return event with fee details
+    // Test: Creates activity log entry tracking the return event
     test('should create activity log entry', async () => {
-      // Set booking period to past dates to simulate late return (ended 2 days ago)
-      await pool.query(
-        `UPDATE booking_products 
-         SET booked_from = CURRENT_DATE - INTERVAL '7 days',
-             booked_to = CURRENT_DATE - INTERVAL '2 days'
-         WHERE id = $1`,
-        [testBookingProductId]
-      );
-      
       await productLifecycleService.returnProducts(
         testBookingId,
-        [{ bookingProductId: testBookingProductId, damageFee: 100 }],
+        [{ bookingProductId: testBookingProductId }],
         String(testUserId)
       );
       
@@ -1182,8 +1157,10 @@ describe('ProductLifecycleService', () => {
         [testBookingId]
       );
       expect(log.rows.length).toBe(1);
-      expect(log.rows[0].details.total_late_fees).toBe(400);
-      expect(log.rows[0].details.total_damage_fees).toBe(100);
+      expect(log.rows[0].details.booking_product_ids).toContain(testBookingProductId);
+      // No fee fields in activity log (fees are deferred to security refund)
+      expect(log.rows[0].details.total_late_fees).toBeUndefined();
+      expect(log.rows[0].details.total_damage_fees).toBeUndefined();
     });
   });
 

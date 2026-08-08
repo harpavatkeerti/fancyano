@@ -14,18 +14,23 @@ export interface SecurityCalculation {
   booking_id: number;
   booking_product_id: number;
   total_security: number;
-  deduction_amount: number;
+  late_fee: number;
+  damage_fee: number;
+  total_deduction: number;
   net_security: number;
   non_security_pending: number;
   auto_adjust_amount: number;
   remainder_amount: number;
+  suggested_late_fee: number;
+  late_fee_days: number;
+  late_fee_per_day: number;
   eligible_security_products: EligibleSecProduct[];
 }
 
 /** The settled amounts sent to processSecurityRefund */
 export interface SecuritySettlement {
-  deduction_amount: number;
-  deduction_type: 'damage_fee' | 'late_fee' | null;
+  late_fee: number;
+  damage_fee: number;
   adjust_non_security: number;
   adjust_security_amount: number;
   security_product_ids: number[];
@@ -60,8 +65,9 @@ export function RefundSettlementSection({
   const [calcError, setCalcError] = useState<string | null>(null);
 
   // ── User inputs ──────────────────────────────────────────────────────────────
-  const [deductionAmount, setDeductionAmount] = useState('');
-  const [deductionType, setDeductionType] = useState<'damage_fee' | 'late_fee'>('damage_fee');
+  const [lateFeeInput, setLateFeeInput] = useState('');
+  const [damageFeeInput, setDamageFeeInput] = useState('');
+  const [lateFeeInitialized, setLateFeeInitialized] = useState(false);
   const [remainderChoice, setRemainderChoice] = useState<'refund' | 'adjust_security'>('refund');
   const [selectedSecProductIds, setSelectedSecProductIds] = useState<number[]>([]);
 
@@ -74,12 +80,21 @@ export function RefundSettlementSection({
 
   // ── Fetch from backend ───────────────────────────────────────────────────────
   const fetchCalc = useCallback(
-    async (deduction: number) => {
+    async (lateFee: number | null, damageFee: number) => {
       setCalcLoading(true);
       setCalcError(null);
       try {
-        const res = await lifecycleApi.calculateSecurityRefund(bookingId, bookingProductId, deduction);
-        setCalc(res.data.security_calculation);
+        const res = await lifecycleApi.calculateSecurityRefund(bookingId, bookingProductId, lateFee, damageFee);
+        const calcData = res.data.security_calculation as SecurityCalculation;
+        setCalc(calcData);
+
+        // Pre-populate late fee input from backend's auto-applied value on first load
+        if (!lateFeeInitialized) {
+          if (calcData.late_fee > 0) {
+            setLateFeeInput(String(calcData.late_fee));
+          }
+          setLateFeeInitialized(true);
+        }
       } catch (err: any) {
         setCalcError(
           err?.response?.data?.error ||
@@ -91,25 +106,26 @@ export function RefundSettlementSection({
         setCalcLoading(false);
       }
     },
-    [bookingId, bookingProductId]
+    [bookingId, bookingProductId, lateFeeInitialized]
   );
 
-  // Fetch on mount with deduction=0
+  // Fetch on mount — null means "auto-apply suggested late fee from policy"
   useEffect(() => {
-    fetchCalc(0);
+    fetchCalc(null, 0);
   }, [fetchCalc]);
 
-  // Re-fetch whenever deduction input is committed (on blur / Enter)
-  function handleDeductionCommit() {
-    const val = Math.max(0, parseInt(deductionAmount, 10) || 0);
-    fetchCalc(val);
+  // Re-fetch whenever fee inputs are committed (on blur / Enter)
+  // Passes the explicit number (0 = admin chose zero, not "auto-apply")
+  function handleFeeCommit() {
+    const lateFee = Math.max(0, parseInt(lateFeeInput, 10) || 0);
+    const damageFee = Math.max(0, parseInt(damageFeeInput, 10) || 0);
+    fetchCalc(lateFee, damageFee);
   }
 
   // ── Security allocation preview ──────────────────────────────────────────────
   const eligibleProducts: EligibleSecProduct[] = calc?.eligible_security_products ?? [];
 
   // Auto-select the sole eligible product when switching to adjust_security.
-  // This is consumer-specific behaviour — SecurityAllocationSection stays unchanged.
   useEffect(() => {
     if (remainderChoice === 'adjust_security' && eligibleProducts.length === 1 && selectedSecProductIds.length === 0) {
       setSelectedSecProductIds([eligibleProducts[0].bpId]);
@@ -137,7 +153,6 @@ export function RefundSettlementSection({
       if (calc.remainder_amount > 0 && selectedSecProductIds.length === 0) {
         return 'Select at least one product to credit security against';
       }
-      // secAllocError is suppressed here — excess is handled as a cash refund (secExcess > 0)
     }
     return null;
   })();
@@ -149,8 +164,8 @@ export function RefundSettlementSection({
     setSubmitError(null);
     try {
       const settlement: SecuritySettlement = {
-        deduction_amount: calc.deduction_amount,
-        deduction_type: calc.deduction_amount > 0 ? deductionType : null,
+        late_fee: calc.late_fee,
+        damage_fee: calc.damage_fee,
         adjust_non_security: calc.auto_adjust_amount,
         adjust_security_amount: remainderChoice === 'adjust_security' ? creditAmount : 0,
         security_product_ids: remainderChoice === 'adjust_security' ? selectedSecProductIds : [],
@@ -173,7 +188,7 @@ export function RefundSettlementSection({
 
   // ─────────────────────────────────────────────────────────────────────────────
 
-  if (calcLoading) {
+  if (calcLoading && !calc) {
     return (
       <div className="flex items-center justify-center py-10 text-sm text-gray-500">
         Loading security details…
@@ -181,7 +196,7 @@ export function RefundSettlementSection({
     );
   }
 
-  if (calcError) {
+  if (calcError && !calc) {
     return (
       <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-700">
         ⚠️ {calcError}
@@ -214,41 +229,58 @@ export function RefundSettlementSection({
         )}
       </div>
 
-      {/* ── Deduction input ───────────────────────────────────────────────────── */}
-      <div className="space-y-2">
-        <label className="block text-sm font-semibold text-gray-800">
-          Deduction (optional)
-        </label>
-        <div className="flex gap-3 items-start">
+      {/* ── Late Fee + Damage Fee inputs ────────────────────────────────────── */}
+      <div className="space-y-4">
+        {/* Late Fee */}
+        <div className="space-y-1">
+          <label className="block text-sm font-semibold text-gray-800">
+            Late Fee
+          </label>
           <input
-            id="refund-deduction-amount"
+            id="refund-late-fee"
             type="number"
             min="0"
             max={calc.total_security}
             placeholder="₹ 0"
-            value={deductionAmount}
-            onChange={e => setDeductionAmount(e.target.value)}
-            onBlur={handleDeductionCommit}
-            onKeyDown={e => e.key === 'Enter' && handleDeductionCommit()}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm"
+            value={lateFeeInput}
+            onChange={e => setLateFeeInput(e.target.value)}
+            onBlur={handleFeeCommit}
+            onKeyDown={e => e.key === 'Enter' && handleFeeCommit()}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm"
           />
-          <select
-            id="refund-deduction-type"
-            value={deductionType}
-            onChange={e => setDeductionType(e.target.value as 'damage_fee' | 'late_fee')}
-            disabled={calc.deduction_amount === 0}
-            className="px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm disabled:opacity-50 bg-white"
-          >
-            <option value="damage_fee">Damage Fee</option>
-            <option value="late_fee">Late Fee</option>
-          </select>
+          {calc.late_fee_days > 0 && (
+            <p className="text-xs text-gray-500">
+              Auto-calculated: {calc.late_fee_days} day(s) × ₹{calc.late_fee_per_day.toLocaleString('en-IN')}/day = ₹{calc.suggested_late_fee.toLocaleString('en-IN')}
+            </p>
+          )}
         </div>
-        {calc.deduction_amount > 0 && (
-          <p className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded p-2">
-            ₹{calc.deduction_amount.toLocaleString('en-IN')} retained as{' '}
-            {deductionType === 'damage_fee' ? 'damage fee' : 'late fee'}.
-            Net security available: ₹{calc.net_security.toLocaleString('en-IN')}
-          </p>
+
+        {/* Damage Fee */}
+        <div className="space-y-1">
+          <label className="block text-sm font-semibold text-gray-800">
+            Damage Fee
+          </label>
+          <input
+            id="refund-damage-fee"
+            type="number"
+            min="0"
+            max={calc.total_security}
+            placeholder="₹ 0"
+            value={damageFeeInput}
+            onChange={e => setDamageFeeInput(e.target.value)}
+            onBlur={handleFeeCommit}
+            onKeyDown={e => e.key === 'Enter' && handleFeeCommit()}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm"
+          />
+        </div>
+
+        {/* Deduction info */}
+        {calc.total_deduction > 0 && (
+          <div className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded p-2 space-y-0.5">
+            {calc.late_fee > 0 && <p>Late fee: ₹{calc.late_fee.toLocaleString('en-IN')}</p>}
+            {calc.damage_fee > 0 && <p>Damage fee: ₹{calc.damage_fee.toLocaleString('en-IN')}</p>}
+            <p className="font-medium">Net security available: ₹{calc.net_security.toLocaleString('en-IN')}</p>
+          </div>
         )}
         {calcLoading && (
           <p className="text-xs text-gray-400">Recalculating…</p>
@@ -344,49 +376,50 @@ export function RefundSettlementSection({
       )}
 
       {/* ── Settlement preview ────────────────────────────────────────────────── */}
-      {calc.total_security > 0 && (
-        <div className="bg-blue-50 border border-blue-300 rounded-lg p-4 text-sm space-y-1">
-          <p className="font-semibold text-blue-900 mb-2">Settlement Summary</p>
-          {calc.deduction_amount > 0 && (
-            <div className="flex justify-between text-orange-700">
-              <span>Deduction ({deductionType === 'damage_fee' ? 'Damage fee' : 'Late fee'})</span>
-              <span>–₹{calc.deduction_amount.toLocaleString('en-IN')}</span>
+      {calc.total_security > 0 && (() => {
+        const finalRefund = remainderChoice === 'refund' ? calc.remainder_amount : secExcess;
+        const finalCredit = remainderChoice === 'adjust_security' ? creditAmount : 0;
+        return (
+          <div className="bg-gray-50 border border-gray-300 rounded-lg p-4 text-sm space-y-1.5">
+            <p className="font-semibold text-gray-900 mb-2">Settlement Summary</p>
+
+            <div className="flex justify-between text-gray-800">
+              <span>Security deposit</span>
+              <span>₹{calc.total_security.toLocaleString('en-IN')}</span>
             </div>
-          )}
-          {calc.auto_adjust_amount > 0 && (
-            <div className="flex justify-between text-blue-800">
-              <span>Auto-adjust against dues</span>
-              <span>₹{calc.auto_adjust_amount.toLocaleString('en-IN')}</span>
+
+            {calc.late_fee > 0 && (
+              <div className="flex justify-between text-gray-600">
+                <span>Late fee</span>
+                <span>−₹{calc.late_fee.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+            {calc.damage_fee > 0 && (
+              <div className="flex justify-between text-gray-600">
+                <span>Damage fee</span>
+                <span>−₹{calc.damage_fee.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+            {calc.auto_adjust_amount > 0 && (
+              <div className="flex justify-between text-gray-600">
+                <span>Adjusted against pending dues</span>
+                <span>−₹{calc.auto_adjust_amount.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+            {finalCredit > 0 && (
+              <div className="flex justify-between text-gray-600">
+                <span>Credited to other security</span>
+                <span>−₹{finalCredit.toLocaleString('en-IN')}</span>
+              </div>
+            )}
+
+            <div className="border-t border-gray-300 pt-2 mt-2 flex justify-between font-bold text-gray-900">
+              <span>Refund to customer</span>
+              <span>₹{finalRefund.toLocaleString('en-IN')}</span>
             </div>
-          )}
-          {calc.remainder_amount > 0 && remainderChoice === 'refund' && (
-            <div className="flex justify-between text-red-700">
-              <span>{paymentMethod} refund to customer</span>
-              <span>₹{calc.remainder_amount.toLocaleString('en-IN')}</span>
-            </div>
-          )}
-          {calc.remainder_amount > 0 && remainderChoice === 'adjust_security' && (
-            <>
-              {creditAmount > 0 && (
-                <div className="flex justify-between text-green-700">
-                  <span>Credit to other security</span>
-                  <span>₹{creditAmount.toLocaleString('en-IN')}</span>
-                </div>
-              )}
-              {secExcess > 0 && (
-                <div className="flex justify-between text-red-700">
-                  <span>{paymentMethod} refund (excess)</span>
-                  <span>₹{secExcess.toLocaleString('en-IN')}</span>
-                </div>
-              )}
-            </>
-          )}
-          <div className="border-t border-blue-300 pt-2 mt-2 flex justify-between font-bold text-blue-900">
-            <span>Total accounted</span>
-            <span>₹{calc.total_security.toLocaleString('en-IN')} ✅</span>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ── Errors ─────────────────────────────────────────────────────────────── */}
       {(validationError || submitError) && (

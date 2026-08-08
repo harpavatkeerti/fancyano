@@ -871,9 +871,14 @@ class ProductLifecycleService {
   }
 
   /**
-   * Mark products as returned and apply late fees if applicable
+   * Mark products as returned (in_progress → completed).
+   *
+   * Late fees and damage fees are NOT created here — they are handled during
+   * security deposit settlement (processSecurityReturn) so that the admin can
+   * review/adjust amounts in the refund dialog before they become charges.
+   *
    * @param {number} bookingId - The booking ID
-   * @param {Array<Object>} returns - Array of {bookingProductId, damageFee}
+   * @param {Array<Object>} returns - Array of {bookingProductId}
    * @param {number} userId - User performing the return
    * @returns {Promise<Object>} - Return details
    */
@@ -882,16 +887,10 @@ class ProductLifecycleService {
     try {
       await client.query('BEGIN');
 
-      let totalLateFees = 0;
-      let totalDamageFees = 0;
-
-      // Get late fee policy
-      const lateFeePolicy = await policyService.getLateFee();
-
       for (const ret of returns) {
-        const { bookingProductId, damageFee } = ret;
+        const { bookingProductId } = ret;
 
-        // Get booking product details to check expected return date
+        // Validate product is in_progress
         const bpResult = await client.query(
           'SELECT booked_to FROM booking_products WHERE id = $1 AND status = $2',
           [bookingProductId, 'in_progress']
@@ -901,43 +900,7 @@ class ProductLifecycleService {
           throw new Error(`Booking product ${bookingProductId} not found or not in in_progress status`);
         }
 
-        const { booked_to } = bpResult.rows[0];
-
-        // Calculate late days: current date - expected return date
-        const currentDate = new Date();
-        const expectedReturnDate = new Date(booked_to);
-        const lateDays = Math.max(0, Math.floor((currentDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
-
-        // Apply late fee if applicable (product still 'in_progress' — charge routing works)
-        if (lateDays > 0) {
-          const lateFeeAmount = lateFeePolicy.amount * lateDays;
-          totalLateFees += lateFeeAmount;
-
-          await chargeAccountingService.addCharge(
-            bookingProductId,
-            'late_fee',
-            lateFeeAmount,
-            lateFeePolicy.policy?.key || null,
-            `Late return: ${lateDays} day(s)`,
-            client
-          );
-        }
-
-        // Apply damage fee if applicable
-        if (damageFee > 0) {
-          totalDamageFees += damageFee;
-
-          await chargeAccountingService.addCharge(
-            bookingProductId,
-            'damage_fee',
-            damageFee,
-            null,
-            'Product damage',
-            client
-          );
-        }
-
-        // STATUS CHANGE LAST — mark product as completed after fees are created
+        // Mark product as completed
         await client.query(
           'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           ['completed', bookingProductId]
@@ -976,8 +939,6 @@ class ProductLifecycleService {
           'products_returned',
           {
             booking_product_ids: returns.map(r => r.bookingProductId),
-            total_late_fees: totalLateFees,
-            total_damage_fees: totalDamageFees
           },
           userId
         ]
@@ -991,8 +952,6 @@ class ProductLifecycleService {
       return {
         booking_id: bookingId,
         returned_count: returns.length,
-        total_late_fees: totalLateFees,
-        total_damage_fees: totalDamageFees,
         booking_status: statusResult.status
       };
     } catch (error) {
@@ -1002,6 +961,7 @@ class ProductLifecycleService {
       client.release();
     }
   }
+
 
   /**
    * Get calculated cancellation penalty for a product
@@ -1046,27 +1006,51 @@ class ProductLifecycleService {
   /**
    * Calculate security deposit settlement amounts (read-only, no transactions).
    *
-   * Accepts an optional deduction_amount so the frontend never needs to compute
-   * any split itself — all business logic lives here.
+   * Auto-calculates the suggested late fee based on the product's return date
+   * and the active late fee policy. The frontend pre-populates this value and
+   * the admin can adjust it before confirming.
    *
    * No status gate — calculate is called before the user confirms, so the product
    * may still be 'in_progress'. The actual status enforcement is in processSecurityReturn.
    *
    * @param {number} bookingProductId - Booking product ID
-   * @param {number} [deductionAmount=0] - Damage/late fee the user intends to retain
+   * @param {number} [lateFee=0]    - Late fee the user intends to retain
+   * @param {number} [damageFee=0]  - Damage fee the user intends to retain
    * @returns {Promise<Object>} {
-   *   total_security, deduction_amount, net_security,
+   *   total_security, late_fee, damage_fee, total_deduction, net_security,
    *   non_security_pending, auto_adjust_amount, remainder_amount,
+   *   suggested_late_fee, late_fee_days, late_fee_per_day,
    *   eligible_security_products
    * }
    */
-  async calculateSecurityReturn(bookingProductId, deductionAmount = 0) {
+  async calculateSecurityReturn(bookingProductId, lateFee = null, damageFee = 0) {
     const bpResult = await pool.query(
-      'SELECT booking_id, status FROM booking_products WHERE id = $1',
+      'SELECT booking_id, status, booked_to FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
     if (bpResult.rows.length === 0) throw new Error('Booking product not found');
-    const { booking_id } = bpResult.rows[0];
+    const { booking_id, booked_to } = bpResult.rows[0];
+
+    // ── Auto-calculate suggested late fee ──────────────────────────────────────
+    let suggestedLateFee = 0;
+    let lateFeeDays = 0;
+    let lateFeePerDay = 0;
+
+    if (booked_to) {
+      const currentDate = new Date();
+      const expectedReturnDate = new Date(booked_to);
+      lateFeeDays = Math.max(0, Math.floor((currentDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
+
+      if (lateFeeDays > 0) {
+        const lateFeePolicy = await policyService.getLateFee();
+        lateFeePerDay = lateFeePolicy.amount;
+        suggestedLateFee = lateFeePerDay * lateFeeDays;
+      }
+    }
+
+    // When lateFee is null (first call, no explicit value), auto-apply suggested.
+    // When lateFee is 0 (admin explicitly set to zero), respect that.
+    const effectiveLateFee = (lateFee === null) ? suggestedLateFee : lateFee;
 
     // Authoritative security paid (from product_charges, not booking_products face value)
     const secResult = await pool.query(
@@ -1077,8 +1061,8 @@ class ProductLifecycleService {
     if (secResult.rows.length === 0) throw new Error('No security charge found for this product');
     const totalSecurity = secResult.rows[0].paid_amount;
 
-    const deduction = Math.max(0, Math.min(deductionAmount, totalSecurity));
-    const netSecurity = totalSecurity - deduction;
+    const totalDeduction = Math.max(0, Math.min(effectiveLateFee + damageFee, totalSecurity));
+    const netSecurity = totalSecurity - totalDeduction;
 
     // Non-security pending on OTHER active products (rent, transport, penalties, fees)
     const nonSecResult = await pool.query(
@@ -1123,11 +1107,16 @@ class ProductLifecycleService {
       booking_id,
       booking_product_id: bookingProductId,
       total_security: totalSecurity,
-      deduction_amount: deduction,
+      late_fee: Math.max(0, Math.min(effectiveLateFee, totalSecurity)),
+      damage_fee: Math.max(0, Math.min(damageFee, totalSecurity - Math.max(0, Math.min(effectiveLateFee, totalSecurity)))),
+      total_deduction: totalDeduction,
       net_security: netSecurity,
       non_security_pending: nonSecurityPending,
       auto_adjust_amount: autoAdjust,
       remainder_amount: remainder,
+      suggested_late_fee: suggestedLateFee,
+      late_fee_days: lateFeeDays,
+      late_fee_per_day: lateFeePerDay,
       eligible_security_products: eligibleResult.rows
     };
   }
@@ -1141,9 +1130,9 @@ class ProductLifecycleService {
    *
    * @param {number} bookingProductId - Booking product ID (must be 'completed')
    * @param {Object} opts
-   * @param {number}   opts.deduction_amount       - ≥ 0: damage/late fee retained from security
-   * @param {string}   opts.deduction_type         - 'damage_fee'|'late_fee' (required if deduction_amount > 0)
-   * @param {number}   opts.adjust_non_security    - ≥ 0: applied against rent/transport/fees on other products
+   * @param {number}   opts.late_fee              - ≥ 0: late fee retained from security
+   * @param {number}   opts.damage_fee            - ≥ 0: damage fee retained from security
+   * @param {number}   opts.adjust_non_security   - ≥ 0: applied against rent/transport/fees on other products
    * @param {number}   opts.adjust_security_amount - ≥ 0: applied against pending security on other products
    * @param {number[]} opts.security_product_ids   - required (non-empty) if adjust_security_amount > 0
    * @param {number}   opts.refund_amount          - ≥ 0: cash refunded to customer
@@ -1152,8 +1141,8 @@ class ProductLifecycleService {
    * @returns {Promise<Object>}
    */
   async processSecurityReturn(bookingProductId, {
-    deduction_amount = 0,
-    deduction_type = null,
+    late_fee = 0,
+    damage_fee = 0,
     adjust_non_security = 0,
     adjust_security_amount = 0,
     security_product_ids = [],
@@ -1188,7 +1177,8 @@ class ProductLifecycleService {
       const totalSecurity = secResult.rows[0].paid_amount;
 
       // ── 2. Validate amounts ─────────────────────────────────────────────────
-      const amounts = [deduction_amount, adjust_non_security, adjust_security_amount, refund_amount];
+      const totalDeduction = late_fee + damage_fee;
+      const amounts = [late_fee, damage_fee, adjust_non_security, adjust_security_amount, refund_amount];
       if (amounts.some(a => typeof a !== 'number' || a < 0)) {
         throw new Error('All amounts must be non-negative numbers');
       }
@@ -1196,50 +1186,74 @@ class ProductLifecycleService {
       if (submittedTotal !== totalSecurity) {
         throw new Error(
           `Amounts do not sum to security paid: ` +
-          `deduction(${deduction_amount}) + adjust_non_security(${adjust_non_security}) + ` +
+          `late_fee(${late_fee}) + damage_fee(${damage_fee}) + adjust_non_security(${adjust_non_security}) + ` +
           `adjust_security(${adjust_security_amount}) + refund(${refund_amount}) = ${submittedTotal}, ` +
           `expected ${totalSecurity}`
         );
-      }
-      if (deduction_amount > 0 && !deduction_type) {
-        throw new Error('deduction_type is required when deduction_amount > 0');
       }
       if (adjust_security_amount > 0 && (!security_product_ids || security_product_ids.length === 0)) {
         throw new Error('security_product_ids is required when adjust_security_amount > 0');
       }
 
-      // ── 3. Deduction: create charge and mark paid ───────────────────────────
-      if (deduction_amount > 0) {
+      // ── 3. Late fee: create charge and mark paid ────────────────────────────
+      if (late_fee > 0) {
         await chargeAccountingService.addCharge(
           bookingProductId,
-          deduction_type,
-          deduction_amount,
+          'late_fee',
+          late_fee,
           null,
-          `Deduction: ${deduction_type}`,
+          `Late fee retained from security`,
           client
         );
         await client.query(
           `UPDATE product_charges
            SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
-           WHERE booking_product_id = $1 AND charge_type = $2`,
-          [bookingProductId, deduction_type]
+           WHERE booking_product_id = $1 AND charge_type = 'late_fee'`,
+          [bookingProductId]
         );
-        // Info-only transaction — no cash movement, just auditable record
-        const deductionLabel = deduction_type === 'damage_fee' ? 'Damage fee' : 'Late fee';
         await client.query(
           `INSERT INTO payment_transactions
            (booking_id, amount, type, method, notes, recorded_by, transaction_date)
            VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
           [
             booking_id,
-            deduction_amount,
-            `${deductionLabel} of ₹${deduction_amount} retained from security deposit (product #${bookingProductId})`,
+            late_fee,
+            `Late fee of ₹${late_fee} retained from security deposit (product #${bookingProductId})`,
             recorded_by
           ]
         );
       }
 
-      // ── 4. Auto-adjust against non-security dues on other products ──────────
+      // ── 4. Damage fee: create charge and mark paid ──────────────────────────
+      if (damage_fee > 0) {
+        await chargeAccountingService.addCharge(
+          bookingProductId,
+          'damage_fee',
+          damage_fee,
+          null,
+          `Damage fee retained from security`,
+          client
+        );
+        await client.query(
+          `UPDATE product_charges
+           SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
+           WHERE booking_product_id = $1 AND charge_type = 'damage_fee'`,
+          [bookingProductId]
+        );
+        await client.query(
+          `INSERT INTO payment_transactions
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+          [
+            booking_id,
+            damage_fee,
+            `Damage fee of ₹${damage_fee} retained from security deposit (product #${bookingProductId})`,
+            recorded_by
+          ]
+        );
+      }
+
+      // ── 5. Auto-adjust against non-security dues on other products ──────────
       if (adjust_non_security > 0) {
         await chargeAccountingService._applyPaymentInternal(
           booking_id,
@@ -1261,7 +1275,7 @@ class ProductLifecycleService {
         );
       }
 
-      // ── 5. Adjust against security on specific other products ───────────────
+      // ── 6. Adjust against security on specific other products ───────────────
       if (adjust_security_amount > 0) {
         await chargeAccountingService._applyPaymentInternal(
           booking_id,
@@ -1283,8 +1297,13 @@ class ProductLifecycleService {
         );
       }
 
-      // ── 6. Cash refund to customer ──────────────────────────────────────────
+      // ── 7. Cash refund to customer ──────────────────────────────────────────
       if (refund_amount > 0) {
+        const deductionNotes = [];
+        if (late_fee > 0) deductionNotes.push(`late fee: ₹${late_fee}`);
+        if (damage_fee > 0) deductionNotes.push(`damage fee: ₹${damage_fee}`);
+        const deductionSuffix = deductionNotes.length > 0 ? ` (${deductionNotes.join(', ')} retained)` : '';
+
         await client.query(
           `INSERT INTO payment_transactions
            (booking_id, amount, type, method, notes, recorded_by, transaction_date)
@@ -1293,15 +1312,14 @@ class ProductLifecycleService {
             booking_id,
             refund_amount,
             payment_method,
-            `Security deposit refund for product #${bookingProductId}` +
-            (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : '') +
+            `Security deposit refund for product #${bookingProductId}${deductionSuffix}` +
             (notes ? ` | ${notes}` : ''),
             recorded_by
           ]
         );
       }
 
-      // ── 7. Activity log ─────────────────────────────────────────────────────
+      // ── 8. Activity log ─────────────────────────────────────────────────────
       await client.query(
         `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
          VALUES ($1, 'security_return_processed', $2, $3)`,
@@ -1310,8 +1328,8 @@ class ProductLifecycleService {
           JSON.stringify({
             booking_product_id: bookingProductId,
             total_security: totalSecurity,
-            deduction_amount,
-            deduction_type,
+            late_fee,
+            damage_fee,
             adjust_non_security,
             adjust_security_amount,
             security_product_ids,
@@ -1328,7 +1346,8 @@ class ProductLifecycleService {
         booking_id,
         booking_product_id: bookingProductId,
         total_security: totalSecurity,
-        deduction_amount,
+        late_fee,
+        damage_fee,
         adjust_non_security,
         adjust_security_amount,
         refund_amount,
