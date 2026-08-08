@@ -314,7 +314,7 @@ export function MeasurementModal({
                     <div className="mb-1">
                       <h4 className="font-semibold text-gray-900">{product.name}</h4>
                       {product.code && (
-                        <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {product.code}</p>
+                        <p className="text-xs text-gray-500 font-mono mt-0.5">Code: {product.code}{product.size ? ` · Size: ${product.size}` : ''}</p>
                       )}
                     </div>
                     <p className="text-sm text-gray-600 mt-1">
@@ -415,7 +415,7 @@ export function MeasurementModal({
             <div className="flex-1">
               <h3 className="text-lg font-semibold text-gray-900 mb-1">{selectedProduct.name}</h3>
               {selectedProduct.code && (
-                <p className="text-xs text-gray-500 font-mono mb-1">Code: {selectedProduct.code}</p>
+                <p className="text-xs text-gray-500 font-mono mb-1">Code: {selectedProduct.code}{selectedProduct.size ? ` · Size: ${selectedProduct.size}` : ''}</p>
               )}
               <p className="text-sm text-gray-600">₹{Math.floor(selectedProduct.rent || 0)} / Day</p>
             </div>
