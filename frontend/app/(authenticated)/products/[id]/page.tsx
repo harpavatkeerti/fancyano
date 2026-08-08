@@ -201,6 +201,11 @@ export default function ProductDetailPage() {
             continue;
           }
 
+          // Different sizes of the same product are independent — skip
+          if (selectedSize && otherProduct.size && otherProduct.size !== selectedSize) {
+            continue;
+          }
+
           const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
           const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
           otherPickupDate.setHours(0, 0, 0, 0);
