@@ -1607,6 +1607,129 @@ describe('ProductLifecycleService', () => {
       // Verify it matches the formula in _calculateExchangePenalties
       expect(expectedDowngradePenalty).toBe(1650);
     });
+
+    // ─── Size-based pricing tests ───
+
+    test('should use size-specific rent when newProductSize is provided and rent_overrides exist', async () => {
+      // Create a product with rent_overrides (size-based pricing)
+      const sizedProduct = await pool.query(
+        `INSERT INTO products (name, code, category, available_sizes, rent, rent_overrides, security_deposit)
+         VALUES ('Sized Product', 'TEST-SIZED', 'Test', '{S,M,L,XL}', 1000, '{"S": 800, "M": 1000, "L": 1200, "XL": 1500}', 500)
+         RETURNING id`
+      );
+      const sizedProductId = sizedProduct.rows[0].id;
+
+      // Request preview WITH size 'XL' which has rent_override of 1500
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        sizedProductId,
+        [],
+        'XL'   // <-- size param
+      );
+
+      // new_rent should be 1500 (XL override), NOT 1000 (base rent)
+      expect(result.calculations.new_rent).toBe(1500);
+      expect(result.calculations.total_new_rent).toBe(1500);
+
+      // Cleanup
+      await pool.query('DELETE FROM products WHERE id = $1', [sizedProductId]);
+    });
+
+    test('should use base rent when newProductSize is null even if rent_overrides exist', async () => {
+      const sizedProduct = await pool.query(
+        `INSERT INTO products (name, code, category, available_sizes, rent, rent_overrides, security_deposit)
+         VALUES ('Sized Product 2', 'TEST-SIZED2', 'Test', '{S,M,L}', 1000, '{"S": 800, "L": 1200}', 500)
+         RETURNING id`
+      );
+      const sizedProductId = sizedProduct.rows[0].id;
+
+      // No size passed — should fall back to base rent
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        sizedProductId,
+        []
+        // no size param
+      );
+
+      expect(result.calculations.new_rent).toBe(1000); // base rent
+
+      await pool.query('DELETE FROM products WHERE id = $1', [sizedProductId]);
+    });
+
+    test('should use base rent when size has no override', async () => {
+      const sizedProduct = await pool.query(
+        `INSERT INTO products (name, code, category, available_sizes, rent, rent_overrides, security_deposit)
+         VALUES ('Sized Product 3', 'TEST-SIZED3', 'Test', '{S,M,L}', 1000, '{"S": 800}', 500)
+         RETURNING id`
+      );
+      const sizedProductId = sizedProduct.rows[0].id;
+
+      // Size 'M' has no override → should use base rent 1000
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        sizedProductId,
+        [],
+        'M'
+      );
+
+      expect(result.calculations.new_rent).toBe(1000); // base rent (no 'M' override)
+
+      await pool.query('DELETE FROM products WHERE id = $1', [sizedProductId]);
+    });
+
+    test('should use size-specific rent for additional products when additionalProductSizes is provided', async () => {
+      // Create two sized products
+      const addProduct = await pool.query(
+        `INSERT INTO products (name, code, category, available_sizes, rent, rent_overrides, security_deposit)
+         VALUES ('Add Sized', 'TEST-ADD-SZ', 'Test', '{S,M,L}', 1000, '{"S": 700, "L": 1500}', 500)
+         RETURNING id`
+      );
+      const addProductId = addProduct.rows[0].id;
+
+      const result = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId,
+        testProductId2,  // base product (no size overrides, rent=600)
+        [addProductId],
+        null,            // no size for main product
+        { [addProductId]: 'L' }  // additional product size = L → rent 1500
+      );
+
+      expect(result.additional_products[0].rent).toBe(1500); // L override, not base 1000
+      expect(result.calculations.additional_rent).toBe(1500);
+      expect(result.calculations.total_new_rent).toBe(2100); // 600 + 1500
+
+      await pool.query('DELETE FROM products WHERE id = $1', [addProductId]);
+    });
+
+    test('should correctly calculate total payment with size-specific rents', async () => {
+      const sizedProduct = await pool.query(
+        `INSERT INTO products (name, code, category, available_sizes, rent, rent_overrides, security_deposit)
+         VALUES ('Sized Calc', 'TEST-SZ-CALC', 'Test', '{S,M,L,XL}', 1000, '{"S": 500, "XL": 2000}', 500)
+         RETURNING id`
+      );
+      const sizedProductId = sizedProduct.rows[0].id;
+
+      // Exchange to size S (rent 500) — should be different from base rent (1000)
+      const resultS = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId, sizedProductId, [], 'S'
+      );
+      expect(resultS.calculations.new_rent).toBe(500);
+
+      // Exchange to size XL (rent 2000) — should be different again
+      const resultXL = await productLifecycleService.calculateExchangePreview(
+        testBookingProductId, sizedProductId, [], 'XL'
+      );
+      expect(resultXL.calculations.new_rent).toBe(2000);
+
+      // Downgrade penalty differs because rent differs:
+      // S: max(0, 2500 - (250 + 500)) = 1750
+      // XL: max(0, 2500 - (250 + 2000)) = 250
+      expect(resultS.calculations.downgrade_penalty).toBe(1750);
+      expect(resultXL.calculations.downgrade_penalty).toBe(250);
+      expect(resultS.calculations.downgrade_penalty).not.toBe(resultXL.calculations.downgrade_penalty);
+
+      await pool.query('DELETE FROM products WHERE id = $1', [sizedProductId]);
+    });
   });
 
   describe('calculateCancellationPreview', () => {

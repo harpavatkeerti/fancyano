@@ -27,7 +27,7 @@ router.get('/eligibility/:booking_product_id', async (req, res) => {
 router.get('/preview/:old_booking_product_id', async (req, res) => {
   try {
     const { old_booking_product_id } = req.params;
-    const { new_product_id, additional_product_ids } = req.query;
+    const { new_product_id, additional_product_ids, new_product_size, additional_product_sizes } = req.query;
 
     if (!new_product_id) {
       return res.status(400).json({ error: 'new_product_id query parameter is required' });
@@ -37,10 +37,22 @@ router.get('/preview/:old_booking_product_id', async (req, res) => {
       ? additional_product_ids.split(',').map(id => parseInt(id))
       : [];
 
+    // Parse additional_product_sizes from JSON string (e.g. '{"123":"M","456":"L"}')
+    let parsedAdditionalSizes = {};
+    if (additional_product_sizes) {
+      try {
+        parsedAdditionalSizes = JSON.parse(additional_product_sizes);
+      } catch (e) {
+        // Ignore parse errors — sizes are optional
+      }
+    }
+
     const preview = await productLifecycleService.calculateExchangePreview(
       parseInt(old_booking_product_id),
       parseInt(new_product_id),
-      additionalIds
+      additionalIds,
+      new_product_size || null,
+      parsedAdditionalSizes
     );
 
     res.json(preview);

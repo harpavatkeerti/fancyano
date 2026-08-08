@@ -2,6 +2,7 @@ const pool = require('../database/connection');
 const policyService = require('./policyService');
 const chargeAccountingService = require('./chargeAccountingService');
 const bookingService = require('./bookingService');
+const { ProductService } = require('./productService');
 const { recalcBookingDateRange, checkProductAvailability } = require('../utils/bookingDateUtils');
 
 /**
@@ -1771,7 +1772,7 @@ class ProductLifecycleService {
    * @param {Array<number>} additionalProductIds - Additional product IDs (optional)
    * @returns {Promise<Object>} - Complete preview with all calculations
    */
-  async calculateExchangePreview(oldBookingProductId, newProductId, additionalProductIds = []) {
+  async calculateExchangePreview(oldBookingProductId, newProductId, additionalProductIds = [], newProductSize = null, additionalProductSizes = {}) {
     try {
       // Get original booking product details
       const bpResult = await pool.query(
@@ -1800,9 +1801,9 @@ class ProductLifecycleService {
       );
       const oldRentPaid = parseInt(oldRentPaidResult.rows[0]?.paid) || 0;
 
-      // Get new product details
+      // Get new product details (include rent_overrides for size-based pricing)
       const newProductResult = await pool.query(
-        'SELECT id, name, rent, security_deposit FROM products WHERE id = $1',
+        'SELECT id, name, rent, rent_overrides, security_deposit FROM products WHERE id = $1',
         [newProductId]
       );
 
@@ -1811,7 +1812,7 @@ class ProductLifecycleService {
       }
 
       const newProduct = newProductResult.rows[0];
-      const newRent = newProduct.rent || 0;
+      const newRent = ProductService.getProductRent(newProduct, newProductSize);
       const newSecurity = newProduct.security_deposit || 0;
 
       // Get additional products if any
@@ -1821,17 +1822,19 @@ class ProductLifecycleService {
 
       if (additionalProductIds.length > 0) {
         const addResult = await pool.query(
-          'SELECT id, name, rent, security_deposit FROM products WHERE id = ANY($1::int[])',
+          'SELECT id, name, rent, rent_overrides, security_deposit FROM products WHERE id = ANY($1::int[])',
           [additionalProductIds]
         );
 
         for (const product of addResult.rows) {
-          additionalRent += product.rent || 0;
+          const productSize = additionalProductSizes[product.id] || null;
+          const productRent = ProductService.getProductRent(product, productSize);
+          additionalRent += productRent;
           additionalSecurity += product.security_deposit || 0;
           additionalProducts.push({
             id: product.id,
             name: product.name,
-            rent: product.rent || 0,
+            rent: productRent,
             security_deposit: product.security_deposit || 0
           });
         }

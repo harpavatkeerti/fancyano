@@ -8,11 +8,15 @@ export function createProductExchangesApi(api: ApiClient) {
       api.get(`/product-exchanges/eligibility/${bookingProductId}`),
     
     // Get exchange preview with all calculations
-    getPreview: (oldBookingProductId: number, newProductId: number, additionalProductIds?: number[]) => 
+    getPreview: (oldBookingProductId: number, newProductId: number, additionalProductIds?: number[], newProductSize?: string | null, additionalProductSizes?: Record<number, string | null>) => 
       api.get(`/product-exchanges/preview/${oldBookingProductId}`, {
         params: {
           new_product_id: newProductId,
-          additional_product_ids: additionalProductIds?.join(',')
+          additional_product_ids: additionalProductIds?.join(','),
+          new_product_size: newProductSize || undefined,
+          additional_product_sizes: additionalProductSizes && Object.keys(additionalProductSizes).length > 0
+            ? JSON.stringify(additionalProductSizes)
+            : undefined
         }
       }),
     

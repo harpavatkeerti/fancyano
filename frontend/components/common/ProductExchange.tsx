@@ -92,6 +92,12 @@ export function ProductExchange({
     }
   }
 
+
+  const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
+
+  // True when the exchanged product has sizes but the user hasn't picked one yet
+  const sizeSelectionPending = !!(exchangedProduct?.available_sizes?.length > 0 && !selectedExchangeSize);
+
   // Fetch exchange preview from backend when products are selected
   useEffect(() => {
     async function fetchExchangePreview() {
@@ -105,12 +111,22 @@ export function ProductExchange({
       const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
       if (!originalProduct) return;
 
+      // If product requires a size but none selected yet, don't fetch preview
+      if (sizeSelectionPending) {
+        setExchangePreview(null);
+        setTotalPaymentDue(0);
+        setPendingExchangeData(null);
+        return;
+      }
+
       try {
         // Call backend API to get complete exchange preview with all calculations
         const response = await productExchangesApi.getPreview(
           originalProduct.id,
           selectedExchangedProduct,
-          additionalProducts
+          additionalProducts,
+          selectedExchangeSize,
+          additionalProductSizes
         );
 
         const preview = response.data;
@@ -154,7 +170,7 @@ export function ProductExchange({
     }
 
     fetchExchangePreview();
-  }, [selectedOriginalProduct, selectedExchangedProduct, additionalProducts, exchangeReason, productDates, bookingDates]);
+  }, [selectedOriginalProduct, selectedExchangedProduct, additionalProducts, exchangeReason, productDates, bookingDates, selectedExchangeSize, additionalProductSizes, sizeSelectionPending]);
 
   async function fetchExchanges() {
     try {
@@ -628,7 +644,6 @@ export function ProductExchange({
   }
 
   const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
-  const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
 
   const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
 
@@ -910,6 +925,9 @@ export function ProductExchange({
                       {exchangedProduct.available_sizes.map((sz: string) => {
                         const isSelected = selectedExchangeSize === sz;
                         const isInBooking = activeProductPairs.has(`${selectedExchangedProduct}:${sz}`);
+                        const rentsBySize = exchangedProduct.rents_by_size || {};
+                        const sizeRent = rentsBySize[sz] ?? exchangedProduct.rent;
+                        const isOverridden = sizeRent !== exchangedProduct.rent;
                         return (
                           <button
                             key={sz}
@@ -924,6 +942,7 @@ export function ProductExchange({
                               }`}
                           >
                             {sz}
+                            {isOverridden && <span className="text-xs ml-1 opacity-70">₹{sizeRent}</span>}
                             {isInBooking && ' ✓'}
                           </button>
                         );
@@ -936,7 +955,20 @@ export function ProductExchange({
                 );
               })()}
 
-              {/* Exchange Reason */}
+              {/* Size selection gate — everything below requires a size when product has sizes */}
+              {sizeSelectionPending && selectedExchangedProduct && (
+                <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-4 text-center">
+                  <p className="text-sm font-semibold text-amber-800">
+                    ⚠️ Please select a size above to see exchange calculations
+                  </p>
+                  <p className="text-xs text-amber-600 mt-1">
+                    The rent and payment calculations depend on the selected size.
+                  </p>
+                </div>
+              )}
+
+              {/* Exchange Reason — only shown after size is selected (if required) */}
+              {!sizeSelectionPending && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
                   Reason (Optional)
@@ -949,9 +981,10 @@ export function ProductExchange({
                   className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
                 />
               </div>
+              )}
 
-              {/* Add More Products Section - Always visible when exchanged product is selected */}
-              {selectedOriginalProduct && selectedExchangedProduct && (
+              {/* Add More Products Section - Only visible when size is selected */}
+              {!sizeSelectionPending && selectedOriginalProduct && selectedExchangedProduct && (
                 <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-4">
                   <label className="block text-sm font-medium text-blue-800 mb-2">
                     Add More Products (Optional)
@@ -1098,7 +1131,11 @@ export function ProductExchange({
                                 <div className="flex items-center gap-2">
                                   <div className="text-right">
                                     <span className="text-sm font-semibold text-gray-900">
-                                      ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}/day
+                                      ₹{(() => {
+                                        const rentsBySize = product.rents_by_size || {};
+                                        const displayRent = (selectedSz && rentsBySize[selectedSz]) ? rentsBySize[selectedSz] : product.rent;
+                                        return parseFloat(String(displayRent || '0')).toLocaleString('en-IN');
+                                      })()}/day
                                     </span>
                                     {parseFloat(String(product.security_deposit || '0')) > 0 && (
                                       <p className="text-xs text-gray-400">
@@ -1136,6 +1173,9 @@ export function ProductExchange({
                                 <div className="mt-2 flex flex-wrap gap-1">
                                   {product.available_sizes.map((sz: string) => {
                                     const isSelected = selectedSz === sz;
+                                    const rentsBySize = product.rents_by_size || {};
+                                    const sizeRent = rentsBySize[sz] ?? product.rent;
+                                    const isOverridden = sizeRent !== product.rent;
                                     return (
                                       <button
                                         key={sz}
@@ -1147,6 +1187,7 @@ export function ProductExchange({
                                           }`}
                                       >
                                         {sz}
+                                        {isOverridden && <span className="ml-0.5 opacity-70">₹{sizeRent}</span>}
                                       </button>
                                     );
                                   })}
@@ -1172,8 +1213,8 @@ export function ProductExchange({
 
               {/* Lower Value Exchange Info - Removed, now unified logic */}
 
-              {/* Selected Products Preview */}
-              {selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
+              {/* Selected Products Preview — hidden until size is selected */}
+              {!sizeSelectionPending && selectedOriginalProduct && selectedExchangedProduct && originalProduct && exchangedProduct && (() => {
                 // Get dates for display
                 const bookedFrom = bookingDates?.booked_from || '';
                 const bookedTo = bookingDates?.booked_to || '';
@@ -1196,7 +1237,10 @@ export function ProductExchange({
                     {/* Products List */}
                     <div className="space-y-3">
                       {allSelectedProducts.map((product, index) => {
-                        const productRent = parseFloat(String(product.rent || '0')) || 0;
+                        const selectedSize = product.isMain ? selectedExchangeSize : additionalProductSizes[product.id];
+                        const productRent = (selectedSize && product.rents_by_size?.[selectedSize])
+                          ? parseFloat(String(product.rents_by_size[selectedSize])) || 0
+                          : parseFloat(String(product.rent || '0')) || 0;
                         const productSecurity = parseFloat(product.security_deposit || '0') || 0;
 
                         return (
@@ -1475,7 +1519,7 @@ export function ProductExchange({
                 </button>
                 <button
                   onClick={totalPaymentDue > 0 ? handlePaymentCollection : handleExchange}
-                  disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct || !allProductDatesSet}
+                  disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct || !allProductDatesSet || sizeSelectionPending}
                   title={!allProductDatesSet && selectedExchangedProduct ? 'Please select dates for all replacement products' : undefined}
                   className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >

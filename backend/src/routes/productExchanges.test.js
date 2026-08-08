@@ -594,5 +594,40 @@ describe('Product Exchanges Routes', () => {
       // Cleanup
       await pool.query(`DELETE FROM products WHERE id IN ($1, $2)`, [product3Id, product4Id]);
     });
+
+    it('should use size-specific rent when new_product_size query param is provided', async () => {
+      // Create a product with size-based pricing
+      const sizedProduct = await pool.query(
+        `INSERT INTO products (code, name, rent, rent_overrides, security_deposit, category, available_sizes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id`,
+        ['TEST-EXCH-SIZED', 'Sized Exchange Product', 1000, JSON.stringify({ S: 800, L: 1500 }), 500, 'test', '{S,M,L}']
+      );
+      const sizedProductId = sizedProduct.rows[0].id;
+
+      // Without size — should use base rent (1000)
+      const responseNoSize = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${sizedProductId}`
+      );
+      expect(responseNoSize.status).toBe(200);
+      expect(responseNoSize.body.calculations.new_rent).toBe(1000);
+
+      // With size L — should use override (1500)
+      const responseL = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${sizedProductId}&new_product_size=L`
+      );
+      expect(responseL.status).toBe(200);
+      expect(responseL.body.calculations.new_rent).toBe(1500);
+
+      // With size S — should use override (800)
+      const responseS = await request(app).get(
+        `/exchanges/preview/${previewTestBPId}?new_product_id=${sizedProductId}&new_product_size=S`
+      );
+      expect(responseS.status).toBe(200);
+      expect(responseS.body.calculations.new_rent).toBe(800);
+
+      // Cleanup
+      await pool.query(`DELETE FROM products WHERE id = $1`, [sizedProductId]);
+    });
   });
 });
