@@ -24,7 +24,7 @@ export default function InventoryPage() {
   const [addStep, setAddStep] = useState<1 | 2>(1);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
-  const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
+  const [productBookings, setProductBookings] = useState<Record<string, any[]>>({});
   const [trackingProduct, setTrackingProduct] = useState<Product | null>(null);
   const [trackingSize, setTrackingSize] = useState<string | null>(null);
   const [showQRScanner, setShowQRScanner] = useState(false);
@@ -516,11 +516,12 @@ export default function InventoryPage() {
     });
   }
 
-  async function fetchProductBookings(productId: number) {
-    if (productBookings[productId]) return; // already loaded
+  async function fetchProductBookings(productId: number, size?: string) {
+    const key = size ? `${productId}-${size}` : `${productId}`;
+    if (productBookings[key]) return; // already loaded
     try {
-      const response = await bookingsApi.getByProductId(productId);
-      setProductBookings(prev => ({ ...prev, [productId]: response.data || [] }));
+      const response = await bookingsApi.getByProductId(productId, size);
+      setProductBookings(prev => ({ ...prev, [key]: response.data || [] }));
     } catch (error) {
       console.error('Error fetching product bookings:', error);
       toast.error('Error loading availability calendar');
@@ -920,19 +921,25 @@ export default function InventoryPage() {
                       ₹{product.rent}
                     </td>
                     {/* Availability calendar */}
-                    <td className="px-4 py-4 whitespace-nowrap" rowSpan={hasSizes ? sizes.length + 1 : 1}>
-                      <DateRangePicker
-                        startDate=""
-                        endDate=""
-                        onStartDateChange={() => { }}
-                        onEndDateChange={() => { }}
-                        bookings={productBookings[product.id] || []}
-                        onOpen={() => fetchProductBookings(product.id)}
-                        compact
-                        label=""
-                        readOnly
-                      />
-                    </td>
+                    {hasSizes ? (
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <span className="text-xs text-gray-400 italic">Per size ↓</span>
+                      </td>
+                    ) : (
+                      <td className="px-4 py-4 whitespace-nowrap">
+                        <DateRangePicker
+                          startDate=""
+                          endDate=""
+                          onStartDateChange={() => { }}
+                          onEndDateChange={() => { }}
+                          bookings={productBookings[`${product.id}`] || []}
+                          onOpen={() => fetchProductBookings(product.id)}
+                          compact
+                          label=""
+                          readOnly
+                        />
+                      </td>
+                    )}
                     {/* Actions */}
                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium" rowSpan={hasSizes ? sizes.length + 1 : 1}>
                       <div className="flex items-center gap-2">
@@ -1009,7 +1016,24 @@ export default function InventoryPage() {
                         key={`${product.id}-${sz}`}
                         className={`border-t border-dashed border-gray-100 ${isSzOut ? 'bg-orange-50' : 'bg-gray-50/60'} ${szIdx === sizes.length - 1 ? 'border-b-2 border-b-gray-200' : ''}`}
                       >
-                        {/* Single cell for last column: Sizes & Tracking */}
+                        {/* Per-size availability calendar */}
+                        <td className="px-4 py-2">
+                          <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-gray-600 bg-gray-100 px-1.5 py-0.5 rounded">{sz}</span>
+                          <DateRangePicker
+                            startDate=""
+                            endDate=""
+                            onStartDateChange={() => { }}
+                            onEndDateChange={() => { }}
+                            bookings={productBookings[`${product.id}-${sz}`] || []}
+                            onOpen={() => fetchProductBookings(product.id, sz)}
+                            compact
+                            label=""
+                            readOnly
+                          />
+                          </div>
+                        </td>
+                        {/* Sizes & Tracking */}
                         <td className="px-6 py-2">
                           <div className="flex items-center gap-2">
                             <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold border ${colors}`}>

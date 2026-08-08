@@ -295,9 +295,10 @@ export default function DateRangePicker({
             if (!isOpen) { onOpen?.(); computePopupPos(); }
             setIsOpen(!isOpen);
           }}
-          className="px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded-lg transition-colors whitespace-nowrap"
+          className={`${compact ? 'px-2 py-1 text-lg' : 'px-3 py-1 bg-blue-500 hover:bg-blue-600 text-white text-sm font-medium rounded-lg'} transition-colors whitespace-nowrap hover:scale-110`}
+          title="View availability calendar"
         >
-          📅 View Calendar
+          {compact ? '📅' : '📅 View Calendar'}
         </button>
       ) : (
       <button
