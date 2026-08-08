@@ -252,6 +252,24 @@ export default function ProductDetailPage() {
       return false;
     }
 
+    // Check if same product-size combination is already in cart
+    try {
+      const cart = JSON.parse(localStorage.getItem('salesman_cart') || '[]');
+      const duplicate = cart.find((item: any) => {
+        const itemProductId = item.product?.id || item.product_id;
+        const itemSize = item.size || null;
+        const currentSize = selectedSize || null;
+        return itemProductId === product.id && itemSize === currentSize;
+      });
+      if (duplicate) {
+        const sizeLabel = selectedSize ? ` (Size: ${selectedSize})` : '';
+        toast.warning(`This product${sizeLabel} is already in your cart. Please remove it first or select a different size.`);
+        return false;
+      }
+    } catch (error) {
+      console.error('Error checking cart for duplicates:', error);
+    }
+
     // Check availability before adding to cart
     const availability = checkAvailability(dateFrom, dateTo, product.id, selectedSize);
 

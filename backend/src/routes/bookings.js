@@ -84,6 +84,20 @@ router.post('/', async (req, res) => {
       });
     }
 
+    // Validate no duplicate product-size combinations
+    const seen = new Set();
+    for (const p of products) {
+      const productId = p.id || p.product_id;
+      const size = p.size || null;
+      const key = `${productId}-${size}`;
+      if (seen.has(key)) {
+        return res.status(400).json({
+          error: `Duplicate product-size combination: product ${productId}${size ? ` (size: ${size})` : ''} appears multiple times`
+        });
+      }
+      seen.add(key);
+    }
+
     // Fetch product details and calculate discounts using shared service
     const productIds = products.map(p => p.id || p.product_id);
     const productMap = await bookingCalculationService.fetchProductDetails(productIds);

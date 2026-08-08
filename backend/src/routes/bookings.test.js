@@ -181,6 +181,89 @@ describe('Bookings Routes', () => {
       expect(response.status).toBe(400);
       expect(response.body).toHaveProperty('error');
     });
+
+    it('should reject duplicate product-size combinations', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          user_id: 1,
+          booking_date: '2027-01-01',
+          products: [
+            {
+              id: testProductId,
+              size: 'M',
+              booked_from: '2027-06-01',
+              booked_to: '2027-06-05'
+            },
+            {
+              id: testProductId,
+              size: 'M',
+              booked_from: '2027-06-10',
+              booked_to: '2027-06-15'
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Duplicate product-size combination');
+      expect(response.body.error).toContain('size: M');
+    });
+
+    it('should reject duplicate product without size', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          user_id: 1,
+          booking_date: '2027-01-01',
+          products: [
+            {
+              id: testProductId,
+              booked_from: '2027-06-01',
+              booked_to: '2027-06-05'
+            },
+            {
+              id: testProductId,
+              booked_from: '2027-06-10',
+              booked_to: '2027-06-15'
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Duplicate product-size combination');
+    });
+
+    it('should allow same product with different sizes', async () => {
+      const response = await request(app)
+        .post('/bookings')
+        .send({
+          user_id: 1,
+          booking_date: '2027-01-01',
+          products: [
+            {
+              id: testProductId,
+              size: 'S',
+              booked_from: '2027-11-01',
+              booked_to: '2027-11-05'
+            },
+            {
+              id: testProductId,
+              size: 'M',
+              booked_from: '2027-11-01',
+              booked_to: '2027-11-05'
+            }
+          ],
+          transport_charge: 0,
+          created_by: 'test-user'
+        });
+
+      expect(response.status).toBe(201);
+      expect(response.body.products).toHaveLength(2);
+    });
   });
 
   describe('GET /bookings', () => {
