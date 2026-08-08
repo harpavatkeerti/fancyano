@@ -18,13 +18,13 @@ export default function ProductDetailPage() {
   const [selectedColor, setSelectedColor] = useState(0);
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
-  const [showWarning, setShowWarning] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [isAvailable, setIsAvailable] = useState(true);
   const [productBookings, setProductBookings] = useState<any[]>([]);
   const [availabilityError, setAvailabilityError] = useState<string>('');
   const [selectedSize, setSelectedSize] = useState<string | null>(null);
-  
+
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
   const [warningMessage, setWarningMessage] = useState('');
@@ -54,31 +54,15 @@ export default function ProductDetailPage() {
     setCurrentImageIndex(0);
   }, [product]);
 
-  // Listen for cart updates to re-validate availability
+  // Re-enable buttons when user changes size or dates (new intent to add)
   useEffect(() => {
-    function handleCartUpdate() {
-      // Re-validate if dates are already selected
-      if (dateFrom && dateTo && product) {
-        const availability = checkAvailability(dateFrom, dateTo, product.id);
-        if (!availability.available) {
-          if (availability.conflictType === 'cart_item') {
-            setAvailabilityError(availability.conflictDetails || 'This product is already in your cart for these dates');
-          } else if (availability.conflictType === 'existing_booking') {
-            setAvailabilityError(availability.conflictDetails || 'This product is already booked for these dates');
-          } else {
-            setAvailabilityError('Selected dates are not available');
-          }
-          setIsAvailable(false);
-        } else {
-          setAvailabilityError('');
-          setIsAvailable(true);
-        }
-      }
-    }
+    setIsSubmitting(false);
+  }, [selectedSize, dateFrom, dateTo]);
 
-    window.addEventListener('cartUpdated', handleCartUpdate);
-    return () => window.removeEventListener('cartUpdated', handleCartUpdate);
-  }, [dateFrom, dateTo, product]);
+  // Listen for cart updates (e.g. to update header cart count)
+  // Note: We intentionally do NOT re-validate availability here.
+  // The cartUpdated event fires after we add an item, and re-checking
+  // would find the item we just added as a conflict, causing a flash.
 
   async function fetchProduct() {
     try {
@@ -102,7 +86,7 @@ export default function ProductDetailPage() {
   }
 
   // Check if dates overlap with existing bookings or cart items
-  function checkAvailability(dateFrom: string, dateTo: string, productId: number): { available: boolean; conflictType: string; conflictDetails?: string } {
+  function checkAvailability(dateFrom: string, dateTo: string, productId: number, size?: string | null): { available: boolean; conflictType: string; conflictDetails?: string } {
     if (!dateFrom || !dateTo || !productId) {
       return { available: false, conflictType: 'invalid_dates' };
     }
@@ -115,12 +99,12 @@ export default function ProductDetailPage() {
     // Check against existing bookings in database
     for (const booking of productBookings) {
       if (!booking.booked_from || !booking.booked_to) continue;
-      
+
       const bookingFrom = new Date(booking.booked_from);
       const bookingTo = new Date(booking.booked_to);
       bookingFrom.setHours(0, 0, 0, 0);
       bookingTo.setHours(0, 0, 0, 0);
-      
+
       // Check if dates overlap: fromDate <= bookingTo && toDate >= bookingFrom
       if (fromDate <= bookingTo && toDate >= bookingFrom) {
         return {
@@ -138,6 +122,11 @@ export default function ProductDetailPage() {
       for (const item of cart) {
         const itemProductId = item.product?.id || item.product_id;
         if (!itemProductId || itemProductId !== productId) continue;
+
+        // Different sizes of the same product are independent items
+        const itemSize = item.size || null;
+        const currentSize = size || null;
+        if (itemSize !== currentSize) continue;
 
         const cartDateFrom = item.dateFrom || item.booked_from;
         const cartDateTo = item.dateTo || item.booked_to;
@@ -167,7 +156,7 @@ export default function ProductDetailPage() {
   // Validate dates when they change
   useEffect(() => {
     if (dateFrom && dateTo && product) {
-      const availability = checkAvailability(dateFrom, dateTo, product.id);
+      const availability = checkAvailability(dateFrom, dateTo, product.id, selectedSize);
       if (!availability.available) {
         if (availability.conflictType === 'cart_item') {
           setAvailabilityError(availability.conflictDetails || 'This product is already in your cart for these dates');
@@ -185,7 +174,7 @@ export default function ProductDetailPage() {
       setAvailabilityError('');
       setIsAvailable(true);
     }
-  }, [dateFrom, dateTo, product]);
+  }, [dateFrom, dateTo, product, selectedSize]);
 
   async function checkTightSchedule() {
     if (!product || !dateFrom || !dateTo) {
@@ -206,7 +195,7 @@ export default function ProductDetailPage() {
         if (otherBooking.status === 'cancelled' || otherBooking.status === 'completed') continue;
 
         const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-        
+
         for (const otherProduct of otherProducts) {
           if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
             continue;
@@ -264,8 +253,8 @@ export default function ProductDetailPage() {
     }
 
     // Check availability before adding to cart
-    const availability = checkAvailability(dateFrom, dateTo, product.id);
-    
+    const availability = checkAvailability(dateFrom, dateTo, product.id, selectedSize);
+
     if (!availability.available) {
       if (availability.conflictType === 'existing_booking') {
         toast.error(`Product Not Available!\n\n${availability.conflictDetails}\n\nPlease select different dates.`);
@@ -287,6 +276,7 @@ export default function ProductDetailPage() {
       return false;
     }
 
+    setIsSubmitting(true);
     addToCartConfirmed();
     return true;
   }
@@ -378,10 +368,10 @@ export default function ProductDetailPage() {
               // Single image
               return img ? [img] : [];
             };
-            
+
             const images = getImages((product as any).image);
             const imageUrls = images.map(img => getImageUrl(img)).filter(Boolean) as string[];
-            
+
             if (imageUrls.length === 0) {
               return (
                 <div className="aspect-[3/4] bg-gray-100 rounded-lg mb-4 overflow-hidden flex items-center justify-center">
@@ -389,7 +379,7 @@ export default function ProductDetailPage() {
                 </div>
               );
             }
-            
+
             if (imageUrls.length === 1) {
               return (
                 <>
@@ -403,7 +393,7 @@ export default function ProductDetailPage() {
                 </>
               );
             }
-            
+
             // Multiple images - show carousel
             return (
               <div className="space-y-4">
@@ -440,16 +430,15 @@ export default function ProductDetailPage() {
                     </>
                   )}
                 </div>
-                
+
                 {/* Thumbnails */}
                 <div className="grid grid-cols-4 gap-2">
                   {imageUrls.map((url, idx) => (
                     <button
                       key={idx}
                       onClick={() => setCurrentImageIndex(idx)}
-                      className={`aspect-[3/4] bg-gray-100 rounded-lg overflow-hidden border-2 transition-all ${
-                        idx === currentImageIndex ? 'border-orange-500 ring-2 ring-orange-200' : 'border-gray-200 hover:border-gray-300'
-                      }`}
+                      className={`aspect-[3/4] bg-gray-100 rounded-lg overflow-hidden border-2 transition-all ${idx === currentImageIndex ? 'border-orange-500 ring-2 ring-orange-200' : 'border-gray-200 hover:border-gray-300'
+                        }`}
                     >
                       <img
                         src={url}
@@ -514,11 +503,10 @@ export default function ProductDetailPage() {
                         setAvailabilityError('');
                         setIsAvailable(true);
                       }}
-                      className={`px-4 py-2 rounded-full text-sm font-medium border-2 transition-all duration-200 ${
-                        isSelected
+                      className={`px-4 py-2 rounded-full text-sm font-medium border-2 transition-all duration-200 ${isSelected
                           ? 'bg-red-600 text-white border-red-600 shadow-sm'
                           : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
-                      }`}
+                        }`}
                     >
                       {sz}
                       {isOverridden && <span className="text-xs ml-1 opacity-70">₹{sizeRent}</span>}
@@ -540,9 +528,8 @@ export default function ProductDetailPage() {
                 <button
                   key={idx}
                   onClick={() => setSelectedColor(idx)}
-                  className={`w-8 h-8 rounded-full border-2 ${
-                    selectedColor === idx ? 'border-gray-900' : 'border-gray-300'
-                  }`}
+                  className={`w-8 h-8 rounded-full border-2 ${selectedColor === idx ? 'border-gray-900' : 'border-gray-300'
+                    }`}
                   style={{ backgroundColor: color }}
                 />
               ))}
@@ -584,28 +571,26 @@ export default function ProductDetailPage() {
           {(() => {
             const hasSizes = product.available_sizes && product.available_sizes.length > 0;
             const needsSize = hasSizes && !selectedSize;
-            const isDisabled = !isAvailable || !dateFrom || !dateTo || needsSize;
+            const isDisabled = !isAvailable || !dateFrom || !dateTo || needsSize || isSubmitting;
             return (
               <div className="flex gap-4">
                 <button
                   onClick={handleAddToCart}
                   disabled={isDisabled}
-                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
-                    isDisabled
+                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${isDisabled
                       ? 'text-gray-400 bg-gray-100 border-2 border-gray-300 cursor-not-allowed'
                       : 'text-red-600 bg-white border-2 border-red-600 hover:bg-red-50'
-                  }`}
+                    }`}
                 >
                   🛒 ADD TO CART
                 </button>
                 <button
                   onClick={handleBookNow}
                   disabled={isDisabled}
-                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${
-                    isDisabled
+                  className={`flex-1 px-6 py-3 rounded-lg font-medium transition-colors ${isDisabled
                       ? 'text-gray-400 bg-gray-300 cursor-not-allowed'
                       : 'text-white bg-red-600 hover:bg-red-700'
-                  }`}
+                    }`}
                 >
                   BOOK NOW
                 </button>
@@ -634,40 +619,7 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
-      {/* Warning Modal */}
-      {showWarning && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 max-w-md mx-4">
-            <div className="flex items-start mb-4">
-              <span className="text-3xl mr-3">⚠️</span>
-              <div>
-                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
-                <p className="text-gray-700">
-                  This dress is booked 1 day before/after the selected date.
-                  Do you still want to proceed?
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowWarning(false)}
-                className="flex-1 px-4 py-2 text-gray-700 bg-white border border-gray-300 rounded-lg font-medium hover:bg-gray-50"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowWarning(false);
-                  setIsAvailable(true);
-                }}
-                className="flex-1 px-4 py-2 text-white bg-red-600 rounded-lg font-medium hover:bg-red-700"
-              >
-                Continue
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+
 
       {/* Tight Schedule Warning Modal */}
       {showWarningModal && (
