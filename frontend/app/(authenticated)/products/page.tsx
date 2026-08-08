@@ -7,6 +7,7 @@ import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
 import { DateRangePicker } from '@/components/common';
+import { sortSizes } from '@/lib/productConstants';
 
 export default function ProductsPage() {
   const searchParams = useSearchParams();
@@ -297,7 +298,7 @@ export default function ProductsPage() {
                   </h3>
                   {product.available_sizes && product.available_sizes.length > 0 && (
                     <div className="flex flex-wrap gap-1 mb-1">
-                      {product.available_sizes.map((sz: string) => (
+                      {sortSizes(product.available_sizes).map((sz: string) => (
                         <span key={sz} className="px-1.5 py-0.5 text-[10px] font-medium bg-gray-100 text-gray-600 rounded">
                           {sz}
                         </span>

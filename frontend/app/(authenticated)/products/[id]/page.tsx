@@ -8,6 +8,7 @@ import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
 import { DateRangePicker } from '@/components/common';
 import { toast } from '@/lib/toast';
+import { sortSizes } from '@/lib/productConstants';
 
 export default function ProductDetailPage() {
   const params = useParams();
@@ -497,7 +498,7 @@ export default function ProductDetailPage() {
             <div className="mb-6">
               <h3 className="text-sm font-semibold text-gray-700 mb-3">Select Size *</h3>
               <div className="flex flex-wrap gap-2">
-                {product.available_sizes.map(sz => {
+                {sortSizes(product.available_sizes).map(sz => {
                   const isSelected = selectedSize === sz;
                   const rentsBySize = (product as any).rents_by_size || {};
                   const sizeRent = rentsBySize[sz] ?? product.rent;

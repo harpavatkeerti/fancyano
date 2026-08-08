@@ -72,6 +72,32 @@ export const FILTER_SIZE_OPTIONS = [
   { group: 'Other', sizes: ['Adult Size'] },
 ];
 
+// ── Size Ordering ───────────────────────────────────────────────────────────
+// Canonical order across all size types, used to sort any size array for display.
+
+const SIZE_ORDER: ReadonlyMap<string, number> = (() => {
+  const order = new Map<string, number>();
+  let idx = 0;
+  for (const s of STANDARD_SIZES) order.set(s.value, idx++);
+  for (const s of MALE_NUMERIC_SIZES) order.set(s, idx++);
+  for (const s of FANCY_COSTUME_SIZES) order.set(s, idx++);
+  return order;
+})();
+
+/**
+ * Sorts an array of size strings according to the canonical order defined in
+ * STANDARD_SIZES → MALE_NUMERIC_SIZES → FANCY_COSTUME_SIZES.
+ * Unknown sizes are placed at the end in their original order.
+ * Returns a **new** array; does not mutate the input.
+ */
+export function sortSizes(sizes: readonly string[]): string[] {
+  return [...sizes].sort((a, b) => {
+    const ia = SIZE_ORDER.get(a) ?? Number.MAX_SAFE_INTEGER;
+    const ib = SIZE_ORDER.get(b) ?? Number.MAX_SAFE_INTEGER;
+    return ia - ib;
+  });
+}
+
 // ── Helper ───────────────────────────────────────────────────────────────────
 
 /**

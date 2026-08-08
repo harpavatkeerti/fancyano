@@ -9,6 +9,7 @@ import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
 import { useAuth } from '@/lib/authContext';
 import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
+import { sortSizes } from '@/lib/productConstants';
 
 import dynamic from 'next/dynamic';
 
@@ -1928,7 +1929,7 @@ export default function BookingsPage() {
               Choose a size for <strong>{sizeSelectProduct.name}</strong> ({sizeSelectProduct.code})
             </p>
             <div className="flex flex-wrap gap-2 mb-6">
-              {sizeSelectProduct.available_sizes!.map((sz: string) => (
+              {sortSizes(sizeSelectProduct.available_sizes!).map((sz: string) => (
                 <button
                   key={sz}
                   onClick={async () => {

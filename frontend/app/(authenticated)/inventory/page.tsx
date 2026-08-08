@@ -5,7 +5,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
   MALE_PRODUCT_TYPES, FEMALE_PRODUCT_TYPES,
   MALE_NUMERIC_SIZES, STANDARD_SIZES, FANCY_COSTUME_SIZES,
-  getSizesForProduct, NO_SIZE_TYPES,
+  getSizesForProduct, NO_SIZE_TYPES, sortSizes,
 } from '@/lib/productConstants';
 
 
@@ -865,7 +865,7 @@ export default function InventoryPage() {
                 other_work: 'bg-gray-200 text-gray-800 border-gray-400',
               };
 
-              const sizes = product.available_sizes || [];
+              const sizes = sortSizes(product.available_sizes || []);
               const hasSizes = sizes.length > 0;
 
               return (
@@ -1437,7 +1437,7 @@ export default function InventoryPage() {
                           </div>
                           <p className="text-xs text-gray-500">Only change sizes that differ from base rent (₹{formData.rent || 0}).</p>
                           <div className="grid grid-cols-3 gap-2">
-                            {formData.available_sizes.map(sz => {
+                            {sortSizes(formData.available_sizes).map(sz => {
                               const overrideValue = formData.rent_overrides[sz];
                               const baseRent = parseInt(formData.rent) || 0;
                               return (
@@ -1753,7 +1753,7 @@ export default function InventoryPage() {
                 <div className="bg-gray-50 p-3 rounded-lg">
                   <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Sizes & Tracking</p>
                   <div className="flex flex-wrap gap-2">
-                    {viewingProduct.available_sizes.map(sz => {
+                    {sortSizes(viewingProduct.available_sizes).map(sz => {
                       const sizeMap = viewingProduct.size_tracking_map || {};
                       const ts = sizeMap[sz] || 'in_house';
                       const colorMap: Record<string, string> = {

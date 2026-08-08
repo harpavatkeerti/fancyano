@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { toast } from '@/lib/toast';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { PaymentMethodInput } from './PaymentMethodInput';
+import { sortSizes } from '@/lib/productConstants';
 
 interface ProductExchangeProps {
   bookingId: number;
@@ -922,7 +923,7 @@ export function ProductExchange({
                       Select Size *
                     </label>
                     <div className="flex flex-wrap gap-2">
-                      {exchangedProduct.available_sizes.map((sz: string) => {
+                      {sortSizes(exchangedProduct.available_sizes).map((sz: string) => {
                         const isSelected = selectedExchangeSize === sz;
                         const isInBooking = activeProductPairs.has(`${selectedExchangedProduct}:${sz}`);
                         const rentsBySize = exchangedProduct.rents_by_size || {};
@@ -1171,7 +1172,7 @@ export function ProductExchange({
                               {/* Size selector for this additional product */}
                               {hasSizes && (
                                 <div className="mt-2 flex flex-wrap gap-1">
-                                  {product.available_sizes.map((sz: string) => {
+                                  {sortSizes(product.available_sizes).map((sz: string) => {
                                     const isSelected = selectedSz === sz;
                                     const rentsBySize = product.rents_by_size || {};
                                     const sizeRent = rentsBySize[sz] ?? product.rent;
