@@ -1,5 +1,11 @@
 'use client';
 
+function formatDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+
 
 /**
  * Converts a `PaymentSummary.products` entry into `EligibleSecProduct[]`,
@@ -11,8 +17,10 @@ export function toEligibleSecProducts(
     booking_product_id: number;
     product_name: string;
     product_code: string;
+    product_size?: string | null;
     status: string;
     booked_from: string;
+    booked_to?: string;
     charges: Array<{ charge_type: string; due_amount: number; paid_amount: number }>;
   }>,
 ): EligibleSecProduct[] {
@@ -31,10 +39,12 @@ export function toEligibleSecProducts(
         bpId: p.booking_product_id,
         name: p.product_name,
         code: p.product_code,
+        size: p.product_size || null,
         due: sec.due_amount,
         paid: sec.paid_amount,
         remaining: sec.due_amount - sec.paid_amount,
         bookedFrom: p.booked_from,
+        bookedTo: p.booked_to || '',
       };
     });
 }
@@ -75,7 +85,7 @@ export function computeSecAllocationPreview(
   for (const p of selected) {
     if (remaining <= 0) break;
     const toApply = Math.min(remaining, p.remaining);
-    allocation.push({ bpId: p.bpId, name: p.name, code: p.code, amount: toApply });
+    allocation.push({ bpId: p.bpId, name: p.name, code: p.code, size: p.size, amount: toApply });
     remaining -= toApply;
   }
 
@@ -104,16 +114,19 @@ export interface EligibleSecProduct {
   bpId: number;
   name: string;
   code: string;
+  size: string | null;
   due: number;
   paid: number;
   remaining: number;
   bookedFrom: string;
+  bookedTo: string;
 }
 
 export interface SecAllocationEntry {
   bpId: number;
   name: string;
   code: string;
+  size: string | null;
   amount: number;
 }
 
@@ -174,7 +187,16 @@ export function SecurityAllocationSection({
                   <div className="flex justify-between items-start">
                     <div>
                       <p className="text-sm font-medium text-gray-900">{p.name}</p>
-                      <p className="text-xs text-gray-500">{p.code}</p>
+                      <p className="text-xs text-gray-500">
+                        {p.code}{p.size ? ` · Size: ${p.size}` : ''}
+                      </p>
+                      {(p.bookedFrom || p.bookedTo) && (
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          {p.bookedFrom ? formatDate(p.bookedFrom) : '—'}
+                          {' → '}
+                          {p.bookedTo ? formatDate(p.bookedTo) : '—'}
+                        </p>
+                      )}
                     </div>
                     <div className="text-right text-xs text-gray-600">
                       <p>Due: ₹{p.due.toLocaleString('en-IN')}</p>
@@ -202,7 +224,7 @@ export function SecurityAllocationSection({
                 <span>
                   {a.name}
                   {a.code && (
-                    <span className="ml-1 text-gray-400 font-mono">{a.code}</span>
+                    <span className="ml-1 text-gray-400 font-mono">{a.code}{a.size ? ` · Size: ${a.size}` : ''}</span>
                   )}
                 </span>
                 <span className="font-medium">+₹{a.amount.toLocaleString('en-IN')}</span>

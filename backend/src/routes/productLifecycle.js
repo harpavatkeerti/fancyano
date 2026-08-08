@@ -133,7 +133,8 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
       security_product_ids = [],
       refund_amount = 0,
       payment_method = 'Cash',
-      recorded_by
+      recorded_by,
+      notes = ''
     } = req.body;
 
     if (!recorded_by) {
@@ -150,7 +151,8 @@ router.post('/:bookingId/products/:productId/security-refund/process', async (re
         security_product_ids: Array.isArray(security_product_ids) ? security_product_ids : [],
         refund_amount: Number(refund_amount),
         payment_method,
-        recorded_by
+        recorded_by,
+        notes: notes || ''
       }
     );
 

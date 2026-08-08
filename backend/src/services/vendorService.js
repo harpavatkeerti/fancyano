@@ -1,6 +1,11 @@
 const pool = require('../database/connection');
 const { validatePhoneLength } = require('../utils/phoneUtils');
 
+// Indian GSTIN: 2-digit state code, 5 alpha, 4 digits, 1 alpha, 1 alphanumeric, 'Z', 1 alphanumeric
+const GST_REGEX = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/;
+// Indian PAN: 5 alpha, 4 digits, 1 alpha
+const PAN_REGEX = /^[A-Z]{5}[0-9]{4}[A-Z]{1}$/;
+
 /**
  * VendorService — manages vendor CRUD operations.
  *
@@ -100,13 +105,13 @@ class VendorService {
       err.status = 400;
       throw err;
     }
-    if (gst_number && gst_number.trim().length > 20) {
-      const err = new Error('GST number must be 20 characters or fewer');
+    if (gst_number && gst_number.trim() && !GST_REGEX.test(gst_number.trim())) {
+      const err = new Error('Invalid GST number format. Expected format: 22AAAAA0000A1Z5 (15 characters)');
       err.status = 400;
       throw err;
     }
-    if (pan_number && pan_number.trim().length > 10) {
-      const err = new Error('PAN number must be 10 characters or fewer');
+    if (pan_number && pan_number.trim() && !PAN_REGEX.test(pan_number.trim())) {
+      const err = new Error('Invalid PAN number format. Expected format: ABCDE1234F (10 characters)');
       err.status = 400;
       throw err;
     }
@@ -179,13 +184,13 @@ class VendorService {
         throw err;
       }
     }
-    if (gst_number !== undefined && gst_number && gst_number.trim().length > 20) {
-      const err = new Error('GST number must be 20 characters or fewer');
+    if (gst_number !== undefined && gst_number && gst_number.trim() && !GST_REGEX.test(gst_number.trim())) {
+      const err = new Error('Invalid GST number format. Expected format: 22AAAAA0000A1Z5 (15 characters)');
       err.status = 400;
       throw err;
     }
-    if (pan_number !== undefined && pan_number && pan_number.trim().length > 10) {
-      const err = new Error('PAN number must be 10 characters or fewer');
+    if (pan_number !== undefined && pan_number && pan_number.trim() && !PAN_REGEX.test(pan_number.trim())) {
+      const err = new Error('Invalid PAN number format. Expected format: ABCDE1234F (10 characters)');
       err.status = 400;
       throw err;
     }

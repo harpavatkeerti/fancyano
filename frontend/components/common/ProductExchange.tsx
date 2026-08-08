@@ -1213,7 +1213,13 @@ export function ProductExchange({
                                   )}
                                 </div>
                                 {product.code && (
-                                  <p className="text-xs text-gray-500 font-mono mb-1">Code: {product.code}</p>
+                                  <p className="text-xs text-gray-500 font-mono mb-1">
+                                    Code: {product.code}
+                                    {(() => {
+                                      const size = product.isMain ? selectedExchangeSize : additionalProductSizes[product.id];
+                                      return size ? <span className="ml-2 text-gray-700 font-semibold">| Size: {size}</span> : null;
+                                    })()}
+                                  </p>
                                 )}
                                 <div className="space-y-1 mt-2">
                                   <p className="text-sm text-gray-700">

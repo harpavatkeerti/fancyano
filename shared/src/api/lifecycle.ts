@@ -37,6 +37,7 @@ export function createLifecycleApi(api: ApiClient) {
       refund_amount?: number;
       payment_method?: string;
       recorded_by: string;
+      notes?: string;
     }) => api.post(`/lifecycle/${bookingId}/products/${productId}/security-refund/process`, data),
   };
 }

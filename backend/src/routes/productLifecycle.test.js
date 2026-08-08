@@ -603,4 +603,43 @@ describe('Product Lifecycle Routes', () => {
       await pool.query('DELETE FROM bookings WHERE id = $1', [booking4.booking_id]);
     });
   });
+
+  describe('POST /lifecycle/:bookingId/products/:productId/security-refund/process — notes persistence', () => {
+    it('should save user-provided notes in the refund transaction in DB', async () => {
+      // Fully pay + pickup + return + complete the product
+      await chargeAccountingService.applyPayment(testBookingId, 75000, 'Cash', 'test-user', '', null, null, 'booking');
+      await request(app)
+        .post(`/lifecycle/${testBookingId}/products/pickup`)
+        .send({ booking_product_ids: [testBookingProductId], picked_up_by: 'test-user' });
+      await request(app)
+        .post(`/lifecycle/${testBookingId}/products/return`)
+        .send({ returns: [{ booking_product_id: testBookingProductId, damage_fee: 0 }], returned_by: 'test-user' });
+
+      const userNotes = 'Customer requested refund via bank transfer, IFSC: SBIN0001234';
+
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/${testBookingProductId}/security-refund/process`)
+        .send({
+          deduction_amount: 0,
+          adjust_non_security: 0,
+          adjust_security_amount: 0,
+          security_product_ids: [],
+          refund_amount: 20000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user',
+          notes: userNotes
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify notes are saved in the refund transaction in DB
+      const transaction = await pool.query(
+        "SELECT notes FROM payment_transactions WHERE booking_id = $1 AND type = 'refund' ORDER BY id DESC LIMIT 1",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+      // Notes should contain the user-provided notes appended with a pipe separator
+      expect(transaction.rows[0].notes).toContain(userNotes);
+    });
+  });
 });

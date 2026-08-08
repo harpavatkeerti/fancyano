@@ -11,9 +11,10 @@ import {
 
 import { toast } from '@/lib/toast';
 import { Product } from '@/types';
-import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner } from '@/components/common';
+import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner, PhoneInput } from '@/components/common';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { getImageUrl } from '@/lib/imageHelper';
+import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
 
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -73,11 +74,13 @@ export default function InventoryPage() {
   const [vendorFormData, setVendorFormData] = useState({
     name: '',
     phone: '',
+    phone_country: 'IN',
     address: '',
     gst_number: '',
     pan_number: '',
     notes: '',
   });
+  const [vendorFieldErrors, setVendorFieldErrors] = useState<{ gst_number?: string; pan_number?: string }>({});
   const [isVendorSearching, setIsVendorSearching] = useState(false);
   const vendorSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Vendor update confirm dialog
@@ -206,11 +209,13 @@ export default function InventoryPage() {
     setVendorFormData({
       name: vendor.name,
       phone: vendor.phone,
+      phone_country: vendor.phone_country || 'IN',
       address: vendor.address || '',
       gst_number: vendor.gst_number || '',
       pan_number: vendor.pan_number || '',
       notes: vendor.notes || '',
     });
+    setVendorFieldErrors({});
     setFormData(prev => ({ ...prev, vendor_id: vendor.id }));
   }
 
@@ -285,10 +290,24 @@ export default function InventoryPage() {
         }
         dataToSubmit.vendor_id = selectedVendor.id;
       } else if (vendorFormData.name.trim()) {
+        // Validate vendor fields before creating
+        const vErrors: { gst_number?: string; pan_number?: string } = {};
+        if (vendorFormData.gst_number.trim() && !GST_REGEX.test(vendorFormData.gst_number.trim())) {
+          vErrors.gst_number = 'Invalid GST format (e.g. 22AAAAA0000A1Z5)';
+        }
+        if (vendorFormData.pan_number.trim() && !PAN_REGEX.test(vendorFormData.pan_number.trim())) {
+          vErrors.pan_number = 'Invalid PAN format (e.g. ABCDE1234F)';
+        }
+        if (Object.keys(vErrors).length > 0) {
+          setVendorFieldErrors(vErrors);
+          toast.warning('Please fix vendor field errors before submitting');
+          return;
+        }
         // Name changed or no vendor selected: create new vendor
         const newVendor = await vendorsApi.create({
           name: vendorFormData.name.trim(),
           phone: vendorFormData.phone.trim(),
+          phone_country: vendorFormData.phone_country,
           address: vendorFormData.address.trim() || undefined,
           gst_number: vendorFormData.gst_number.trim() || undefined,
           pan_number: vendorFormData.pan_number.trim() || undefined,
@@ -401,6 +420,7 @@ export default function InventoryPage() {
         setVendorFormData({
           name: vendor.name,
           phone: vendor.phone,
+          phone_country: vendor.phone_country || 'IN',
           address: vendor.address || '',
           gst_number: vendor.gst_number || '',
           pan_number: vendor.pan_number || '',
@@ -412,7 +432,7 @@ export default function InventoryPage() {
     } else {
       setSelectedVendor(null);
       setVendorSearchQuery('');
-      setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
+      setVendorFormData({ name: '', phone: '', phone_country: 'IN', address: '', gst_number: '', pan_number: '', notes: '' });
     }
 
     setShowAddModal(true);
@@ -470,7 +490,8 @@ export default function InventoryPage() {
     setVendorSearchQuery('');
     setVendorSearchResults([]);
     setShowVendorDropdown(false);
-    setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' });
+    setVendorFormData({ name: '', phone: '', phone_country: 'IN', address: '', gst_number: '', pan_number: '', notes: '' });
+    setVendorFieldErrors({});
     setShowVendorConfirmDialog(false);
     setVendorConfirmDiff([]);
     setPendingSubmitData(null);
@@ -1514,15 +1535,60 @@ export default function InventoryPage() {
                       <div className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm bg-green-50 border-green-300 mb-3">
                         <span className="text-green-600">✓</span>
                         <span className="font-medium text-green-800">Existing vendor: {selectedVendor.name}</span>
-                        <button type="button" onClick={() => { setSelectedVendor(null); setVendorSearchQuery(''); setVendorFormData({ name: '', phone: '', address: '', gst_number: '', pan_number: '', notes: '' }); setFormData(prev => ({ ...prev, vendor_id: null })); }} className="ml-auto text-gray-400 hover:text-red-500 text-xs">✕ Clear</button>
+                        <button type="button" onClick={() => { setSelectedVendor(null); setVendorSearchQuery(''); setVendorFormData({ name: '', phone: '', phone_country: 'IN', address: '', gst_number: '', pan_number: '', notes: '' }); setVendorFieldErrors({}); setFormData(prev => ({ ...prev, vendor_id: null })); }} className="ml-auto text-gray-400 hover:text-red-500 text-xs">✕ Clear</button>
                       </div>
                     )}
                     {vendorFormData.name.trim() && (
                       <div className="space-y-3 p-3 bg-gray-50 rounded-lg">
-                        <Input label="Phone *" value={vendorFormData.phone} onChange={(e) => setVendorFormData({ ...vendorFormData, phone: e.target.value })} placeholder="9876543210" required />
+                        <PhoneInput
+                          label="Phone"
+                          value={vendorFormData.phone}
+                          countryCode={vendorFormData.phone_country}
+                          onValueChange={(v) => setVendorFormData({ ...vendorFormData, phone: v })}
+                          onCountryCodeChange={(c) => setVendorFormData({ ...vendorFormData, phone_country: c, phone: '' })}
+                          required
+                        />
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="GST Number" value={vendorFormData.gst_number} onChange={(e) => setVendorFormData({ ...vendorFormData, gst_number: e.target.value })} placeholder="22AAAAA0000A1Z5" />
-                          <Input label="PAN Number" value={vendorFormData.pan_number} onChange={(e) => setVendorFormData({ ...vendorFormData, pan_number: e.target.value })} placeholder="ABCDE1234F" />
+                          <Input
+                            label="GST Number"
+                            value={vendorFormData.gst_number}
+                            onChange={(e) => {
+                              const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                              if (val.length <= 15) {
+                                setVendorFormData({ ...vendorFormData, gst_number: val });
+                                if (!val) {
+                                  setVendorFieldErrors((prev) => ({ ...prev, gst_number: undefined }));
+                                } else if (!GST_REGEX.test(val)) {
+                                  setVendorFieldErrors((prev) => ({ ...prev, gst_number: 'Format: 22AAAAA0000A1Z5 (15 chars)' }));
+                                } else {
+                                  setVendorFieldErrors((prev) => ({ ...prev, gst_number: undefined }));
+                                }
+                              }
+                            }}
+                            placeholder="22AAAAA0000A1Z5"
+                            maxLength={15}
+                            error={vendorFieldErrors.gst_number}
+                          />
+                          <Input
+                            label="PAN Number"
+                            value={vendorFormData.pan_number}
+                            onChange={(e) => {
+                              const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                              if (val.length <= 10) {
+                                setVendorFormData({ ...vendorFormData, pan_number: val });
+                                if (!val) {
+                                  setVendorFieldErrors((prev) => ({ ...prev, pan_number: undefined }));
+                                } else if (!PAN_REGEX.test(val)) {
+                                  setVendorFieldErrors((prev) => ({ ...prev, pan_number: 'Format: ABCDE1234F (10 chars)' }));
+                                } else {
+                                  setVendorFieldErrors((prev) => ({ ...prev, pan_number: undefined }));
+                                }
+                              }
+                            }}
+                            placeholder="ABCDE1234F"
+                            maxLength={10}
+                            error={vendorFieldErrors.pan_number}
+                          />
                         </div>
                         <Input label="Address" value={vendorFormData.address} onChange={(e) => setVendorFormData({ ...vendorFormData, address: e.target.value })} placeholder="Vendor address" />
                         <Input label="Notes" value={vendorFormData.notes} onChange={(e) => setVendorFormData({ ...vendorFormData, notes: e.target.value })} placeholder="Any notes about this vendor" />
@@ -1821,6 +1887,7 @@ export default function InventoryPage() {
                     setVendorFormData({
                       name: selectedVendor.name,
                       phone: selectedVendor.phone,
+                      phone_country: selectedVendor.phone_country || 'IN',
                       address: selectedVendor.address || '',
                       gst_number: selectedVendor.gst_number || '',
                       pan_number: selectedVendor.pan_number || '',
@@ -1844,6 +1911,7 @@ export default function InventoryPage() {
                       await vendorsApi.update(selectedVendor.id, {
                         name: vendorFormData.name.trim(),
                         phone: vendorFormData.phone.trim(),
+                        phone_country: vendorFormData.phone_country,
                         address: vendorFormData.address.trim() || undefined,
                         gst_number: vendorFormData.gst_number.trim() || undefined,
                         pan_number: vendorFormData.pan_number.trim() || undefined,

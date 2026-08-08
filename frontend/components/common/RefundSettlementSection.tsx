@@ -31,6 +31,7 @@ export interface SecuritySettlement {
   security_product_ids: number[];
   refund_amount: number;
   payment_method: string;
+  notes?: string;
 }
 
 export interface RefundSettlementSectionProps {
@@ -63,6 +64,9 @@ export function RefundSettlementSection({
   const [deductionType, setDeductionType] = useState<'damage_fee' | 'late_fee'>('damage_fee');
   const [remainderChoice, setRemainderChoice] = useState<'refund' | 'adjust_security'>('refund');
   const [selectedSecProductIds, setSelectedSecProductIds] = useState<number[]>([]);
+
+  // ── Notes ──────────────────────────────────────────────────────────────────
+  const [notes, setNotes] = useState('');
 
   // ── Submit state ─────────────────────────────────────────────────────────────
   const [submitting, setSubmitting] = useState(false);
@@ -152,6 +156,7 @@ export function RefundSettlementSection({
         security_product_ids: remainderChoice === 'adjust_security' ? selectedSecProductIds : [],
         refund_amount: remainderChoice === 'refund' ? calc.remainder_amount : secExcess,
         payment_method: paymentMethod,
+        notes: notes.trim() || undefined,
       };
       await onConfirm(settlement);
     } catch (err: any) {
@@ -356,7 +361,7 @@ export function RefundSettlementSection({
           )}
           {calc.remainder_amount > 0 && remainderChoice === 'refund' && (
             <div className="flex justify-between text-red-700">
-              <span>Cash refund to customer</span>
+              <span>{paymentMethod} refund to customer</span>
               <span>₹{calc.remainder_amount.toLocaleString('en-IN')}</span>
             </div>
           )}
@@ -370,7 +375,7 @@ export function RefundSettlementSection({
               )}
               {secExcess > 0 && (
                 <div className="flex justify-between text-red-700">
-                  <span>Cash refund (excess)</span>
+                  <span>{paymentMethod} refund (excess)</span>
                   <span>₹{secExcess.toLocaleString('en-IN')}</span>
                 </div>
               )}
@@ -389,6 +394,24 @@ export function RefundSettlementSection({
           ⚠️ {validationError || submitError}
         </div>
       )}
+
+      {/* ── Notes ──────────────────────────────────────────────────────────────── */}
+      <div>
+        <label className="block text-sm font-semibold text-gray-800 mb-1">
+          Notes (Optional)
+        </label>
+        <textarea
+          id="refund-notes"
+          value={notes}
+          onChange={e => setNotes(e.target.value)}
+          placeholder="Enter reason for refund, reference number, etc."
+          rows={3}
+          className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-400 resize-none text-sm"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          💡 Add any additional details about this refund
+        </p>
+      </div>
 
       {/* ── Action buttons ────────────────────────────────────────────────────── */}
       <div className="flex gap-3 pt-4 border-t border-gray-200">

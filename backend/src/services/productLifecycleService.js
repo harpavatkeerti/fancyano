@@ -1159,7 +1159,8 @@ class ProductLifecycleService {
     security_product_ids = [],
     refund_amount = 0,
     payment_method = 'Cash',
-    recorded_by
+    recorded_by,
+    notes = ''
   } = {}) {
     const client = await pool.connect();
     try {
@@ -1293,7 +1294,8 @@ class ProductLifecycleService {
             refund_amount,
             payment_method,
             `Security deposit refund for product #${bookingProductId}` +
-            (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : ''),
+            (deduction_amount > 0 ? ` (${deduction_type}: ₹${deduction_amount} retained)` : '') +
+            (notes ? ` | ${notes}` : ''),
             recorded_by
           ]
         );

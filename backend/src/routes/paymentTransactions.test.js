@@ -612,4 +612,138 @@ describe('Payment Transactions Routes', () => {
       expect(largePaid.rows[0].paid_amount).toBe(0);    // bpLarge untouched
     });
   });
+
+  describe('Notes persistence in DB', () => {
+    beforeEach(async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: '2024-01-01',
+        products: [
+          {
+            productId: testProductId,
+            bookedFrom: '2024-02-01',
+            bookedTo: '2024-02-05',
+            rent: 50000,
+            securityDeposit: 20000
+          }
+        ],
+        transportCharge: 5000,
+        createdBy: 'test-user'
+      });
+      testBookingId = result.booking_id;
+      await bookingService.confirmBooking(testBookingId, 'test-user');
+    });
+
+    it('should save notes in DB when payment includes notes', async () => {
+      const testNotes = 'Customer paid via UPI, ref #TXN12345';
+
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 30000,
+          payment_method: 'UPI',
+          recorded_by: 'test-user',
+          notes: testNotes
+        });
+
+      expect(response.status).toBe(201);
+
+      // Verify notes are saved in the DB
+      const transaction = await pool.query(
+        "SELECT notes FROM payment_transactions WHERE booking_id = $1 AND type = 'payment' ORDER BY id DESC LIMIT 1",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+      expect(transaction.rows[0].notes).toBe(testNotes);
+    });
+
+    it('should save empty notes in DB when payment has no notes', async () => {
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 30000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user'
+        });
+
+      expect(response.status).toBe(201);
+
+      const transaction = await pool.query(
+        "SELECT notes FROM payment_transactions WHERE booking_id = $1 AND type = 'payment' ORDER BY id DESC LIMIT 1",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+      // Notes should be empty string or null when not provided
+      expect(transaction.rows[0].notes === '' || transaction.rows[0].notes === null).toBe(true);
+    });
+
+    it('should save notes in DB when refund includes notes', async () => {
+      // First fully pay the booking
+      await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 75000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user'
+        });
+
+      const refundNotes = 'Security deposit refund - customer returning product early';
+
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 20000,
+          type: 'refund',
+          method: 'Cash',
+          recorded_by: 'admin',
+          notes: refundNotes
+        });
+
+      expect(response.status).toBe(201);
+
+      // Verify notes are saved in the DB
+      const transaction = await pool.query(
+        "SELECT notes FROM payment_transactions WHERE booking_id = $1 AND type = 'refund' ORDER BY id DESC LIMIT 1",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+      expect(transaction.rows[0].notes).toBe(refundNotes);
+    });
+
+    it('should save notes in DB when refund has no notes', async () => {
+      // First fully pay the booking
+      await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 75000,
+          payment_method: 'Cash',
+          recorded_by: 'test-user'
+        });
+
+      const response = await request(app)
+        .post('/payments')
+        .send({
+          booking_id: testBookingId,
+          amount: 10000,
+          type: 'refund',
+          method: 'Cash',
+          recorded_by: 'admin'
+        });
+
+      expect(response.status).toBe(201);
+
+      const transaction = await pool.query(
+        "SELECT notes FROM payment_transactions WHERE booking_id = $1 AND type = 'refund' ORDER BY id DESC LIMIT 1",
+        [testBookingId]
+      );
+      expect(transaction.rows).toHaveLength(1);
+      // When no notes provided, recordRefund saves '' (empty string)
+      expect(transaction.rows[0].notes).toBe('');
+    });
+  });
 });

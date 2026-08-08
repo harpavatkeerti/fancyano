@@ -71,8 +71,10 @@ class ChargeAccountingService {
           product_id: p.product_id,
           product_name: p.product_name,
           product_code: p.product_code,
+          product_size: p.size || null,
           status: p.status,
           booked_from: p.booked_from,
+          booked_to: p.booked_to,
           rent: p.rent,
           security_deposit: p.security_deposit,
           charges: p.charges

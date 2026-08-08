@@ -208,6 +208,52 @@ describe('VendorService', () => {
         expect(err.message).toMatch(/255/);
       }
     });
+
+    it('should throw 400 for invalid GST format', async () => {
+      try {
+        await vendorService.createVendor({
+          name: 'TEST-VENDOR-BADGST',
+          phone: '1010101010',
+          gst_number: 'INVALID123',
+        });
+        fail('Expected error');
+      } catch (err) {
+        expect(err.status).toBe(400);
+        expect(err.message).toMatch(/GST/i);
+      }
+    });
+
+    it('should throw 400 for invalid PAN format', async () => {
+      try {
+        await vendorService.createVendor({
+          name: 'TEST-VENDOR-BADPAN',
+          phone: '1010101010',
+          pan_number: '12345',
+        });
+        fail('Expected error');
+      } catch (err) {
+        expect(err.status).toBe(400);
+        expect(err.message).toMatch(/PAN/i);
+      }
+    });
+
+    it('should accept a correctly formatted GST number', async () => {
+      const vendor = await vendorService.createVendor({
+        name: 'TEST-VENDOR-VALIDGST',
+        phone: '1010101010',
+        gst_number: '22AAAAA0000A1Z5',
+      });
+      expect(vendor.gst_number).toBe('22AAAAA0000A1Z5');
+    });
+
+    it('should accept a correctly formatted PAN number', async () => {
+      const vendor = await vendorService.createVendor({
+        name: 'TEST-VENDOR-VALIDPAN',
+        phone: '1010101010',
+        pan_number: 'ABCDE1234F',
+      });
+      expect(vendor.pan_number).toBe('ABCDE1234F');
+    });
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -272,6 +318,26 @@ describe('VendorService', () => {
       } catch (err) {
         expect(err.status).toBe(400);
         expect(err.message).toMatch(/255/);
+      }
+    });
+
+    it('should throw 400 for invalid GST format on update', async () => {
+      try {
+        await vendorService.updateVendor(vendorId, { gst_number: 'BADGST' });
+        fail('Expected error');
+      } catch (err) {
+        expect(err.status).toBe(400);
+        expect(err.message).toMatch(/GST/i);
+      }
+    });
+
+    it('should throw 400 for invalid PAN format on update', async () => {
+      try {
+        await vendorService.updateVendor(vendorId, { pan_number: '123' });
+        fail('Expected error');
+      } catch (err) {
+        expect(err.status).toBe(400);
+        expect(err.message).toMatch(/PAN/i);
       }
     });
   });

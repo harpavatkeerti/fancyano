@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { vendorsApi, Vendor } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import PhoneInput from '@/components/common/PhoneInput';
 import { toast } from '@/lib/toast';
 import { useConfirm } from '@/hooks/useConfirm';
 import { formatDateWithOrdinal as formatDate } from '@/lib/dateUtils';
+import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
 
 export default function VendorsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
@@ -26,6 +27,10 @@ export default function VendorsPage() {
     pan_number: '',
     notes: '',
   });
+  const [formErrors, setFormErrors] = useState<{ gst_number?: string; pan_number?: string }>({});
+  const [duplicateWarnings, setDuplicateWarnings] = useState<Vendor[]>([]);
+  const nameMatchedVendorsRef = useRef<Vendor[]>([]);
+  const nameSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     fetchVendors();
@@ -55,12 +60,12 @@ export default function VendorsPage() {
       toast.warning('Phone number is required');
       return;
     }
-    if (formData.gst_number.trim().length > 20) {
-      toast.warning('GST number must be 20 characters or fewer');
+    if (formData.gst_number.trim() && !GST_REGEX.test(formData.gst_number.trim())) {
+      toast.warning('Invalid GST number format. Expected format: 22AAAAA0000A1Z5 (15 characters)');
       return;
     }
-    if (formData.pan_number.trim().length > 10) {
-      toast.warning('PAN number must be 10 characters or fewer');
+    if (formData.pan_number.trim() && !PAN_REGEX.test(formData.pan_number.trim())) {
+      toast.warning('Invalid PAN number format. Expected format: ABCDE1234F (10 characters)');
       return;
     }
     if (formData.notes.length > 255) {
@@ -113,6 +118,8 @@ export default function VendorsPage() {
       pan_number: vendor.pan_number || '',
       notes: vendor.notes || '',
     });
+    setFormErrors({});
+    setDuplicateWarnings([]);
     setShowAddModal(true);
   }
 
@@ -141,6 +148,59 @@ export default function VendorsPage() {
 
   function resetForm() {
     setFormData({ name: '', phone: '', phone_country: 'IN', address: '', gst_number: '', pan_number: '', notes: '' });
+    setFormErrors({});
+    setDuplicateWarnings([]);
+    nameMatchedVendorsRef.current = [];
+    if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
+  }
+
+  // Filter name-matched vendors against the current phone to decide if warning should show.
+  // If user has entered a phone and it doesn't match any existing vendor's phone, clear warning.
+  function filterDuplicates(nameMatches: Vendor[], phone: string) {
+    if (nameMatches.length === 0) {
+      setDuplicateWarnings([]);
+      return;
+    }
+    // If phone is not yet entered, show all name matches as warnings
+    if (!phone.trim()) {
+      setDuplicateWarnings(nameMatches);
+      return;
+    }
+    // Filter: only warn if an existing vendor has the same phone
+    const phoneMatches = nameMatches.filter(v => v.phone === phone.trim());
+    setDuplicateWarnings(phoneMatches);
+  }
+
+  // Debounced duplicate name check
+  function handleNameChange(name: string) {
+    setFormData(prev => ({ ...prev, name }));
+    if (nameSearchTimerRef.current) clearTimeout(nameSearchTimerRef.current);
+
+    if (name.trim().length < 2) {
+      nameMatchedVendorsRef.current = [];
+      setDuplicateWarnings([]);
+      return;
+    }
+
+    nameSearchTimerRef.current = setTimeout(async () => {
+      try {
+        const res = await vendorsApi.search(name.trim());
+        const matches = (res.data || []).filter(
+          (v: Vendor) => !editingVendor || v.id !== editingVendor.id
+        );
+        nameMatchedVendorsRef.current = matches;
+        filterDuplicates(matches, formData.phone);
+      } catch {
+        nameMatchedVendorsRef.current = [];
+        setDuplicateWarnings([]);
+      }
+    }, 350);
+  }
+
+  // Re-filter duplicates when phone changes
+  function handlePhoneChange(phone: string) {
+    setFormData(prev => ({ ...prev, phone }));
+    filterDuplicates(nameMatchedVendorsRef.current, phone);
   }
 
   const handleSort = (column: string) => {
@@ -426,19 +486,32 @@ export default function VendorsPage() {
             </h2>
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
-                <Input
-                  label="Vendor Name*"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  required
-                  placeholder="ABC Traders"
-                />
+                <div className="relative">
+                  <Input
+                    label="Vendor Name*"
+                    value={formData.name}
+                    onChange={(e) => handleNameChange(e.target.value)}
+                    required
+                    placeholder="ABC Traders"
+                  />
+                  {duplicateWarnings.length > 0 && (
+                    <div className="mt-1 p-2 bg-amber-50 border border-amber-300 rounded-lg">
+                      <p className="text-xs font-medium text-amber-800 mb-1">⚠ Similar vendor(s) already exist:</p>
+                      {duplicateWarnings.map((v) => (
+                        <p key={v.id} className="text-xs text-amber-700">
+                          <span className="font-medium">{v.name}</span>
+                          <span className="text-amber-500 ml-1">— {v.phone}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <PhoneInput
-                  label="Phone*"
+                  label="Phone"
                   value={formData.phone}
                   countryCode={formData.phone_country}
-                  onValueChange={(v) => setFormData({ ...formData, phone: v })}
-                  onCountryCodeChange={(c) => setFormData({ ...formData, phone_country: c, phone: '' })}
+                  onValueChange={(v) => handlePhoneChange(v)}
+                  onCountryCodeChange={(c) => { setFormData({ ...formData, phone_country: c, phone: '' }); filterDuplicates(nameMatchedVendorsRef.current, ''); }}
                   required
                 />
               </div>
@@ -459,19 +532,41 @@ export default function VendorsPage() {
                   label="GST Number"
                   value={formData.gst_number}
                   onChange={(e) => {
-                    if (e.target.value.length <= 20) setFormData({ ...formData, gst_number: e.target.value.toUpperCase() });
+                    const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    if (val.length <= 15) {
+                      setFormData({ ...formData, gst_number: val });
+                      if (!val) {
+                        setFormErrors((prev) => ({ ...prev, gst_number: undefined }));
+                      } else if (!GST_REGEX.test(val)) {
+                        setFormErrors((prev) => ({ ...prev, gst_number: 'Format: 22AAAAA0000A1Z5 (15 chars)' }));
+                      } else {
+                        setFormErrors((prev) => ({ ...prev, gst_number: undefined }));
+                      }
+                    }
                   }}
                   placeholder="22AAAAA0000A1Z5"
-                  maxLength={20}
+                  maxLength={15}
+                  error={formErrors.gst_number}
                 />
                 <Input
                   label="PAN Number"
                   value={formData.pan_number}
                   onChange={(e) => {
-                    if (e.target.value.length <= 10) setFormData({ ...formData, pan_number: e.target.value.toUpperCase() });
+                    const val = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                    if (val.length <= 10) {
+                      setFormData({ ...formData, pan_number: val });
+                      if (!val) {
+                        setFormErrors((prev) => ({ ...prev, pan_number: undefined }));
+                      } else if (!PAN_REGEX.test(val)) {
+                        setFormErrors((prev) => ({ ...prev, pan_number: 'Format: ABCDE1234F (10 chars)' }));
+                      } else {
+                        setFormErrors((prev) => ({ ...prev, pan_number: undefined }));
+                      }
+                    }
                   }}
                   placeholder="ABCDE1234F"
                   maxLength={10}
+                  error={formErrors.pan_number}
                 />
               </div>
 
