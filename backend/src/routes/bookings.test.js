@@ -872,4 +872,84 @@ describe('Bookings Routes', () => {
       // Cleanup handled by afterEach (TEST-ROUTE phone)
     });
   });
+
+  describe('GET /bookings/delayed', () => {
+    let delayedBookingId;
+
+    afterEach(async () => {
+      if (delayedBookingId) {
+        await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)', [delayedBookingId]);
+        await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM bookings WHERE id = $1', [delayedBookingId]);
+        delayedBookingId = null;
+      }
+    });
+
+    it('should return 200 with an array', async () => {
+      const response = await request(app).get('/bookings/delayed');
+
+      expect(response.status).toBe(200);
+      expect(Array.isArray(response.body)).toBe(true);
+    });
+
+    it('should include a delayed booking (picked up, not returned, past due)', async () => {
+      // Create and confirm a booking with a past return date
+      const createRes = await request(app)
+        .post('/bookings')
+        .send({
+          user_id: 1,
+          booking_date: '2024-01-01',
+          products: [{
+            id: testProductId,
+            booked_from: '2024-01-10',
+            booked_to: '2024-01-15',
+          }],
+          created_by: 'test-user',
+        });
+      delayedBookingId = createRes.body.id;
+
+      // Confirm and mark as picked up
+      await request(app).put(`/bookings/${delayedBookingId}/confirm`).send({ confirmed_by: 'test' });
+      await pool.query(
+        'UPDATE booking_products SET picked_up_at = $1 WHERE booking_id = $2',
+        [new Date('2024-01-10'), delayedBookingId]
+      );
+
+      const response = await request(app).get('/bookings/delayed');
+
+      expect(response.status).toBe(200);
+      const match = response.body.find(r => r.booking_id === delayedBookingId);
+      expect(match).toBeDefined();
+      expect(match.delayed_products).toHaveLength(1);
+      expect(match.delayed_products[0].code).toBe('TEST-BOOK-001');
+      expect(match.delayed_products[0].days_delayed).toBeGreaterThan(0);
+    });
+
+    it('should NOT include a booking where product was never picked up', async () => {
+      // Create and confirm a booking but do NOT mark as picked up
+      const createRes = await request(app)
+        .post('/bookings')
+        .send({
+          user_id: 1,
+          booking_date: '2024-01-01',
+          products: [{
+            id: testProductId,
+            booked_from: '2024-01-10',
+            booked_to: '2024-01-15',
+          }],
+          created_by: 'test-user',
+        });
+      delayedBookingId = createRes.body.id;
+
+      await request(app).put(`/bookings/${delayedBookingId}/confirm`).send({ confirmed_by: 'test' });
+
+      const response = await request(app).get('/bookings/delayed');
+
+      expect(response.status).toBe(200);
+      const match = response.body.find(r => r.booking_id === delayedBookingId);
+      expect(match).toBeUndefined();
+    });
+  });
 });

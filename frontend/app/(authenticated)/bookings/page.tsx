@@ -132,7 +132,7 @@ export default function BookingsPage() {
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all_except_discarded'); // Default excludes discarded
   const [showDiscardConfirm, setShowDiscardConfirm] = useState<number | null>(null); // Booking ID to discard
-  const [allTransactions, setAllTransactions] = useState<any[]>([]); // Store all transactions for delay check
+  const [delayedBookingsMap, setDelayedBookingsMap] = useState<Map<number, Array<{name: string, code: string, booked_to: string, days_delayed: number}>>>(new Map());
 
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
@@ -145,7 +145,7 @@ export default function BookingsPage() {
     fetchProducts();
     fetchTransportationCharge();
     fetchDateChangeChargeSettings();
-    fetchAllTransactions(); // Fetch transactions for delay detection
+    fetchDelayedBookings();
   }, []);
 
   // Fetch booking preview whenever products, discounts, or transport changes
@@ -262,93 +262,18 @@ export default function BookingsPage() {
     }
   }
 
-  async function fetchAllTransactions() {
+  async function fetchDelayedBookings() {
     try {
-      const response = await paymentTransactionsApi.getAll();
-      setAllTransactions(response.data || []);
+      const response = await bookingsApi.getDelayed();
+      const map = new Map<number, Array<{name: string, code: string, booked_to: string, days_delayed: number}>>();
+      for (const row of response.data) {
+        map.set(row.booking_id, row.delayed_products);
+      }
+      setDelayedBookingsMap(map);
     } catch (error) {
-      console.error('Error fetching transactions:', error);
-      setAllTransactions([]);
+      console.error('Error fetching delayed bookings:', error);
+      setDelayedBookingsMap(new Map());
     }
-  }
-
-  // Helper function to check if a product has security deposit refund
-  function hasSecurityDepositRefund(bookingId: number, productCode: string): boolean {
-    return allTransactions.some((transaction: any) => {
-      const isSecurityRefund = transaction.booking_id === bookingId &&
-        transaction.type === 'refund' &&
-        transaction.transaction_type === 'security_refund';
-
-      // Check if transaction notes contain the product code
-      const notes = String(transaction.notes || '').toLowerCase();
-      const code = productCode.toLowerCase();
-
-      return isSecurityRefund && notes.includes(code);
-    });
-  }
-
-  // Helper function to check if a booking is delayed
-  function isBookingDelayed(booking: Booking): boolean {
-    // Only check for confirmed or in_progress bookings
-    if (booking.status !== 'confirmed' && booking.status !== 'in_progress') {
-      return false;
-    }
-
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const products = Array.isArray(booking.products) ? booking.products : [];
-
-    // Check each product
-    for (const product of products) {
-      if (!product.booked_to) continue;
-
-      const returnDate = new Date(product.booked_to);
-      returnDate.setHours(0, 0, 0, 0);
-
-      // If today is past the return date
-      if (today > returnDate) {
-        // Check if security deposit has been refunded for this product
-        const hasRefund = hasSecurityDepositRefund(booking.id, product.code ?? '');
-
-        // If no refund found, product is delayed
-        if (!hasRefund) {
-          return true; // At least one product is delayed
-        }
-      }
-    }
-
-    return false;
-  }
-
-  // Helper function to get delayed products for a booking
-  function getDelayedProducts(booking: Booking): any[] {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    const delayedProducts: any[] = [];
-
-    for (const product of products) {
-      if (!product.booked_to) continue;
-
-      const returnDate = new Date(product.booked_to);
-      returnDate.setHours(0, 0, 0, 0);
-
-      if (today > returnDate) {
-        const hasRefund = hasSecurityDepositRefund(booking.id, product.code ?? '');
-
-        if (!hasRefund) {
-          const daysDelayed = Math.floor((today.getTime() - returnDate.getTime()) / (1000 * 60 * 60 * 24));
-          delayedProducts.push({
-            ...product,
-            daysDelayed
-          });
-        }
-      }
-    }
-
-    return delayedProducts;
   }
 
   async function fetchProducts() {
@@ -1253,8 +1178,8 @@ export default function BookingsPage() {
     return matchesSearch && matchesStatus && matchesUrgentFilter && matchesDateRange;
   }).sort((a, b) => {
     // Sort delayed bookings to the top (highest priority)
-    const aDelayed = isBookingDelayed(a);
-    const bDelayed = isBookingDelayed(b);
+    const aDelayed = delayedBookingsMap.has(a.id);
+    const bDelayed = delayedBookingsMap.has(b.id);
 
     if (aDelayed && !bDelayed) return -1; // a comes first
     if (!aDelayed && bDelayed) return 1;  // b comes first
@@ -1275,7 +1200,7 @@ export default function BookingsPage() {
 
       {/* Delayed Bookings Alert */}
       {(() => {
-        const delayedCount = filteredBookings.filter(b => isBookingDelayed(b)).length;
+        const delayedCount = filteredBookings.filter(b => delayedBookingsMap.has(b.id)).length;
         if (delayedCount > 0) {
           return (
             <div className="bg-red-50 border-2 border-red-500 rounded-lg p-4 animate-pulse">
@@ -1410,8 +1335,8 @@ export default function BookingsPage() {
               const productCount = activeProducts.length;
               const isUrgent = isBookingUrgent(booking);
               const urgentReason = isUrgent ? getUrgentReason(booking) : '';
-              const isDelayed = isBookingDelayed(booking);
-              const delayedProducts = isDelayed ? getDelayedProducts(booking) : [];
+              const isDelayed = delayedBookingsMap.has(booking.id);
+              const delayedProducts = isDelayed ? delayedBookingsMap.get(booking.id)! : [];
 
               return (
                 <tr key={booking.id} className={`hover:bg-gray-50 relative ${isDelayed ? 'bg-red-50 border-l-4 border-red-500' : ''}`}>
@@ -1441,7 +1366,7 @@ export default function BookingsPage() {
                         <button
                           onClick={() => {
                             const delayInfo = delayedProducts.map(p =>
-                              `${p.name} (${p.code}): ${p.daysDelayed} day${p.daysDelayed > 1 ? 's' : ''} overdue`
+                              `${p.name} (${p.code}): ${p.days_delayed} day${p.days_delayed > 1 ? 's' : ''} overdue`
                             ).join('\n');
                             toast.error(`⚠️ DELAYED PRODUCTS:\n\n${delayInfo}\n\nExpected return: ${new Date(delayedProducts[0].booked_to).toLocaleDateString('en-GB')}\n\n⚠️ FOLLOW UP REQUIRED - Product(s) not returned!`, 10000);
                           }}

@@ -1225,4 +1225,180 @@ describe('BookingService', () => {
       expect(after.booked_to).toEqual(before.booked_to);
     });
   });
+
+  describe('getDelayedBookings', () => {
+    let delayedBookingId, delayedBPId;
+
+    afterEach(async () => {
+      // Cleanup any bookings created during delay tests
+      if (delayedBookingId) {
+        await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)', [delayedBookingId]);
+        await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [delayedBookingId]);
+        await pool.query('DELETE FROM bookings WHERE id = $1', [delayedBookingId]);
+        delayedBookingId = null;
+        delayedBPId = null;
+      }
+    });
+
+    async function createDelayedTestBooking(overrides = {}) {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2024-01-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2024-01-10'),
+          bookedTo: new Date('2024-01-15'),  // In the past
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test',
+      });
+      delayedBookingId = result.booking_id;
+      delayedBPId = result.booking_product_ids[0];
+
+      // Confirm the booking
+      await bookingService.confirmBooking(delayedBookingId, 'test');
+
+      // Apply overrides to the booking_product
+      if (overrides.picked_up_at !== undefined) {
+        await pool.query(
+          'UPDATE booking_products SET picked_up_at = $1 WHERE id = $2',
+          [overrides.picked_up_at, delayedBPId]
+        );
+      }
+      if (overrides.returned_at !== undefined) {
+        await pool.query(
+          'UPDATE booking_products SET returned_at = $1 WHERE id = $2',
+          [overrides.returned_at, delayedBPId]
+        );
+      }
+      if (overrides.bp_status) {
+        await pool.query(
+          'UPDATE booking_products SET status = $1 WHERE id = $2',
+          [overrides.bp_status, delayedBPId]
+        );
+      }
+      if (overrides.booking_status) {
+        await pool.query(
+          'UPDATE bookings SET status = $1 WHERE id = $2',
+          [overrides.booking_status, delayedBookingId]
+        );
+      }
+
+      return { bookingId: delayedBookingId, bpId: delayedBPId };
+    }
+
+    test('should return booking with picked-up but unreturned product past due date', async () => {
+      await createDelayedTestBooking({
+        picked_up_at: new Date('2024-01-10'),
+        // returned_at is NULL by default
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeDefined();
+      expect(match.delayed_products).toHaveLength(1);
+      expect(match.delayed_products[0].code).toBe('BOOK001');
+      expect(match.delayed_products[0].days_delayed).toBeGreaterThan(0);
+    });
+
+    test('should NOT return booking when product was never picked up', async () => {
+      await createDelayedTestBooking({
+        // picked_up_at is NULL — never picked up
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeUndefined();
+    });
+
+    test('should NOT return booking when product has been returned', async () => {
+      await createDelayedTestBooking({
+        picked_up_at: new Date('2024-01-10'),
+        returned_at: new Date('2024-01-16'),  // Returned (late, but returned)
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeUndefined();
+    });
+
+    test('should NOT return booking with completed status', async () => {
+      await createDelayedTestBooking({
+        picked_up_at: new Date('2024-01-10'),
+        booking_status: 'completed',
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeUndefined();
+    });
+
+    test('should NOT return cancelled/exchanged/discarded products', async () => {
+      await createDelayedTestBooking({
+        picked_up_at: new Date('2024-01-10'),
+        bp_status: 'cancelled',
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeUndefined();
+    });
+
+    test('should return multiple delayed products for same booking', async () => {
+      // Create booking with 2 products
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2024-01-01'),
+        products: [
+          {
+            productId: testProductId1,
+            size: 'M',
+            bookedFrom: new Date('2024-01-10'),
+            bookedTo: new Date('2024-01-15'),
+            rent: 500,
+            securityDeposit: 1000,
+            quantity: 1,
+          },
+          {
+            productId: testProductId2,
+            size: 'L',
+            bookedFrom: new Date('2024-01-10'),
+            bookedTo: new Date('2024-01-15'),
+            rent: 800,
+            securityDeposit: 1500,
+            quantity: 1,
+          },
+        ],
+        transportCharge: 0,
+        createdBy: 'test',
+      });
+      delayedBookingId = result.booking_id;
+
+      // Confirm and mark both as picked up
+      await bookingService.confirmBooking(delayedBookingId, 'test');
+      await pool.query(
+        'UPDATE booking_products SET picked_up_at = $1 WHERE booking_id = $2',
+        [new Date('2024-01-10'), delayedBookingId]
+      );
+
+      const delayed = await bookingService.getDelayedBookings();
+      const match = delayed.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeDefined();
+      expect(match.delayed_products).toHaveLength(2);
+      const codes = match.delayed_products.map(p => p.code).sort();
+      expect(codes).toEqual(['BOOK001', 'BOOK002']);
+    });
+  });
 });

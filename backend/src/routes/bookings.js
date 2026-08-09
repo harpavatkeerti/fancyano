@@ -36,6 +36,17 @@ router.get('/by-product/:productId', async (req, res) => {
   }
 });
 
+// GET delayed bookings (products picked up but not returned past return date)
+router.get('/delayed', async (req, res) => {
+  try {
+    const delayedBookings = await bookingService.getDelayedBookings();
+    res.json(delayedBookings);
+  } catch (error) {
+    console.error('Error fetching delayed bookings:', error);
+    res.status(500).json({ error: 'Failed to fetch delayed bookings' });
+  }
+});
+
 // GET booking by ID with financial summary
 router.get('/:id', async (req, res) => {
   try {

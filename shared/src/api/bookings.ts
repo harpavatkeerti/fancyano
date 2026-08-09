@@ -10,6 +10,17 @@ export function createBookingsApi(api: AxiosInstance) {
     update: (id: number, data: Partial<Booking>) => 
       api.put<Booking>(`/bookings/${id}`, data),
     delete: (id: number) => api.delete(`/bookings/${id}`),
+
+    // Delayed bookings (products picked up but not returned past return date)
+    getDelayed: () => api.get<Array<{
+      booking_id: number;
+      delayed_products: Array<{
+        name: string;
+        code: string;
+        booked_to: string;
+        days_delayed: number;
+      }>;
+    }>>('/bookings/delayed'),
     
     // Booking lifecycle
     confirm: (id: number, data: { confirmed_by: string }) => 

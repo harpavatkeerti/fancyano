@@ -1084,6 +1084,45 @@ class BookingService {
     );
     return result.rows[0]?.booking_id ?? null;
   }
+
+  /**
+   * Get all delayed bookings — bookings with products that were picked up
+   * but not returned past their scheduled return date.
+   *
+   * A product is considered delayed when:
+   * - The parent booking is 'confirmed' or 'in_progress'
+   * - The product was picked up (picked_up_at IS NOT NULL)
+   * - The product has not been returned (returned_at IS NULL)
+   * - The product's booked_to date is in the past
+   * - The product status is active (not cancelled/exchanged/discarded/completed)
+   *
+   * @returns {Promise<Array<{booking_id: number, delayed_products: Array<{name: string, code: string, booked_to: string, days_delayed: number}>}>>}
+   */
+  async getDelayedBookings() {
+    const result = await pool.query(`
+      SELECT
+        bp.booking_id,
+        json_agg(
+          json_build_object(
+            'name', p.name,
+            'code', p.code,
+            'booked_to', bp.booked_to,
+            'days_delayed', (CURRENT_DATE - bp.booked_to::date)
+          )
+        ) AS delayed_products
+      FROM booking_products bp
+      JOIN bookings b ON bp.booking_id = b.id
+      JOIN products p ON bp.product_id = p.id
+      WHERE b.status IN ('confirmed', 'in_progress')
+        AND bp.picked_up_at IS NOT NULL
+        AND bp.returned_at IS NULL
+        AND bp.booked_to::date < CURRENT_DATE
+        AND bp.status NOT IN ('cancelled', 'exchanged', 'discarded', 'completed')
+      GROUP BY bp.booking_id
+    `);
+
+    return result.rows;
+  }
 }
 
 module.exports = new BookingService();
