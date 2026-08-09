@@ -22,6 +22,7 @@ export const lifecycleApi = api.lifecycle;
 export const policiesApi = api.policies;
 export const productExchangesApi = api.productExchanges;
 export const bookingCancellationApi = api.bookingCancellation;
+export const bookingDiscardApi = api.bookingDiscard;
 export const settingsApi = api.settings;
 export const complaintsApi = api.complaints;
 export const feedbackApi = api.feedback;

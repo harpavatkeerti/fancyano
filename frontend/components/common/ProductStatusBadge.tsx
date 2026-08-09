@@ -12,6 +12,7 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   completed:   { label: 'Completed',    className: 'bg-green-100 text-green-800' },
   cancelled:   { label: '❌ Cancelled', className: 'bg-red-100 text-red-800' },
   exchanged:   { label: '🔄 Exchanged', className: 'bg-orange-100 text-orange-800' },
+  discarded:   { label: '🗑️ Discarded', className: 'bg-gray-200 text-gray-700' },
 };
 
 export function ProductStatusBadge({ status, size = 'sm' }: ProductStatusBadgeProps) {

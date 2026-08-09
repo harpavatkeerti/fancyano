@@ -18,7 +18,7 @@ async function recalcBookingDateRange(bookingId, client = null) {
     `SELECT MIN(booked_from) AS min_from, MAX(booked_to) AS max_to
      FROM booking_products
      WHERE booking_id = $1
-       AND status NOT IN ('cancelled', 'exchanged')`,
+       AND status NOT IN ('cancelled', 'exchanged', 'discarded')`,
     [bookingId]
   );
 
@@ -64,8 +64,8 @@ async function checkProductAvailability(productId, bookedFrom, bookedTo, { size 
        FROM booking_products bp
        JOIN bookings b ON bp.booking_id = b.id
        WHERE bp.product_id = $1
-         AND bp.status NOT IN ('cancelled', 'exchanged', 'completed')
-         AND b.status  NOT IN ('cancelled')
+         AND bp.status NOT IN ('cancelled', 'exchanged', 'completed', 'discarded')
+         AND b.status  NOT IN ('cancelled', 'discarded')
          AND bp.booked_from <= $3
          AND bp.booked_to   >= $2
          AND ($4::int IS NULL OR b.id <> $4)

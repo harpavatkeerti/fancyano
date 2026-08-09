@@ -318,7 +318,7 @@ async function deleteUser(id) {
   // Guard: no active bookings
   const activeCheck = await pool.query(
     `SELECT id FROM bookings
-     WHERE user_id = $1 AND status NOT IN ('cancelled', 'completed')
+     WHERE user_id = $1 AND status NOT IN ('cancelled', 'completed', 'discarded')
      LIMIT 1`,
     [id]
   );

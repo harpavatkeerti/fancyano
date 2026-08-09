@@ -119,6 +119,25 @@ describe('recalcBookingDateRange', () => {
     expect(row.booked_to.toISOString().slice(0, 10)).toBe('2024-08-31');
   });
 
+  test('excludes discarded products from the date calculation', async () => {
+    // One active product with narrow range, one discarded with wider range
+    await pool.query(
+      `INSERT INTO booking_products
+         (booking_id, product_id, quantity, booked_from, booked_to, status, rent, security_deposit, effective_rent)
+       VALUES
+         ($1, $2, 1, '2024-09-05', '2024-09-10', 'confirmed', 1000, 500, 1000),
+         ($1, $2, 1, '2024-09-01', '2024-09-30', 'discarded', 1000, 500, 1000)`,
+      [testBookingId, testProductId]
+    );
+
+    await recalcBookingDateRange(testBookingId);
+
+    const row = (await pool.query('SELECT booked_from, booked_to FROM bookings WHERE id = $1', [testBookingId])).rows[0];
+    // Only the confirmed product's dates should matter
+    expect(row.booked_from.toISOString().slice(0, 10)).toBe('2024-09-05');
+    expect(row.booked_to.toISOString().slice(0, 10)).toBe('2024-09-10');
+  });
+
   test('commits correctly when called inside a transaction', async () => {
     await pool.query(
       `INSERT INTO booking_products
@@ -301,6 +320,31 @@ describe('checkProductAvailability', () => {
       `UPDATE booking_products SET status = 'completed'
        WHERE booking_id = $1 AND product_id = $2`,
       [existingBookingId, testProductId]
+    );
+
+    await expect(
+      checkProductAvailability(testProductId, '2024-09-10', '2024-09-20')
+    ).resolves.toBeUndefined();
+  });
+
+  // A discarded product must not block
+  test('resolves when the only conflicting product is discarded', async () => {
+    await pool.query(
+      `UPDATE booking_products SET status = 'discarded'
+       WHERE booking_id = $1 AND product_id = $2`,
+      [existingBookingId, testProductId]
+    );
+
+    await expect(
+      checkProductAvailability(testProductId, '2024-09-10', '2024-09-20')
+    ).resolves.toBeUndefined();
+  });
+
+  // A discarded booking must not block
+  test('resolves when the conflicting booking itself is discarded', async () => {
+    await pool.query(
+      `UPDATE bookings SET status = 'discarded' WHERE id = $1`,
+      [existingBookingId]
     );
 
     await expect(

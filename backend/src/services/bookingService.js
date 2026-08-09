@@ -261,7 +261,7 @@ class BookingService {
       // Update booking status and the corresponding product statuses
       // independently in the same transaction, driven by the business action.
       if (status !== undefined) {
-        const validStatuses = ['pending', 'confirmed', 'in_progress', 'partially_completed', 'completed', 'cancelled'];
+        const validStatuses = ['pending', 'confirmed', 'in_progress', 'partially_completed', 'completed', 'cancelled', 'discarded'];
         if (!validStatuses.includes(status)) {
           throw new Error(`Invalid status: ${status}`);
         }
@@ -425,7 +425,7 @@ class BookingService {
       const currentStatus = bookingResult.rows[0].status;
 
       // Never downgrade a finalized booking
-      if (currentStatus === 'completed' || currentStatus === 'cancelled') {
+      if (currentStatus === 'completed' || currentStatus === 'cancelled' || currentStatus === 'discarded') {
         await client.query('COMMIT');
         return {
           booking_id: bookingId,
@@ -461,7 +461,7 @@ class BookingService {
 
       const countOf = (s) => statusCounts[s] || 0;
 
-      const terminalCount = countOf('completed') + countOf('cancelled') + countOf('exchanged');
+      const terminalCount = countOf('completed') + countOf('cancelled') + countOf('exchanged') + countOf('discarded');
       const allTerminal = terminalCount === totalProducts;
       const hasCompleted = countOf('completed') > 0;
       const hasInProgress = countOf('in_progress') > 0;
@@ -500,7 +500,8 @@ class BookingService {
           in_progress: 'booking_in_progress',
           partially_completed: 'booking_partially_completed',
           completed: 'booking_completed',
-          cancelled: 'booking_cancelled'
+          cancelled: 'booking_cancelled',
+          discarded: 'booking_discarded'
         };
 
         await client.query(
@@ -717,17 +718,17 @@ class BookingService {
           'address',                 u.address,
           'email',                   u.email
         ) AS user,
-        COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')) AS product_count,
-        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_rent,
-        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_effective_rent,
-        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled')), 0)::INTEGER AS total_security,
+        COUNT(DISTINCT bp.id) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled', 'discarded')) AS product_count,
+        COALESCE(SUM(bp.rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled', 'discarded')), 0)::INTEGER AS total_rent,
+        COALESCE(SUM(bp.effective_rent) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled', 'discarded')), 0)::INTEGER AS total_effective_rent,
+        COALESCE(SUM(bp.security_deposit) FILTER (WHERE bp.status NOT IN ('exchanged', 'cancelled', 'discarded')), 0)::INTEGER AS total_security,
         COALESCE((
           SELECT SUM(pc.paid_amount) 
           FROM product_charges pc 
           JOIN booking_products bp2 ON pc.booking_product_id = bp2.id
           WHERE bp2.booking_id = b.id
           AND (
-            bp2.status NOT IN ('exchanged', 'cancelled')
+            bp2.status NOT IN ('exchanged', 'cancelled', 'discarded')
             OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
           )
         ), 0)::INTEGER AS total_paid,
@@ -882,7 +883,7 @@ class BookingService {
       const productsCheck = await client.query(
         `SELECT COUNT(*) as active_count 
          FROM booking_products 
-         WHERE booking_id = $1 AND status NOT IN ('completed', 'cancelled', 'exchanged')`,
+         WHERE booking_id = $1 AND status NOT IN ('completed', 'cancelled', 'exchanged', 'discarded')`,
         [bookingId]
       );
 
@@ -1025,8 +1026,8 @@ class BookingService {
          JOIN users u ON b.user_id = u.id
          JOIN booking_products bp ON bp.booking_id = b.id
          WHERE bp.product_id = $1
-           AND bp.status NOT IN ('cancelled', 'exchanged', 'completed')
-           AND b.status NOT IN ('cancelled')${sizeClause}
+           AND bp.status NOT IN ('cancelled', 'exchanged', 'completed', 'discarded')
+           AND b.status NOT IN ('cancelled', 'discarded')${sizeClause}
          ORDER BY bp.booked_from`,
         params
       );

@@ -63,7 +63,7 @@ class ProductLifecycleService {
 
       const oldBookingProduct = bpResult.rows[0];
 
-      if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(oldBookingProduct.status)) {
+      if (['in_progress', 'exchanged', 'cancelled', 'completed', 'discarded'].includes(oldBookingProduct.status)) {
         throw new Error(`Cannot exchange product with status: ${oldBookingProduct.status}`);
       }
 
@@ -81,7 +81,7 @@ class ProductLifecycleService {
       const activeRows = await client.query(
         `SELECT DISTINCT product_id, size FROM booking_products
          WHERE booking_id = $1
-           AND status NOT IN ('cancelled', 'exchanged', 'completed')`,
+           AND status NOT IN ('cancelled', 'exchanged', 'completed', 'discarded')`,
         [oldBookingProduct.booking_id]
       );
       const activeKeys = new Set(activeRows.rows.map(r => `${r.product_id}:${r.size || ''}`));
@@ -318,7 +318,7 @@ class ProductLifecycleService {
 
       const bookingProduct = bpResult.rows[0];
 
-      if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(bookingProduct.status)) {
+      if (['in_progress', 'exchanged', 'cancelled', 'completed', 'discarded'].includes(bookingProduct.status)) {
         throw new Error(`Cannot cancel product with status: ${bookingProduct.status}`);
       }
 
@@ -602,7 +602,7 @@ class ProductLifecycleService {
            FROM product_charges pc
            JOIN booking_products bp ON pc.booking_product_id = bp.id
            WHERE bp.booking_id = $1
-             AND bp.status NOT IN ('cancelled', 'exchanged')
+             AND bp.status NOT IN ('cancelled', 'exchanged', 'discarded')
              AND NOT (bp.id = ANY($2::int[]))
              AND pc.charge_type NOT IN ('security')`,
           [bookingId, excludeProductIds]
@@ -1071,7 +1071,7 @@ class ProductLifecycleService {
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1
-         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed', 'discarded')
          AND bp.id != $2
          AND pc.charge_type != 'security'`,
       [booking_id, bookingProductId]
@@ -1096,7 +1096,7 @@ class ProductLifecycleService {
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        JOIN products p ON bp.product_id = p.id
        WHERE bp.booking_id = $1
-         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+         AND bp.status NOT IN ('exchanged', 'cancelled', 'completed', 'discarded')
          AND bp.id != $2
          AND pc.charge_type = 'security'
          AND (pc.due_amount - pc.paid_amount) > 0
@@ -1386,7 +1386,7 @@ class ProductLifecycleService {
       const product = result.rows[0];
 
       // Cannot exchange products that are already exchanged, cancelled, completed, or in_progress
-      if (['in_progress', 'exchanged', 'cancelled', 'completed'].includes(product.status)) {
+      if (['in_progress', 'exchanged', 'cancelled', 'completed', 'discarded'].includes(product.status)) {
         return {
           eligible: false,
           reason: `Cannot exchange product with status: ${product.status}. Only confirmed products can be exchanged.`,
@@ -1437,7 +1437,7 @@ class ProductLifecycleService {
       const product = result.rows[0];
 
       // Cannot cancel products that are already cancelled, exchanged, or completed
-      if (['in_progress', 'cancelled', 'exchanged', 'completed'].includes(product.status)) {
+      if (['in_progress', 'cancelled', 'exchanged', 'completed', 'discarded'].includes(product.status)) {
         return {
           eligible: false,
           reason: `Cannot cancel product with status: ${product.status}`,
@@ -1513,7 +1513,7 @@ class ProductLifecycleService {
 
       // 3. Filter to cancellable products (not already cancelled/exchanged/completed/in_progress)
       const cancellableProducts = bpResult.rows.filter(p =>
-        !['cancelled', 'exchanged', 'completed', 'in_progress'].includes(p.status)
+        !['cancelled', 'exchanged', 'completed', 'in_progress', 'discarded'].includes(p.status)
       );
 
       // 4. Build all_products and products_to_cancel with penalty + per-product paid info
@@ -1695,7 +1695,7 @@ class ProductLifecycleService {
          FROM product_charges pc
          JOIN booking_products bp ON pc.booking_product_id = bp.id
          WHERE bp.booking_id = $1
-           AND bp.status NOT IN ('cancelled', 'exchanged')
+           AND bp.status NOT IN ('cancelled', 'exchanged', 'discarded')
            AND NOT (bp.id = ANY($2::int[]))
            AND pc.charge_type NOT IN ('security')`,
         [bookingId, selectedProductIds]
@@ -1724,7 +1724,7 @@ class ProductLifecycleService {
          JOIN booking_products bp ON pc.booking_product_id = bp.id
          JOIN products p ON bp.product_id = p.id
          WHERE bp.booking_id = $1
-           AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+           AND bp.status NOT IN ('exchanged', 'cancelled', 'completed', 'discarded')
            AND NOT (bp.id = ANY($2::int[]))
            AND pc.charge_type = 'security'
            AND (pc.due_amount - pc.paid_amount) > 0
@@ -1863,7 +1863,7 @@ class ProductLifecycleService {
         `SELECT bp.rent, bp.effective_rent, bp.security_deposit
          FROM booking_products bp
          WHERE bp.booking_id = $1
-           AND bp.status NOT IN ('cancelled', 'exchanged')`,
+           AND bp.status NOT IN ('cancelled', 'exchanged', 'discarded')`,
         [oldProduct.booking_id]
       );
 
@@ -1923,6 +1923,100 @@ class ProductLifecycleService {
     } catch (error) {
       console.error('Error calculating exchange preview:', error);
       throw error;
+    }
+  }
+  /**
+   * Discard a booking — admin-only override.
+   * Sets all non-terminal booking products to 'discarded', recalculates
+   * the booking date range (releasing dates), marks the booking as 'discarded',
+   * and logs the activity. No financial checks, penalties, or settlements.
+   *
+   * @param {number} bookingId - The booking ID to discard
+   * @param {string} userId - Admin user performing the discard
+   * @returns {Promise<Object>} - Summary of discarded products
+   */
+  async discardBooking(bookingId, userId) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Verify booking exists
+      const bookingResult = await client.query(
+        'SELECT id, status FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+
+      if (bookingResult.rows.length === 0) {
+        throw new Error('Booking not found');
+      }
+
+      const currentStatus = bookingResult.rows[0].status;
+
+      // Cannot discard already-terminal bookings
+      if (['completed', 'cancelled', 'discarded'].includes(currentStatus)) {
+        throw new Error(`Cannot discard booking with status: ${currentStatus}`);
+      }
+
+      // Get all non-terminal booking products
+      const productsResult = await client.query(
+        `SELECT id, product_id, status
+         FROM booking_products
+         WHERE booking_id = $1 AND status NOT IN ('completed', 'cancelled', 'exchanged', 'discarded')`,
+        [bookingId]
+      );
+
+      const discardedProductIds = productsResult.rows.map(r => r.id);
+
+      // Set all active products to 'discarded'
+      if (discardedProductIds.length > 0) {
+        await client.query(
+          `UPDATE booking_products
+           SET status = 'discarded', updated_at = CURRENT_TIMESTAMP
+           WHERE id = ANY($1::int[])`,
+          [discardedProductIds]
+        );
+      }
+
+      // Recalculate booking date range (releases dates for discarded products)
+      await this.updateBookingDateRange(bookingId, client);
+
+      // Set booking status to 'discarded'
+      await client.query(
+        `UPDATE bookings SET status = 'discarded', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        [bookingId]
+      );
+
+      // Log activity
+      await client.query(
+        `INSERT INTO booking_activity_log
+           (booking_id, event_type, details, performed_by)
+         VALUES ($1, $2, $3, $4)`,
+        [
+          bookingId,
+          'booking_discarded',
+          JSON.stringify({
+            previous_status: currentStatus,
+            discarded_product_count: discardedProductIds.length,
+            discarded_product_ids: discardedProductIds
+          }),
+          userId
+        ]
+      );
+
+      await client.query('COMMIT');
+
+      return {
+        booking_id: bookingId,
+        previous_status: currentStatus,
+        new_status: 'discarded',
+        discarded_product_count: discardedProductIds.length,
+        discarded_product_ids: discardedProductIds
+      };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
   }
 }

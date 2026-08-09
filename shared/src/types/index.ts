@@ -34,7 +34,7 @@ export interface BookingProduct {
   code?: string;
   name?: string;
   image?: string;
-  status: 'pending' | 'confirmed' | 'in_progress' | 'completed' | 'exchanged' | 'cancelled';
+  status: 'pending' | 'confirmed' | 'in_progress' | 'completed' | 'exchanged' | 'cancelled' | 'discarded';
   booked_from: string;
   booked_to: string;
   rent: number;
@@ -78,7 +78,7 @@ export interface Booking {
   user: User;
 
   // Booking lifecycle
-  status: 'pending' | 'confirmed' | 'in_progress' | 'partially_completed' | 'completed' | 'cancelled';
+  status: 'pending' | 'confirmed' | 'in_progress' | 'partially_completed' | 'completed' | 'cancelled' | 'discarded';
   booking_date: string;
   booked_from: string;
   booked_to: string;

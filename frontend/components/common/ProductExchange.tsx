@@ -646,7 +646,7 @@ export function ProductExchange({
 
   const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
 
-  const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled';
+  const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled' && bookingStatus !== 'discarded';
 
   // All newly-added products (main + additional) must have both dates set before proceeding
   const allProductDatesSet = (() => {
@@ -885,7 +885,7 @@ export function ProductExchange({
                       {(() => {
                         const activeProductPairs = new Set(
                           currentProducts
-                            .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                            .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
                             .map(p => `${p.product_id}:${p.size || ''}`)
                         );
                         return availableProducts.map((product) => {
@@ -914,7 +914,7 @@ export function ProductExchange({
                 // Filter out sizes already actively in this booking for this product
                 const activeProductPairs = new Set(
                   currentProducts
-                    .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                    .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
                     .map(p => `${p.product_id}:${p.size || ''}`)
                 );
                 return (
@@ -1010,7 +1010,7 @@ export function ProductExchange({
                     {(() => {
                       const activeProductIds = new Set(
                         currentProducts
-                          .filter(p => !['cancelled', 'exchanged', 'completed'].includes(p.status))
+                          .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
                           .map(p => p.product_id)
                       );
                       const filteredProducts = availableProducts

@@ -28,7 +28,7 @@ export function toEligibleSecProducts(
     .filter(p => {
       const sec = p.charges.find(c => c.charge_type === 'security');
       return (
-        !['exchanged', 'cancelled', 'completed'].includes(p.status) &&
+        !['exchanged', 'cancelled', 'completed', 'discarded'].includes(p.status) &&
         sec != null &&
         sec.due_amount - sec.paid_amount > 0
       );

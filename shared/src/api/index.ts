@@ -10,6 +10,7 @@ import { createLifecycleApi } from './lifecycle';
 import { createPoliciesApi } from './policies';
 import { createProductExchangesApi } from './productExchanges';
 import { createBookingCancellationApi } from './bookingCancellation';
+import { createBookingDiscardApi } from './bookingDiscard';
 import { createSettingsApi } from './settings';
 import { createComplaintsApi } from './complaints';
 import { createFeedbackApi } from './feedback';
@@ -28,6 +29,7 @@ export interface Api {
   policies: ReturnType<typeof createPoliciesApi>;
   productExchanges: ReturnType<typeof createProductExchangesApi>;
   bookingCancellation: ReturnType<typeof createBookingCancellationApi>;
+  bookingDiscard: ReturnType<typeof createBookingDiscardApi>;
   settings: ReturnType<typeof createSettingsApi>;
   complaints: ReturnType<typeof createComplaintsApi>;
   feedback: ReturnType<typeof createFeedbackApi>;
@@ -51,6 +53,7 @@ export function createApi(config: ApiConfig): Api {
     policies: createPoliciesApi(apiClient),
     productExchanges: createProductExchangesApi(apiClient),
     bookingCancellation: createBookingCancellationApi(apiClient),
+    bookingDiscard: createBookingDiscardApi(apiClient),
     settings: createSettingsApi(apiClient),
     complaints: createComplaintsApi(apiClient),
     feedback: createFeedbackApi(apiClient),
@@ -72,6 +75,7 @@ export * from './lifecycle';
 export * from './policies';
 export * from './productExchanges';
 export * from './bookingCancellation';
+export * from './bookingDiscard';
 export * from './settings';
 export * from './complaints';
 export * from './feedback';

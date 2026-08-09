@@ -99,8 +99,8 @@ class ChargeAccountingService {
 
       // Aggregate charges by category
       products.forEach(product => {
-        const isActive = !['exchanged', 'cancelled'].includes(product.status);
-        const includeSecurityDue = !['exchanged', 'cancelled', 'completed'].includes(product.status);
+        const isActive = !['exchanged', 'cancelled', 'discarded'].includes(product.status);
+        const includeSecurityDue = !['exchanged', 'cancelled', 'completed', 'discarded'].includes(product.status);
 
         product.charges.forEach(charge => {
           // Track individual charge type dues for breakdown display
@@ -280,7 +280,7 @@ class ChargeAccountingService {
        FROM booking_products bp
        JOIN product_charges pc ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1
-         AND bp.status NOT IN ('exchanged', 'cancelled')
+         AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
          AND NOT (bp.id = ANY($2::int[]))
          AND pc.charge_type = 'rent'
          AND pc.due_amount > pc.paid_amount
@@ -384,7 +384,7 @@ class ChargeAccountingService {
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1
-       AND bp.status NOT IN ('exchanged', 'cancelled')
+       AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
        AND NOT (bp.id = ANY($2::int[]))
        AND pc.charge_type IN ('exchange_penalty', 'downgrade_penalty', 'cancellation_penalty')
        AND pc.paid_amount < pc.due_amount
@@ -408,7 +408,7 @@ class ChargeAccountingService {
        FROM product_charges pc
        JOIN booking_products bp ON pc.booking_product_id = bp.id
        WHERE bp.booking_id = $1
-       AND bp.status NOT IN ('exchanged', 'cancelled')
+       AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
        AND NOT (bp.id = ANY($2::int[]))
        AND pc.charge_type IN ('late_fee', 'damage_fee')
        AND pc.paid_amount < pc.due_amount
@@ -435,7 +435,7 @@ class ChargeAccountingService {
                FROM product_charges pc
                JOIN booking_products bp ON pc.booking_product_id = bp.id
                WHERE bp.booking_id = $1
-                 AND bp.status NOT IN ('exchanged', 'cancelled', 'completed')
+                 AND bp.status NOT IN ('exchanged', 'cancelled', 'completed', 'discarded')
                  AND pc.charge_type = 'security'
                  AND pc.paid_amount < pc.due_amount
                  AND bp.id = ANY($2::int[])
@@ -449,7 +449,7 @@ class ChargeAccountingService {
                FROM product_charges pc
                JOIN booking_products bp ON pc.booking_product_id = bp.id
                WHERE bp.booking_id = $1
-                 AND bp.status NOT IN ('exchanged', 'cancelled')
+                 AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
                  AND NOT (bp.id = ANY($2::int[]))
                  AND pc.charge_type = 'security'
                  AND pc.paid_amount < pc.due_amount
@@ -586,12 +586,16 @@ class ChargeAccountingService {
 
       // Verify booking exists
       const bookingResult = await client.query(
-        'SELECT id FROM bookings WHERE id = $1',
+        'SELECT id, status FROM bookings WHERE id = $1',
         [bookingId]
       );
 
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
+      }
+
+      if (bookingResult.rows[0].status === 'discarded') {
+        throw new Error('Cannot process payments or adjustments for a discarded booking');
       }
 
       if (amount <= 0) {
@@ -608,7 +612,7 @@ class ChargeAccountingService {
             FROM product_charges pc
             JOIN booking_products bp ON pc.booking_product_id = bp.id
             WHERE bp.booking_id = $1 AND (
-              bp.status NOT IN ('exchanged', 'cancelled')
+              bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
               OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
             )`,
           [bookingId]
@@ -641,7 +645,7 @@ class ChargeAccountingService {
            FROM product_charges pc
            JOIN booking_products bp ON pc.booking_product_id = bp.id
            WHERE bp.booking_id = $1
-             AND bp.status NOT IN ('exchanged', 'cancelled')
+             AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
              AND pc.charge_type = 'rent'`,
           [bookingId]
         );
@@ -736,9 +740,13 @@ class ChargeAccountingService {
       await client.query('BEGIN');
 
       // Verify booking exists
-      const bookingResult = await client.query('SELECT id FROM bookings WHERE id = $1', [bookingId]);
+      const bookingResult = await client.query('SELECT id, status FROM bookings WHERE id = $1', [bookingId]);
       if (bookingResult.rows.length === 0) {
         throw new Error('Booking not found');
+      }
+
+      if (bookingResult.rows[0].status === 'discarded') {
+        throw new Error('Cannot process refunds for a discarded booking');
       }
 
       if (amount <= 0) {
@@ -821,7 +829,7 @@ class ChargeAccountingService {
       const products = await client.query(
         `SELECT id, rent, discount_amount, global_discount_share
          FROM booking_products
-         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled', 'discarded')
          ORDER BY rent DESC`,
         [bookingId]
       );
@@ -915,7 +923,7 @@ class ChargeAccountingService {
       `SELECT COALESCE(SUM(global_discount_share), 0)::INTEGER AS active_share
        FROM booking_products
        WHERE booking_id = $1
-         AND status NOT IN ('exchanged', 'cancelled')
+         AND status NOT IN ('exchanged', 'cancelled', 'discarded')
          AND NOT (id = ANY($2::int[]))`,
       [bookingId, excludeProductIds]
     );
@@ -949,11 +957,11 @@ class ChargeAccountingService {
     const activeProductsQuery = cancellingProductId
       ? `SELECT id, rent, discount_amount, global_discount_share
          FROM booking_products
-         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled') AND id != $2
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled', 'discarded') AND id != $2
          ORDER BY id`
       : `SELECT id, rent, discount_amount, global_discount_share
          FROM booking_products
-         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled')
+         WHERE booking_id = $1 AND status NOT IN ('exchanged', 'cancelled', 'discarded')
          ORDER BY id`;
     const activeProductsParams = cancellingProductId ? [bookingId, cancellingProductId] : [bookingId];
     const activeProducts = await client.query(activeProductsQuery, activeProductsParams);

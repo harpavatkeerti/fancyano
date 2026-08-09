@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi } from '@/lib/api';
+import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi, bookingDiscardApi } from '@/lib/api';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product, User } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput, FlagIcon } from '@/components/common';
@@ -130,7 +130,8 @@ export default function BookingsPage() {
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
-  const [statusFilter, setStatusFilter] = useState<string>('all'); // New status filter
+  const [statusFilter, setStatusFilter] = useState<string>('all_except_discarded'); // Default excludes discarded
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState<number | null>(null); // Booking ID to discard
   const [allTransactions, setAllTransactions] = useState<any[]>([]); // Store all transactions for delay check
 
   // Warning modal state
@@ -477,6 +478,18 @@ export default function BookingsPage() {
     setShowCancellationModal(false);
     setBookingToCancelWithPolicy(null);
     fetchBookings(); // Refresh the bookings list
+  }
+
+  async function handleDiscardBooking(bookingId: number) {
+    try {
+      await bookingDiscardApi.discard(bookingId, currentUser.name);
+      toast.success('Booking discarded successfully');
+      setShowDiscardConfirm(null);
+      await fetchBookings();
+    } catch (error: any) {
+      console.error('Error discarding booking:', error);
+      toast.error(error.response?.data?.error || 'Failed to discard booking');
+    }
   }
 
   async function handleConfirmCancel() {
@@ -1198,7 +1211,11 @@ export default function BookingsPage() {
       b.user.phone.includes(searchTerm.replace(/\D/g, ''));
 
     // Status filter
-    const matchesStatus = statusFilter === 'all' || b.status === statusFilter;
+    const matchesStatus = statusFilter === 'all'
+      ? true
+      : statusFilter === 'all_except_discarded'
+        ? b.status !== 'discarded'
+        : b.status === statusFilter;
 
     // Urgent filter
     const isUrgent = isBookingUrgent(b);
@@ -1310,12 +1327,14 @@ export default function BookingsPage() {
               onChange={(e) => setStatusFilter(e.target.value)}
               className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent text-sm"
             >
-              <option value="all">All Status</option>
+              <option value="all_except_discarded">All Status</option>
+              <option value="all">All (incl. Discarded)</option>
               <option value="pending">⏳ Pending</option>
               <option value="confirmed">✅ Confirmed</option>
               <option value="in_progress">🔄 In Progress</option>
               <option value="completed">✔️ Completed</option>
               <option value="cancelled">❌ Cancelled</option>
+              <option value="discarded">🗑️ Discarded</option>
             </select>
           </div>
           <div className="flex items-center space-x-2">
@@ -1330,12 +1349,12 @@ export default function BookingsPage() {
               <option value="normal">Normal Only</option>
             </select>
           </div>
-          {(filterDateFrom || filterDateTo || statusFilter !== 'all' || urgentFilter !== 'all') && (
+          {(filterDateFrom || filterDateTo || statusFilter !== 'all_except_discarded' || urgentFilter !== 'all') && (
             <button
               onClick={() => {
                 setFilterDateFrom('');
                 setFilterDateTo('');
-                setStatusFilter('all');
+                setStatusFilter('all_except_discarded');
                 setUrgentFilter('all');
               }}
               className="px-4 py-2 text-sm text-red-600 hover:text-red-800 font-medium whitespace-nowrap"
@@ -1387,7 +1406,7 @@ export default function BookingsPage() {
           <tbody className="bg-white divide-y divide-gray-200">
             {filteredBookings.map((booking) => {
               const allProducts = Array.isArray(booking.products) ? booking.products : [];
-              const activeProducts = allProducts.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged');
+              const activeProducts = allProducts.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged' && p.status !== 'discarded');
               const productCount = activeProducts.length;
               const isUrgent = isBookingUrgent(booking);
               const urgentReason = isUrgent ? getUrgentReason(booking) : '';
@@ -1451,10 +1470,12 @@ export default function BookingsPage() {
                           ? 'bg-red-100 text-red-800'
                           : booking.status === 'completed'
                             ? 'bg-blue-100 text-blue-800'
-                            : 'bg-yellow-100 text-yellow-800'
+                            : booking.status === 'discarded'
+                              ? 'bg-gray-200 text-gray-700'
+                              : 'bg-yellow-100 text-yellow-800'
                         }`}
                     >
-                      {booking.status}
+                      {booking.status === 'discarded' ? '🗑️ discarded' : booking.status}
                     </span>
                   </td>
                   <td className="px-3 py-3 text-sm font-medium">
@@ -1506,15 +1527,15 @@ export default function BookingsPage() {
                         </svg>
                       </button>
 
-                      {/* Cancel Icon Button */}
-                      {booking.status !== 'cancelled' && (
+                      {/* Discard Icon Button — admin override */}
+                      {!['cancelled', 'completed', 'discarded'].includes(booking.status) && (
                         <button
-                          onClick={() => handleCancelClick(booking.id, booking.user.name)}
-                          className="text-red-600 hover:text-red-900 transition-colors p-1.5 rounded hover:bg-red-50"
-                          title="Cancel Booking"
+                          onClick={() => setShowDiscardConfirm(booking.id)}
+                          className="text-gray-600 hover:text-gray-900 transition-colors p-1.5 rounded hover:bg-gray-100"
+                          title="Discard Booking"
                         >
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                           </svg>
                         </button>
                       )}
@@ -2107,7 +2128,7 @@ export default function BookingsPage() {
                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 mr-2 text-purple-600">
                         <path strokeLinecap="round" strokeLinejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5M10 11.25h4M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z" />
                       </svg>
-                      Booked Products ({Array.isArray(viewingBooking.products) ? viewingBooking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged').length : 0})
+                      Booked Products ({Array.isArray(viewingBooking.products) ? viewingBooking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged' && p.status !== 'discarded').length : 0})
                     </h3>
                     {Array.isArray(viewingBooking.products) && viewingBooking.products.length > 0 ? (
                       <div className="space-y-3">
@@ -2687,6 +2708,41 @@ export default function BookingsPage() {
         )
       }
 
+      {/* Discard Booking Confirmation Modal */}
+      {showDiscardConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <div className="flex items-start gap-4 mb-6">
+              <div className="bg-gray-100 rounded-full p-3">
+                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <div className="flex-1">
+                <h2 className="text-xl font-bold text-gray-900 mb-2">Discard Booking</h2>
+                <p className="text-gray-600">
+                  Are you sure you want to discard booking <span className="font-semibold text-gray-900">#{showDiscardConfirm}</span>? This will release all dates for the products involved. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowDiscardConfirm(null)}
+                className="flex-1 px-4 py-2 border-2 border-gray-400 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+              >
+                Go Back
+              </button>
+              <button
+                onClick={() => handleDiscardBooking(showDiscardConfirm)}
+                className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+              >
+                🗑️ Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div >
   );

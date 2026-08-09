@@ -130,9 +130,9 @@ export function PaymentManagement({
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
       setBookingStatus(booking.status || '');
-      // Filter out cancelled, exchanged and confirmed products — none of these should appear in refund or payment flows
+      // Filter out cancelled, exchanged, confirmed and discarded products — none of these should appear in refund or payment flows
       const productsList = Array.isArray(booking.products)
-        ? booking.products.filter((p: any) => !['cancelled', 'exchanged', 'confirmed'].includes(p.status))
+        ? booking.products.filter((p: any) => !['cancelled', 'exchanged', 'confirmed', 'discarded'].includes(p.status))
         : [];
       setProducts(productsList);
     } catch (error) {
@@ -670,9 +670,8 @@ export function PaymentManagement({
                     return (
                       <div
                         key={product.id}
-                        className={`flex items-center justify-between border rounded-lg p-4 ${
-                          alreadyRefunded ? 'border-gray-200 bg-gray-50 opacity-60' : 'border-gray-200 bg-white'
-                        }`}
+                        className={`flex items-center justify-between border rounded-lg p-4 ${alreadyRefunded ? 'border-gray-200 bg-gray-50 opacity-60' : 'border-gray-200 bg-white'
+                          }`}
                       >
                         <div>
                           <p className={`font-semibold ${alreadyRefunded ? 'text-gray-500' : 'text-gray-900'}`}>

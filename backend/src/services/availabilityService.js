@@ -28,7 +28,7 @@ class AvailabilityService {
       JOIN booking_products bp ON b.id = bp.booking_id
       WHERE 
         bp.product_id = $1
-        AND bp.status NOT IN ('cancelled', 'completed', 'exchanged')
+        AND bp.status NOT IN ('cancelled', 'completed', 'exchanged', 'discarded')
         AND (
           (bp.booked_from <= $2 AND bp.booked_to >= $2) OR
           (bp.booked_from <= $3 AND bp.booked_to >= $3) OR

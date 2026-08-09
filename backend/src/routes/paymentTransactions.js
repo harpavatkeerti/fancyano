@@ -114,6 +114,9 @@ router.post('/', async (req, res) => {
     if (error.message === 'Booking not found') {
       return res.status(404).json({ error: 'Booking not found' });
     }
+    if (error.message.includes('discarded booking')) {
+      return res.status(400).json({ error: error.message });
+    }
     if (error.message === 'Payment amount must be greater than 0') {
       return res.status(400).json({ error: error.message });
     }
@@ -170,6 +173,9 @@ router.post('/adjustment', async (req, res) => {
   } catch (error) {
     if (error.message === 'Booking not found') {
       return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message.includes('discarded booking')) {
+      return res.status(400).json({ error: error.message });
     }
     if (error.message.includes('must be greater than 0')) {
       return res.status(400).json({ error: error.message });

@@ -304,7 +304,7 @@ class ProductService {
     const activeCheck = await pool.query(
       `SELECT 1 FROM booking_products bp
        WHERE bp.product_id = $1
-         AND bp.status NOT IN ('cancelled', 'completed', 'exchanged')
+         AND bp.status NOT IN ('cancelled', 'completed', 'exchanged', 'discarded')
        LIMIT 1`,
       [productId]
     );

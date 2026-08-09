@@ -612,7 +612,7 @@ export default function OrderDetailsPage() {
   // Admin sees all products (cancelled/exchanged shown greyed out at the bottom).
   // Salesman/customer see only active products.
   const allProducts = Array.isArray(booking.products) ? booking.products : [];
-  const isInactive = (p: any) => p.status === 'cancelled' || p.status === 'exchanged';
+  const isInactive = (p: any) => p.status === 'cancelled' || p.status === 'exchanged' || p.status === 'discarded';
   const products = allProducts.filter((p: any) => !isInactive(p));
   const inactiveProducts = currentUser.role === 'admin'
     ? allProducts.filter(isInactive)
@@ -620,6 +620,7 @@ export default function OrderDetailsPage() {
 
   const isOrderCompleted = booking.status === 'completed';
   const isPartiallyCompleted = booking.status === 'partially_completed';
+  const isDiscarded = booking.status === 'discarded';
 
   // A product is "refunded" if its backend status is 'completed'
   function hasProductRefund(productId: number): boolean {
@@ -741,6 +742,20 @@ export default function OrderDetailsPage() {
             <div>
               <h3 className="text-lg font-bold text-red-800">Order Cancelled</h3>
               <p className="text-sm text-red-700">This booking has been cancelled.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDiscarded && (
+        <div className="bg-gray-100 border-l-4 border-gray-500 rounded-lg p-4 mb-6">
+          <div className="flex items-center">
+            <svg className="w-6 h-6 text-gray-600 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <div>
+              <h3 className="text-lg font-bold text-gray-800">Order Discarded</h3>
+              <p className="text-sm text-gray-700">This booking has been discarded by an admin. All dates have been released.</p>
             </div>
           </div>
         </div>
@@ -969,7 +984,7 @@ export default function OrderDetailsPage() {
               <div className="flex items-center gap-3 mt-6 mb-2">
                 <div className="flex-1 border-t border-gray-200" />
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Cancelled / Exchanged
+                  Cancelled / Exchanged / Discarded
                 </span>
                 <div className="flex-1 border-t border-gray-200" />
               </div>
@@ -1041,11 +1056,11 @@ export default function OrderDetailsPage() {
 
           {/* Product Exchange Section */}
           {(currentUser.role === 'admin' || salesmanPermissions.exchange_allowed) && booking && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6">
+            <div className={`bg-white border border-gray-200 rounded-lg p-6 ${isDiscarded ? 'opacity-50 pointer-events-none' : ''}`}>
               <ProductExchange
                 bookingId={booking.id}
                 bookingDate={booking.booking_date}
-                currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged') : []}
+                currentProducts={Array.isArray(booking.products) ? booking.products.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged' && p.status !== 'discarded') : []}
                 onExchangeComplete={fetchBooking}
                 userRole={currentUser.role}
                 bookingStatus={booking.status}
@@ -1057,7 +1072,7 @@ export default function OrderDetailsPage() {
 
           {/* Booking Cancellation Section */}
           {(currentUser.role === 'admin' || salesmanPermissions.cancellation_allowed) && booking && (
-            <div className="bg-white border border-gray-200 rounded-lg p-6">
+            <div className={`bg-white border border-gray-200 rounded-lg p-6 ${isDiscarded ? 'opacity-50 pointer-events-none' : ''}`}>
               <h3 className="text-lg font-semibold text-gray-900 mb-4">
                 Cancel Booking
               </h3>
@@ -1147,7 +1162,7 @@ export default function OrderDetailsPage() {
             totalAmount={paymentSummary ? (paymentSummary.charges.rent.due || 0) : 0}
             securityDeposit={paymentSummary ? (paymentSummary.charges.security.due || 0) : 0}
             userRole="salesman"
-            isFullyCancelled={booking?.status === 'cancelled'}
+            isFullyCancelled={booking?.status === 'cancelled' || booking?.status === 'discarded'}
             refreshTrigger={paymentRefreshKey}
             onPaymentUpdate={() => {
               fetchBooking();

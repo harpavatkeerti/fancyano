@@ -133,7 +133,7 @@ export function BookingCancellation({
   // Debounce timer ref
   const summaryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const canBeCancelled = bookingStatus !== 'pending' && bookingStatus !== 'cancelled' && bookingStatus !== 'completed';
+  const canBeCancelled = bookingStatus !== 'pending' && bookingStatus !== 'cancelled' && bookingStatus !== 'completed' && bookingStatus !== 'discarded';
 
   // Build penalty overrides map from editing state
   const getPenaltyOverrides = useCallback((): { [key: number]: number } => {

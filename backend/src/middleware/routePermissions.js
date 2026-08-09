@@ -18,9 +18,10 @@ const routePermissions = {
   // Route → allowed roles mapping
   // Routes not listed here default to: any authenticated user
   routes: {
-    '/api/policies':     ['admin'],
-    '/api/credit-notes': ['admin'],
-    '/api/vendors':      ['admin'],
+    '/api/policies':         ['admin'],
+    '/api/credit-notes':     ['admin'],
+    '/api/vendors':          ['admin'],
+    '/api/booking-discard':  ['admin'],
     // Add more role-restricted routes as needed — one-line change to modify access
   },
 
@@ -44,6 +45,7 @@ const routePermissions = {
     '/api/feedback':            'feedback',
     '/api/product-exchanges':   'productExchanges',
     '/api/booking-cancellation':'bookingCancellation',
+    '/api/booking-discard':     'bookingDiscard',
     '/api/lifecycle':           'productLifecycle',
     '/api/booking-preview':     'bookingPreview',
   }
