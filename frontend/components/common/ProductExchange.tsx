@@ -220,38 +220,23 @@ export function ProductExchange({
         };
       }
 
-      // Check for urgent case (tight scheduling - within 2 days of other bookings)
-      const bookings = productBookings[productId] || [];
-      const fromDate = new Date(dateFrom);
-      const toDate = new Date(dateTo);
+      // Check for tight schedule via backend API
+      try {
+        const tightResponse = await availabilityApi.checkTightSchedule([{
+          product_id: productId,
+          booked_from: dateFrom,
+          booked_to: dateTo,
+        }]);
 
-      for (const booking of bookings) {
-        if (!booking.booked_from || !booking.booked_to) continue;
-
-        // Skip completed and cancelled bookings
-        if (booking.status === 'completed' || booking.status === 'cancelled') continue;
-
-        const bookingFrom = new Date(booking.booked_from);
-        const bookingTo = new Date(booking.booked_to);
-
-        // Check if there's a gap of 2 days or less between bookings
-        const daysAfter = Math.floor((fromDate.getTime() - bookingTo.getTime()) / (1000 * 60 * 60 * 24));
-        const daysBefore = Math.floor((bookingFrom.getTime() - toDate.getTime()) / (1000 * 60 * 60 * 24));
-
-        if (daysAfter >= 0 && daysAfter <= 2) {
+        if (tightResponse.data.has_tight_schedule) {
           return {
             available: true,
             isUrgent: true,
-            message: `Tight schedule: Only ${daysAfter} day(s) gap after previous booking`
+            message: tightResponse.data.warnings.join(' ')
           };
         }
-        if (daysBefore >= 0 && daysBefore <= 2) {
-          return {
-            available: true,
-            isUrgent: true,
-            message: `Tight schedule: Only ${daysBefore} day(s) gap before next booking`
-          };
-        }
+      } catch (tightError) {
+        console.error('Error checking tight schedule:', tightError);
       }
 
       return { available: true };

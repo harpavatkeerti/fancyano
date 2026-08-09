@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi, bookingDiscardApi } from '@/lib/api';
+import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi, bookingDiscardApi, availabilityApi } from '@/lib/api';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import { Booking, Product, User } from '@/types';
 import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput, FlagIcon } from '@/components/common';
@@ -133,6 +133,7 @@ export default function BookingsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all_except_discarded'); // Default excludes discarded
   const [showDiscardConfirm, setShowDiscardConfirm] = useState<number | null>(null); // Booking ID to discard
   const [delayedBookingsMap, setDelayedBookingsMap] = useState<Map<number, Array<{name: string, code: string, booked_to: string, days_delayed: number}>>>(new Map());
+  const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[] }>>({});
 
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
@@ -255,6 +256,22 @@ export default function BookingsPage() {
     try {
       const response = await bookingsApi.getAll();
       setBookings(response.data);
+
+      // Fetch urgency status for all active bookings from the backend
+      const activeBookingIds = response.data
+        .filter((b: any) => !['cancelled', 'completed', 'discarded'].includes(b.status))
+        .map((b: any) => b.id);
+      if (activeBookingIds.length > 0) {
+        try {
+          const urgentResponse = await availabilityApi.getUrgentBulk(activeBookingIds);
+          setUrgentBookingsMap(urgentResponse.data);
+        } catch (err) {
+          console.error('Error fetching urgent status:', err);
+          setUrgentBookingsMap({});
+        }
+      } else {
+        setUrgentBookingsMap({});
+      }
     } catch (error) {
       console.error('Error fetching bookings:', error);
     } finally {
@@ -568,8 +585,8 @@ export default function BookingsPage() {
   }
 
   async function addProductWithSize(product: Product, size: string | null) {
-    // Fetch availability for this product FIRST
-    await fetchProductBookings(product.id);
+    // Fetch availability for this product FIRST (pass size so calendar shows only bookings for this size)
+    await fetchProductBookings(product.id, size);
 
     // Check if we have previous product dates
     if (lastProductDates && addFormData.products.length > 0) {
@@ -784,156 +801,14 @@ export default function BookingsPage() {
   }
 
 
-  // Function to check if a booking is urgent (based on tight scheduling with other bookings)
+  // Lookup helpers for urgent booking status (data comes from backend API)
   function isBookingUrgent(booking: Booking): boolean {
-    // Don't check urgent status for cancelled bookings
-    if (booking.status === 'cancelled') {
-      return false;
-    }
-
-    const products = Array.isArray(booking.products) ? booking.products : [];
-
-    for (const product of products) {
-      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
-      const thisDropDate = new Date(product.booked_to || booking.booked_to);
-      thisPickupDate.setHours(0, 0, 0, 0);
-      thisDropDate.setHours(0, 0, 0, 0);
-
-      // Check all OTHER bookings for the SAME product
-      for (const otherBooking of bookings) {
-        // Skip same booking and cancelled bookings
-        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
-          continue;
-        }
-
-        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-
-        for (const otherProduct of otherProducts) {
-          // Check if it's the same product (by product ID or code)
-          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-            continue;
-          }
-
-          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-          otherPickupDate.setHours(0, 0, 0, 0);
-          otherDropDate.setHours(0, 0, 0, 0);
-
-          // Check if other booking drops within 2 days BEFORE this booking's pickup
-          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-            return true;
-          }
-
-          // Check if other booking picks up within 2 days AFTER this booking's drop
-          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-            return true;
-          }
-        }
-      }
-    }
-
-    return false;
+    return urgentBookingsMap[booking.id]?.is_urgent ?? false;
   }
 
-  // Function to get urgent reason
   function getUrgentReason(booking: Booking): string {
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    const reasons: string[] = [];
-
-    for (const product of products) {
-      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
-      const thisDropDate = new Date(product.booked_to || booking.booked_to);
-      thisPickupDate.setHours(0, 0, 0, 0);
-      thisDropDate.setHours(0, 0, 0, 0);
-
-      // Check all OTHER bookings for the SAME product
-      for (const otherBooking of bookings) {
-        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
-          continue;
-        }
-
-        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-
-        for (const otherProduct of otherProducts) {
-          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-            continue;
-          }
-
-          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-          otherPickupDate.setHours(0, 0, 0, 0);
-          otherDropDate.setHours(0, 0, 0, 0);
-
-          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-            reasons.push(`${product.code}: Only ${daysBetweenDropAndPickup} day gap before pickup`);
-          }
-
-          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-            reasons.push(`${product.code}: Only ${daysBetweenDropAndNextPickup} day gap after return`);
-          }
-        }
-      }
-    }
-
+    const reasons = urgentBookingsMap[booking.id]?.reasons ?? [];
     return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
-  }
-
-  async function checkTightSchedule() {
-    try {
-      const warnings: string[] = [];
-
-      for (const product of addFormData.products) {
-        const thisPickupDate = new Date(product.booked_from);
-        const thisDropDate = new Date(product.booked_to);
-        thisPickupDate.setHours(0, 0, 0, 0);
-        thisDropDate.setHours(0, 0, 0, 0);
-
-        for (const otherBooking of bookings) {
-          if (otherBooking.status === 'cancelled') continue;
-
-          const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-
-          for (const otherProduct of otherProducts) {
-            if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-              continue;
-            }
-
-            const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-            const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-            otherPickupDate.setHours(0, 0, 0, 0);
-            otherDropDate.setHours(0, 0, 0, 0);
-
-            const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-            if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-              warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndPickup} day before your selected date.`);
-              break;
-            }
-
-            const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-            if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-              warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndNextPickup} day after your selected date.`);
-              break;
-            }
-          }
-        }
-      }
-
-      if (warnings.length > 0) {
-        return {
-          hasTightSchedule: true,
-          message: warnings.join(' ')
-        };
-      }
-
-      return { hasTightSchedule: false, message: '' };
-    } catch (error) {
-      console.error('Error checking tight schedule:', error);
-      return { hasTightSchedule: false, message: '' };
-    }
   }
 
   // Helper: actually call POST /bookings with user_id
@@ -990,12 +865,27 @@ export default function BookingsPage() {
     }
     if (phoneNumberError) { toast.error(phoneNumberError); return; }
 
-    // Tight schedule check
-    const tightScheduleCheck = await checkTightSchedule();
-    if (tightScheduleCheck.hasTightSchedule) {
-      setWarningMessage(tightScheduleCheck.message);
-      setShowWarningModal(true);
-      return;
+    // Tight schedule check (via backend API)
+    try {
+      const tightScheduleProducts = addFormData.products
+        .filter(p => p.booked_from && p.booked_to)
+        .map(p => ({
+          product_id: p.id,
+          size: p.size || null,
+          booked_from: p.booked_from,
+          booked_to: p.booked_to,
+        }));
+
+      if (tightScheduleProducts.length > 0) {
+        const tightScheduleCheck = await availabilityApi.checkTightSchedule(tightScheduleProducts);
+        if (tightScheduleCheck.data.has_tight_schedule) {
+          setWarningMessage(tightScheduleCheck.data.warnings.join(' '));
+          setShowWarningModal(true);
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Error checking tight schedule:', error);
     }
 
     // ── Path A: returning user selected from search ──

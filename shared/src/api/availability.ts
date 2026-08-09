@@ -36,6 +36,27 @@ export interface BulkAvailabilityResponse {
   all_available: boolean;
 }
 
+export interface TightScheduleProduct {
+  product_id: number;
+  size?: string | null;
+  booked_from: string;
+  booked_to: string;
+}
+
+export interface TightScheduleResponse {
+  has_tight_schedule: boolean;
+  warnings: string[];
+}
+
+export interface UrgentResponse {
+  is_urgent: boolean;
+  reasons: string[];
+}
+
+export interface UrgentBulkResponse {
+  [bookingId: number]: UrgentResponse;
+}
+
 export function createAvailabilityApi(client: AxiosInstance) {
   return {
     check: (data: AvailabilityCheckRequest) =>
@@ -43,6 +64,14 @@ export function createAvailabilityApi(client: AxiosInstance) {
     
     checkBulk: (data: BulkAvailabilityRequest) =>
       client.post<BulkAvailabilityResponse>('/availability/check-bulk', data),
+
+    checkTightSchedule: (products: TightScheduleProduct[]) =>
+      client.post<TightScheduleResponse>('/availability/check-tight-schedule', { products }),
+
+    getUrgent: (bookingId: number) =>
+      client.get<UrgentResponse>(`/availability/urgent/${bookingId}`),
+
+    getUrgentBulk: (bookingIds: number[]) =>
+      client.post<UrgentBulkResponse>('/availability/urgent-bulk', { booking_ids: bookingIds }),
   };
 }
-

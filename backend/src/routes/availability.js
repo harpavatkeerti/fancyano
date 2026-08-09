@@ -51,5 +51,50 @@ router.post('/check-bulk', async (req, res) => {
   }
 });
 
-module.exports = router;
+// POST check tight schedule for new booking products
+router.post('/check-tight-schedule', async (req, res) => {
+  try {
+    const { products } = req.body;
 
+    if (!products || !Array.isArray(products) || products.length === 0) {
+      return res.status(400).json({ error: 'products array is required' });
+    }
+
+    const result = await availabilityService.checkTightScheduleForProducts(products);
+    res.json(result);
+  } catch (error) {
+    console.error('Error checking tight schedule:', error);
+    res.status(500).json({ error: 'Failed to check tight schedule' });
+  }
+});
+
+// GET check urgency for a single booking
+router.get('/urgent/:bookingId', async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const result = await availabilityService.checkTightScheduleForBooking(parseInt(bookingId));
+    res.json(result);
+  } catch (error) {
+    console.error('Error checking booking urgency:', error);
+    res.status(500).json({ error: 'Failed to check booking urgency' });
+  }
+});
+
+// POST bulk check urgency for multiple bookings
+router.post('/urgent-bulk', async (req, res) => {
+  try {
+    const { booking_ids } = req.body;
+
+    if (!booking_ids || !Array.isArray(booking_ids) || booking_ids.length === 0) {
+      return res.status(400).json({ error: 'booking_ids array is required' });
+    }
+
+    const result = await availabilityService.checkTightScheduleBulk(booking_ids);
+    res.json(result);
+  } catch (error) {
+    console.error('Error checking bulk urgency:', error);
+    res.status(500).json({ error: 'Failed to check bulk urgency' });
+  }
+});
+
+module.exports = router;

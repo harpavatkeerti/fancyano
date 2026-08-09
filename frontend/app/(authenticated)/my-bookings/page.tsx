@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { bookingsApi } from '@/lib/api';
+import { bookingsApi, availabilityApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import Link from 'next/link';
@@ -15,7 +15,8 @@ export default function MyBookingsPage() {
   if (!auth.user) return null;
   const currentUser = auth.user;
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [allBookings, setAllBookings] = useState<Booking[]>([]); // All bookings for comparison
+  const [allBookings, setAllBookings] = useState<Booking[]>([]); // All bookings for search/display
+  const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[] }>>({});
   const [loading, setLoading] = useState(true);
   
   // Search functionality
@@ -24,96 +25,13 @@ export default function MyBookingsPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>('all'); // Status filter
   
-  // Function to check if a booking is urgent (based on tight scheduling with other bookings)
+  // Lookup helpers for urgent booking status (data comes from backend API)
   function isBookingUrgent(booking: Booking): boolean {
-    // Don't check urgent status for cancelled bookings
-    if (booking.status === 'cancelled') {
-      return false;
-    }
-
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    
-    for (const product of products) {
-      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
-      const thisDropDate = new Date(product.booked_to || booking.booked_to);
-      thisPickupDate.setHours(0, 0, 0, 0);
-      thisDropDate.setHours(0, 0, 0, 0);
-
-      // Check all OTHER bookings for the SAME product
-      for (const otherBooking of allBookings) {
-        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
-          continue;
-        }
-
-        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-        
-        for (const otherProduct of otherProducts) {
-          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-            continue;
-          }
-
-          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-          otherPickupDate.setHours(0, 0, 0, 0);
-          otherDropDate.setHours(0, 0, 0, 0);
-
-          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-            return true;
-          }
-
-          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-            return true;
-          }
-        }
-      }
-    }
-
-    return false;
+    return urgentBookingsMap[booking.id]?.is_urgent ?? false;
   }
 
-  // Function to get urgent reason
   function getUrgentReason(booking: Booking): string {
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    const reasons: string[] = [];
-    
-    for (const product of products) {
-      const thisPickupDate = new Date(product.booked_from || booking.booked_from);
-      const thisDropDate = new Date(product.booked_to || booking.booked_to);
-      thisPickupDate.setHours(0, 0, 0, 0);
-      thisDropDate.setHours(0, 0, 0, 0);
-
-      for (const otherBooking of allBookings) {
-        if (otherBooking.id === booking.id || otherBooking.status === 'cancelled') {
-          continue;
-        }
-
-        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-        
-        for (const otherProduct of otherProducts) {
-          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-            continue;
-          }
-
-          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-          otherPickupDate.setHours(0, 0, 0, 0);
-          otherDropDate.setHours(0, 0, 0, 0);
-
-          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-            reasons.push(`${product.code}: Only ${daysBetweenDropAndPickup} day gap before pickup`);
-          }
-
-          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-            reasons.push(`${product.code}: Only ${daysBetweenDropAndNextPickup} day gap after return`);
-          }
-        }
-      }
-    }
-
+    const reasons = urgentBookingsMap[booking.id]?.reasons ?? [];
     return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
   }
 
@@ -158,7 +76,7 @@ export default function MyBookingsPage() {
     try {
       const response = await bookingsApi.getAll();
 
-      // Store ALL bookings for urgent checking
+      // Store ALL bookings for search/display
       setAllBookings(response.data);
 
       // Identify current user from auth context — always reliable
@@ -179,6 +97,19 @@ export default function MyBookingsPage() {
       });
 
       setBookings(filteredBookings);
+
+      // Fetch urgency status for active bookings from the backend
+      const activeBookingIds = response.data
+        .filter((b: any) => !['cancelled', 'completed', 'discarded'].includes(b.status))
+        .map((b: any) => b.id);
+      if (activeBookingIds.length > 0) {
+        try {
+          const urgentResponse = await availabilityApi.getUrgentBulk(activeBookingIds);
+          setUrgentBookingsMap(urgentResponse.data);
+        } catch (err) {
+          console.error('Error fetching urgent status:', err);
+        }
+      }
     } catch (error) {
       console.error('Error fetching bookings:', error);
     } finally {

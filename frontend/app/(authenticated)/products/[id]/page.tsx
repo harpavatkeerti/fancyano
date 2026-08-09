@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { productsApi, bookingsApi } from '@/lib/api';
+import { productsApi, bookingsApi, availabilityApi } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -182,53 +182,17 @@ export default function ProductDetailPage() {
     }
 
     try {
-      const response = await bookingsApi.getAll();
-      const allBookings = response.data;
-      const warnings: string[] = [];
+      const response = await availabilityApi.checkTightSchedule([{
+        product_id: product.id,
+        size: selectedSize || null,
+        booked_from: dateFrom,
+        booked_to: dateTo,
+      }]);
 
-      const thisPickupDate = new Date(dateFrom);
-      const thisDropDate = new Date(dateTo);
-      thisPickupDate.setHours(0, 0, 0, 0);
-      thisDropDate.setHours(0, 0, 0, 0);
-
-      for (const otherBooking of allBookings) {
-        if (otherBooking.status === 'cancelled' || otherBooking.status === 'completed') continue;
-
-        const otherProducts = Array.isArray(otherBooking.products) ? otherBooking.products : [];
-
-        for (const otherProduct of otherProducts) {
-          if (otherProduct.id !== product.id && otherProduct.code !== product.code) {
-            continue;
-          }
-
-          // Different sizes of the same product are independent — skip
-          if (selectedSize && otherProduct.size && otherProduct.size !== selectedSize) {
-            continue;
-          }
-
-          const otherPickupDate = new Date(otherProduct.booked_from || otherBooking.booked_from);
-          const otherDropDate = new Date(otherProduct.booked_to || otherBooking.booked_to);
-          otherPickupDate.setHours(0, 0, 0, 0);
-          otherDropDate.setHours(0, 0, 0, 0);
-
-          const daysBetweenDropAndPickup = Math.ceil((thisPickupDate.getTime() - otherDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndPickup > 0 && daysBetweenDropAndPickup <= 2) {
-            warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndPickup} day before your selected date.`);
-            break;
-          }
-
-          const daysBetweenDropAndNextPickup = Math.ceil((otherPickupDate.getTime() - thisDropDate.getTime()) / (1000 * 60 * 60 * 24));
-          if (daysBetweenDropAndNextPickup > 0 && daysBetweenDropAndNextPickup <= 2) {
-            warnings.push(`${product.name} (${product.code}) is booked ${daysBetweenDropAndNextPickup} day after your selected date.`);
-            break;
-          }
-        }
-      }
-
-      if (warnings.length > 0) {
+      if (response.data.has_tight_schedule) {
         return {
           hasTightSchedule: true,
-          message: warnings.join(' ')
+          message: response.data.warnings.join(' ')
         };
       }
 
