@@ -16,6 +16,7 @@ export default function UsersPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [selectedRoles, setSelectedRoles] = useState<Set<string>>(new Set(['admin', 'salesman', 'customer']));
   const [sortColumn, setSortColumn] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [formData, setFormData] = useState({
@@ -200,7 +201,20 @@ export default function UsersPage() {
 
   // formatDate imported from @/lib/dateUtils
 
+  const toggleRole = (role: string) => {
+    setSelectedRoles((prev) => {
+      const next = new Set(prev);
+      if (next.has(role)) {
+        next.delete(role);
+      } else {
+        next.add(role);
+      }
+      return next;
+    });
+  };
+
   const filteredUsers = users.filter((user) => {
+    if (!selectedRoles.has(user.role?.toLowerCase() || '')) return false;
     const searchLower = searchTerm.toLowerCase();
     return (
       user.name?.toLowerCase().includes(searchLower) ||
@@ -281,10 +295,22 @@ export default function UsersPage() {
               Total User: {filteredUsers.length}
             </div>
 
-            {/* Filters Button */}
-            <button className="px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors">
-              Filters
-            </button>
+            {/* Role Filter Buttons */}
+            <div className="flex items-center gap-2">
+              {(['admin', 'salesman', 'customer'] as const).map((role) => (
+                <button
+                  key={role}
+                  onClick={() => toggleRole(role)}
+                  className={`px-3 py-1.5 rounded-full text-sm font-medium border transition-colors capitalize ${
+                    selectedRoles.has(role)
+                      ? 'bg-red-600 text-white border-red-600 hover:bg-red-700'
+                      : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  {role}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Add User Button */}
