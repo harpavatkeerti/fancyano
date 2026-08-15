@@ -33,17 +33,10 @@ export default function BookingsPage() {
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);
-  const [showModifyModal, setShowModifyModal] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showMeasurements, setShowMeasurements] = useState<{ [key: string]: boolean }>({});
   const [parsedMeasurements, setParsedMeasurements] = useState<{ [key: string]: any }>({});
   const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{ [key: string]: string }>({});
-  const [formData, setFormData] = useState({
-    customer_name: '',
-    customer_phone: '',
-    customer_address: '',
-    status: 'pending' as const,
-  });
   const [addFormData, setAddFormData] = useState({
     // User-linked fields (displayed, editable, used to create/update user)
     customer_name: '',
@@ -102,20 +95,7 @@ export default function BookingsPage() {
     amount: '',
   });
 
-  // Date change functionality for modify modal - simplified like salesman portal
-  const [selectedProductForDateChange, setSelectedProductForDateChange] = useState<any>(null);
-  const [changeDateFrom, setChangeDateFrom] = useState('');
-  const [changeDateTo, setChangeDateTo] = useState('');
-  const [dateChangeCharge, setDateChangeCharge] = useState(0);
-  const [productBookingsForDateChange, setProductBookingsForDateChange] = useState<any[]>([]);
 
-  const [dateChangeChargeSettings, setDateChangeChargeSettings] = useState({
-    charge_type: 'manual' as 'fixed' | 'variable' | 'manual',
-    fixed_amount: 0,
-    variable_per_day: 0,
-    min_charge: 0,
-    max_charge: 0,
-  });
 
   // Payment collection modal state for new booking
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -145,7 +125,7 @@ export default function BookingsPage() {
     fetchBookings();
     fetchProducts();
     fetchTransportationCharge();
-    fetchDateChangeChargeSettings();
+
     fetchDelayedBookings();
   }, []);
 
@@ -181,66 +161,7 @@ export default function BookingsPage() {
     fetchPreview();
   }, [addFormData.products, addFormData.transport_charge, addFormData.discount_type, addFormData.discount_value]);
 
-  async function fetchDateChangeChargeSettings() {
-    try {
-      const settings = [
-        'date_change_charge_type',
-        'date_change_fixed_amount',
-        'date_change_variable_per_day',
-        'date_change_min_charge',
-        'date_change_max_charge',
-      ];
 
-      const values: any = {};
-      for (const key of settings) {
-        try {
-          const response = await settingsApi.getByKey(key);
-          values[key] = response.data?.setting_value || null;
-        } catch (error) {
-          // Setting doesn't exist, use default
-        }
-      }
-
-      setDateChangeChargeSettings({
-        charge_type: (values.date_change_charge_type || 'manual') as 'fixed' | 'variable' | 'manual',
-        fixed_amount: parseFloat(values.date_change_fixed_amount || '0') || 0,
-        variable_per_day: parseFloat(values.date_change_variable_per_day || '0') || 0,
-        min_charge: parseFloat(values.date_change_min_charge || '0') || 0,
-        max_charge: parseFloat(values.date_change_max_charge || '0') || 0,
-      });
-    } catch (error) {
-      console.error('Error fetching date change charge settings:', error);
-    }
-  }
-
-  function calculateDateChangeCharge(oldFrom: string, oldTo: string, newFrom: string, newTo: string): number {
-    if (!oldFrom || !oldTo || !newFrom || !newTo) return 0;
-
-    const oldStart = new Date(oldFrom);
-    const oldEnd = new Date(oldTo);
-    const newStart = new Date(newFrom);
-    const newEnd = new Date(newTo);
-
-    // Calculate days changed (absolute difference in date range)
-    const oldDays = Math.ceil((oldEnd.getTime() - oldStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    const newDays = Math.ceil((newEnd.getTime() - newStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-    const daysChanged = Math.abs(newDays - oldDays);
-
-    if (daysChanged === 0) return 0;
-
-    switch (dateChangeChargeSettings.charge_type) {
-      case 'fixed':
-        return dateChangeChargeSettings.fixed_amount || 0;
-      case 'variable':
-        const baseCharge = daysChanged * dateChangeChargeSettings.variable_per_day;
-        const minCharge = dateChangeChargeSettings.min_charge || 0;
-        const maxCharge = dateChangeChargeSettings.max_charge || Infinity;
-        return Math.max(minCharge, Math.min(baseCharge, maxCharge));
-      case 'manual':
-      default:
-        return 0; // Will be entered manually
-    }
-  }
 
   async function fetchTransportationCharge() {
     try {
@@ -318,88 +239,7 @@ export default function BookingsPage() {
     }
   }
 
-  async function handleModify(booking: Booking) {
-    setSelectedBooking(booking);
-    setFormData({
-      customer_name: booking.user.name,
-      customer_phone: booking.user.phone,
-      customer_address: booking.user.address || '',
-      status: booking.status as any,
-    });
 
-    // Reset date change states
-    setSelectedProductForDateChange(null);
-    setChangeDateFrom('');
-    setChangeDateTo('');
-    setDateChangeCharge(0);
-
-    // Fetch product bookings for calendar availability
-    const bookingsMap: Record<number, any[]> = {};
-    const products = Array.isArray(booking.products) ? booking.products : [];
-    for (const product of products) {
-      try {
-        const response = await bookingsApi.getByProductId(product.id, product.size || undefined);
-        // Filter out the current booking's dates and format for DateRangePicker
-        const bookings = (response.data || []).filter((b: any) => b.id !== booking.id).map((b: any) => ({
-          booked_from: b.booked_from,
-          booked_to: b.booked_to,
-          user: { name: b.user.name, phone: b.user.phone },
-        }));
-        bookingsMap[product.id] = bookings;
-      } catch (error) {
-        console.error(`Error fetching bookings for product ${product.id}:`, error);
-        bookingsMap[product.id] = [];
-      }
-    }
-    setProductBookings(bookingsMap);
-
-    setShowModifyModal(true);
-  }
-
-  async function handleUpdate() {
-    if (!selectedBooking) return;
-    try {
-      const oldStatus: string = selectedBooking.status;
-      const newStatus: string = formData.status;
-
-      // Check if trying to confirm a booking that has a credit note
-      if (oldStatus !== 'confirmed' && newStatus === 'confirmed') {
-        try {
-          const creditNotesResponse = await creditNotesApi.getByBookingId(selectedBooking.id);
-          const creditNotes = creditNotesResponse.data || [];
-
-          if (creditNotes.length > 0) {
-            const activeCreditNote = creditNotes.find((note: any) => {
-              const validUntil = new Date(note.valid_until);
-              const now = new Date();
-              const availableAmount = parseFloat(note.amount || 0) - parseFloat(note.used_amount || 0);
-              return validUntil >= now && availableAmount > 0;
-            });
-
-            if (activeCreditNote) {
-              toast.error(`Cannot confirm booking. An active credit note (ID: ${activeCreditNote.id}) exists for this booking. Please delete the credit note first.`);
-              return;
-            }
-          };
-        } catch (error) {
-          console.error('Error checking credit notes:', error);
-          // Continue with update if check fails
-        }
-      }
-
-      // Update booking basic info (date changes handled in separate modal)
-      await bookingsApi.update(selectedBooking.id, formData);
-
-      await fetchBookings();
-      setShowModifyModal(false);
-      setSelectedBooking(null);
-
-      toast.success('Booking updated successfully!');
-    } catch (error) {
-      console.error('Error updating booking:', error);
-      toast.error('Error updating booking');
-    }
-  }
 
   async function handleCancelClick(id: number, customerName: string) {
     try {
@@ -1331,16 +1171,7 @@ export default function BookingsPage() {
                         </svg>
                       </button>
 
-                      {/* Modify Icon Button */}
-                      <button
-                        onClick={() => handleModify(booking)}
-                        className="text-blue-600 hover:text-blue-900 transition-colors p-1.5 rounded hover:bg-blue-50"
-                        title="Modify Booking"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                      </button>
+
 
                       {/* Discard Icon Button — admin override */}
                       {!['cancelled', 'completed', 'discarded'].includes(booking.status) && (
@@ -1372,353 +1203,6 @@ export default function BookingsPage() {
           </tbody>
         </table>
       </div>
-
-      {/* Modify Modal */}
-      {showModifyModal && selectedBooking && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
-            <h2 className="text-2xl font-bold mb-4">Modify Booking</h2>
-            <div className="space-y-4">
-              <h3 className="text-lg font-semibold">Contact Details</h3>
-              <Input
-                label="Name*"
-                value={formData.customer_name}
-                onChange={(e) => setFormData({ ...formData, customer_name: e.target.value })}
-                required
-              />
-
-              {/* Phone — read-only with country flag (phone is immutable per backend) */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
-                <div className="flex items-center gap-3 px-4 py-2 border border-gray-200 rounded-lg bg-gray-50">
-                  {selectedBooking?.user.phone_country && (
-                    <FlagIcon
-                      countryCode={selectedBooking.user.phone_country}
-                      className="w-5 h-3.5 rounded-sm flex-shrink-0"
-                    />
-                  )}
-                  <span className="text-gray-700 font-medium">{formData.customer_phone}</span>
-                  <span className="ml-auto text-xs text-gray-400 italic">cannot be changed</span>
-                </div>
-              </div>
-
-              <h3 className="text-lg font-semibold mt-6">Address</h3>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Address <span className="text-gray-400 font-normal">(optional)</span></label>
-                <textarea
-                  value={formData.customer_address}
-                  onChange={(e) => setFormData({ ...formData, customer_address: e.target.value })}
-                  rows={3}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                  placeholder="Customer's address"
-                />
-              </div>
-
-              {/* Products List */}
-              {selectedBooking && Array.isArray(selectedBooking.products) && selectedBooking.products.length > 0 && (
-                <div className="mt-6">
-                  <h3 className="text-lg font-semibold mb-4">Products in this Booking</h3>
-                  <div className="space-y-3">
-                    {selectedBooking.products.map((product: any, index: number) => {
-                      const bookedFrom = product.booked_from || selectedBooking.booked_from;
-                      const bookedTo = product.booked_to || selectedBooking.booked_to;
-                      const uniqueKey = `${product.id}_${bookedFrom}_${bookedTo}_${index}`;
-
-                      return (
-                        <div key={uniqueKey} className="border border-gray-200 rounded-lg p-4 bg-gray-50 flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            {/* Product Image */}
-                            <div className="w-16 h-20 bg-gray-100 rounded overflow-hidden flex-shrink-0">
-                              {(() => {
-                                const hasImage = product.image && product.image !== null && product.image !== '';
-                                const imageUrl = hasImage ? getImageUrl(product.image) : null;
-
-                                if (imageUrl) {
-                                  return (
-                                    <img
-                                      src={imageUrl}
-                                      alt={product.name}
-                                      className="w-full h-full object-cover"
-                                      onError={(e) => {
-                                        const target = e.target as HTMLImageElement;
-                                        target.style.display = 'none';
-                                        const parent = target.parentElement;
-                                        if (parent) {
-                                          parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><span class="text-2xl">👔</span></div>';
-                                        }
-                                      }}
-                                    />
-                                  );
-                                } else {
-                                  return (
-                                    <div className="w-full h-full flex items-center justify-center">
-                                      <span className="text-2xl">👔</span>
-                                    </div>
-                                  );
-                                }
-                              })()}
-                            </div>
-
-                            {/* Product Info */}
-                            <div>
-                              <h4 className="font-semibold text-gray-900">{product.name}</h4>
-                              <p className="text-xs text-gray-600 mt-1">
-                                <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {product.code}{product.size ? ` · ${product.size}` : ''}</span>
-                              </p>
-                              <p className="text-xs text-gray-500 mt-1">
-                                Current: {product.booked_from ? new Date(product.booked_from).toLocaleDateString('en-GB') : 'N/A'} - {product.booked_to ? new Date(product.booked_to).toLocaleDateString('en-GB') : 'N/A'}
-                              </p>
-                            </div>
-                          </div>
-
-                          {/* Change Dates Button */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedProductForDateChange(product);
-                              setChangeDateFrom(product.booked_from?.split('T')[0] || '');
-                              setChangeDateTo(product.booked_to?.split('T')[0] || '');
-                              setDateChangeCharge(0);
-                              setProductBookingsForDateChange(productBookings[product.id] || []);
-                            }}
-                            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded transition-colors"
-                          >
-                            📅 Change Dates
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
-                <select
-                  value={formData.status}
-                  onChange={(e) => setFormData({ ...formData, status: e.target.value as any })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="pending">Pending</option>
-                  <option value="confirmed">Confirmed</option>
-                  <option value="in_progress">In Progress</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </div>
-
-              <div className="flex space-x-3 mt-6">
-                <Button onClick={handleUpdate}>Save</Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setShowModifyModal(false);
-                    setSelectedBooking(null);
-                  }}
-                >
-                  Discard
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Date Change Modal (like Salesman Portal) */}
-      {selectedProductForDateChange && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-2xl font-bold text-gray-900">📅 Change Booking Dates</h2>
-                <button
-                  onClick={() => {
-                    setSelectedProductForDateChange(null);
-                    setChangeDateFrom('');
-                    setChangeDateTo('');
-                    setDateChangeCharge(0);
-                  }}
-                  className="text-gray-500 hover:text-gray-700"
-                >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-
-              {/* Product Info */}
-              <div className="mb-4 p-4 bg-gray-50 rounded-lg">
-                <div className="flex items-center gap-3">
-                  <div className="w-16 h-20 bg-gray-100 rounded overflow-hidden flex-shrink-0">
-                    {(() => {
-                      const hasImage = selectedProductForDateChange.image && selectedProductForDateChange.image !== null && selectedProductForDateChange.image !== '';
-                      const imageUrl = hasImage ? getImageUrl(selectedProductForDateChange.image) : null;
-
-                      if (imageUrl) {
-                        return (
-                          <img
-                            src={imageUrl}
-                            alt={selectedProductForDateChange.name}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              const target = e.target as HTMLImageElement;
-                              target.style.display = 'none';
-                              const parent = target.parentElement;
-                              if (parent) {
-                                parent.innerHTML = '<div class="w-full h-full flex items-center justify-center"><span class="text-2xl">👔</span></div>';
-                              }
-                            }}
-                          />
-                        );
-                      } else {
-                        return (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <span className="text-2xl">👔</span>
-                          </div>
-                        );
-                      }
-                    })()}
-                  </div>
-                  <div>
-                    <h3 className="font-semibold text-gray-900">{selectedProductForDateChange.name}</h3>
-                    <p className="text-xs text-gray-600 mt-1">
-                      <span className="font-mono bg-gray-200 px-2 py-0.5 rounded">Code: {selectedProductForDateChange.code}</span>
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Date Picker */}
-              <div className="mb-4">
-                <label className="block text-sm font-semibold text-gray-900 mb-2">Select New Dates</label>
-                <DateRangePicker
-                  label="Check Availability"
-                  startDate={changeDateFrom}
-                  endDate={changeDateTo}
-                  onStartDateChange={setChangeDateFrom}
-                  onEndDateChange={setChangeDateTo}
-                  bookings={productBookingsForDateChange}
-                  productName={selectedProductForDateChange.name}
-                  minDate={new Date().toISOString().split('T')[0]}
-                />
-              </div>
-
-              {/* Charge Input (if manual) or Display */}
-              {changeDateFrom && changeDateTo && (changeDateFrom !== selectedProductForDateChange.booked_from?.split('T')[0] || changeDateTo !== selectedProductForDateChange.booked_to?.split('T')[0]) && (
-                <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-gray-900">Date Change Charge:</span>
-                    {dateChangeChargeSettings.charge_type === 'manual' ? (
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm text-gray-600">₹</span>
-                        <input
-                          type="number"
-                          min="0"
-                          step="0.01"
-                          value={dateChangeCharge}
-                          onChange={(e) => setDateChangeCharge(parseFloat(e.target.value) || 0)}
-                          className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-right focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          placeholder="0"
-                        />
-                      </div>
-                    ) : (
-                      <span className="text-lg font-bold text-blue-600">
-                        ₹{calculateDateChangeCharge(
-                          selectedProductForDateChange.booked_from?.split('T')[0] || '',
-                          selectedProductForDateChange.booked_to?.split('T')[0] || '',
-                          changeDateFrom,
-                          changeDateTo
-                        ).toLocaleString('en-IN')}
-                      </span>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Action Buttons */}
-              <div className="flex space-x-3">
-                <button
-                  onClick={async () => {
-                    if (!selectedBooking) return;
-                    if (!changeDateFrom || !changeDateTo) {
-                      toast.warning('Please select both pickup and return dates');
-                      return;
-                    }
-
-                    try {
-                      const oldFrom = selectedProductForDateChange.booked_from?.split('T')[0] || '';
-                      const oldTo = selectedProductForDateChange.booked_to?.split('T')[0] || '';
-                      const datesChanged = changeDateFrom !== oldFrom || changeDateTo !== oldTo;
-
-                      if (!datesChanged) {
-                        toast.info('No changes detected in dates');
-                        return;
-                      }
-
-                      // Calculate or use manual charge
-                      const finalCharge = dateChangeChargeSettings.charge_type === 'manual'
-                        ? dateChangeCharge
-                        : calculateDateChangeCharge(oldFrom, oldTo, changeDateFrom, changeDateTo);
-
-                      // Update the booking with new dates
-                      await bookingsApi.update(selectedBooking.id, {
-                        products: [{
-                          id: selectedProductForDateChange.id,
-                          booked_from: changeDateFrom,
-                          booked_to: changeDateTo,
-                        }]
-                      });
-
-                      // Record the charge if any (as date_change_charge - does not affect payment calculations)
-                      if (finalCharge > 0) {
-                        await paymentTransactionsApi.create({
-                          booking_id: selectedBooking.id,
-                          amount: finalCharge,
-                          type: 'date_change_charge',
-                          method: 'Manual',
-                          recorded_by: 'Admin',
-                          notes: `Date change charge for ${selectedProductForDateChange.name} (${selectedProductForDateChange.code}): ${oldFrom} to ${oldTo} → ${changeDateFrom} to ${changeDateTo}`,
-                        });
-                      }
-
-                      toast.success('Booking dates updated successfully!');
-
-                      // Refresh bookings
-                      fetchBookings();
-
-                      // Close modals
-                      setSelectedProductForDateChange(null);
-                      setChangeDateFrom('');
-                      setChangeDateTo('');
-                      setDateChangeCharge(0);
-                      setShowModifyModal(false);
-                    } catch (error) {
-                      console.error('Error updating booking dates:', error);
-                      toast.error('Failed to update booking dates');
-                    }
-                  }}
-                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
-                >
-                  💾 Save Changes
-                </button>
-                <button
-                  onClick={() => {
-                    setSelectedProductForDateChange(null);
-                    setChangeDateFrom('');
-                    setChangeDateTo('');
-                    setDateChangeCharge(0);
-                  }}
-                  className="px-4 py-2 bg-gray-300 hover:bg-gray-400 text-gray-800 font-medium rounded-lg transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-
 
       {/* Date Confirmation Modal */}
       {

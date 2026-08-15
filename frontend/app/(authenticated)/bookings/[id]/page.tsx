@@ -2,11 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, invoicesApi, SERVER_BASE_URL } from '@/lib/api';
+import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, invoicesApi, SERVER_BASE_URL, usersApi } from '@/lib/api';
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { makeShareableUrl } from '@/lib/urlHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon, PhoneInput } from '@/components/common';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import RequireRole from '@/components/common/RequireRole';
 import { toast } from '@/lib/toast';
@@ -75,6 +75,14 @@ export default function OrderDetailsPage() {
     exchange_allowed: false,
     cancellation_allowed: false,
   });
+
+  // Customer details editing state
+  const [isEditingCustomer, setIsEditingCustomer] = useState(false);
+  const [editCustomerName, setEditCustomerName] = useState('');
+  const [editAlternatePhone, setEditAlternatePhone] = useState('');
+  const [editAlternatePhoneCountry, setEditAlternatePhoneCountry] = useState('IN');
+  const [editCustomerAddress, setEditCustomerAddress] = useState('');
+  const [savingCustomer, setSavingCustomer] = useState(false);
 
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
@@ -1092,68 +1100,185 @@ export default function OrderDetailsPage() {
 
           {/* Customer Details */}
           <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Customer Details
-            </h3>
-            <div className="space-y-3">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Name:</span>
-                <span className="font-medium text-gray-900">
-                  {booking.user.name}
-                </span>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900">
+                Customer Details
+              </h3>
+              {!isEditingCustomer ? (
+                <button
+                  onClick={() => {
+                    setEditCustomerName(booking.user.name || '');
+                    setEditAlternatePhone(booking.user.alternate_phone || '');
+                    setEditAlternatePhoneCountry(booking.user.alternate_phone_country || 'IN');
+                    setEditCustomerAddress(booking.user.address || '');
+                    setIsEditingCustomer(true);
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors"
+                  title="Edit Customer Details"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  Edit
+                </button>
+              ) : (
+                <button
+                  onClick={() => setIsEditingCustomer(false)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+                >
+                  ✕ Cancel
+                </button>
+              )}
+            </div>
+
+            {!isEditingCustomer ? (
+              /* ── View Mode ── */
+              <div className="space-y-3">
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Name:</span>
+                  <span className="font-medium text-gray-900">
+                    {booking.user.name}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Phone Number:</span>
+                  <div className="text-right space-y-1">
+                    {/* Primary phone with flag */}
+                    <div className="flex items-center justify-end gap-2">
+                      {booking.user.phone_country && (
+                        <FlagIcon
+                          countryCode={booking.user.phone_country}
+                          className="w-5 h-3.5 rounded-sm flex-shrink-0"
+                          alt={booking.user.phone_country}
+                        />
+                      )}
+                      <p className="font-medium text-gray-900">{booking.user.phone}</p>
+                    </div>
+                    {/* Alternate phone with flag */}
+                    {booking.user.alternate_phone && (
+                      <div className="flex items-center justify-end gap-2">
+                        {booking.user.alternate_phone_country && (
+                          <FlagIcon
+                            countryCode={booking.user.alternate_phone_country}
+                            className="w-5 h-3.5 rounded-sm flex-shrink-0"
+                            alt={booking.user.alternate_phone_country}
+                          />
+                        )}
+                        <p className="font-medium text-gray-900">{booking.user.alternate_phone}</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {/* Address */}
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Address:</span>
+                  <span className="font-medium text-gray-900 text-right max-w-[60%]">
+                    {booking.user.address || <span className="text-gray-400 italic">Not provided</span>}
+                  </span>
+                </div>
+                {/* Created by (Salesman) */}
+                {(booking as any).created_by && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Created by:</span>
+                    <span className="font-medium text-gray-900">
+                      {(booking as any).created_by}
+                    </span>
+                  </div>
+                )}
               </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Phone Number:</span>
-                <div className="text-right space-y-1">
-                  {/* Primary phone with flag */}
-                  <div className="flex items-center justify-end gap-2">
+            ) : (
+              /* ── Edit Mode ── */
+              <div className="space-y-4">
+                {/* Name */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Full Name*</label>
+                  <input
+                    type="text"
+                    value={editCustomerName}
+                    onChange={(e) => setEditCustomerName(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    placeholder="Customer name"
+                  />
+                </div>
+
+                {/* Primary Phone — read-only */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Primary Phone Number</label>
+                  <div className="flex items-center gap-3 px-4 py-2 border border-gray-200 rounded-lg bg-gray-50">
                     {booking.user.phone_country && (
                       <FlagIcon
                         countryCode={booking.user.phone_country}
                         className="w-5 h-3.5 rounded-sm flex-shrink-0"
-                        alt={booking.user.phone_country}
                       />
                     )}
-                    <p className="font-medium text-gray-900">{booking.user.phone}</p>
+                    <span className="text-gray-700 font-medium">{booking.user.phone}</span>
+                    <span className="ml-auto text-xs text-gray-400 italic">cannot be changed</span>
                   </div>
-                  {/* Alternate phone with flag */}
-                  {booking.user.alternate_phone && (
-                    <div className="flex items-center justify-end gap-2">
-                      {booking.user.alternate_phone_country && (
-                        <FlagIcon
-                          countryCode={booking.user.alternate_phone_country}
-                          className="w-5 h-3.5 rounded-sm flex-shrink-0"
-                          alt={booking.user.alternate_phone_country}
-                        />
-                      )}
-                      <p className="font-medium text-gray-900">{booking.user.alternate_phone}</p>
-                    </div>
-                  )}
+                </div>
+
+                {/* Alternate Phone — editable, reuses PhoneInput from create booking */}
+                <PhoneInput
+                  label="Alternate Phone Number"
+                  value={editAlternatePhone}
+                  countryCode={editAlternatePhoneCountry}
+                  onValueChange={setEditAlternatePhone}
+                  onCountryCodeChange={setEditAlternatePhoneCountry}
+                />
+
+                {/* Address */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Address <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <textarea
+                    value={editCustomerAddress}
+                    onChange={(e) => setEditCustomerAddress(e.target.value)}
+                    rows={3}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                    placeholder="Customer's address"
+                  />
+                </div>
+
+                {/* Save / Cancel buttons */}
+                <div className="flex gap-3 pt-2">
+                  <button
+                    onClick={async () => {
+                      if (!editCustomerName.trim()) {
+                        toast.warning('Customer name is required');
+                        return;
+                      }
+                      setSavingCustomer(true);
+                      try {
+                        await usersApi.update(booking.user.id, {
+                          name: editCustomerName.trim(),
+                          alternate_phone: editAlternatePhone || '',
+                          alternate_phone_country: editAlternatePhoneCountry || 'IN',
+                          address: editCustomerAddress.trim(),
+                        });
+                        toast.success('Customer details updated successfully!');
+                        setIsEditingCustomer(false);
+                        fetchBooking(); // Refresh booking to show updated user info
+                      } catch (error: any) {
+                        console.error('Error updating customer details:', error);
+                        const msg = error?.response?.data?.error || error?.message || 'Failed to update customer details';
+                        toast.error(msg);
+                      } finally {
+                        setSavingCustomer(false);
+                      }
+                    }}
+                    disabled={savingCustomer}
+                    className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white font-medium rounded-lg transition-colors"
+                  >
+                    {savingCustomer ? 'Saving...' : '💾 Save Changes'}
+                  </button>
+                  <button
+                    onClick={() => setIsEditingCustomer(false)}
+                    disabled={savingCustomer}
+                    className="px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium rounded-lg transition-colors"
+                  >
+                    Cancel
+                  </button>
                 </div>
               </div>
-              {/* Created by (Salesman) */}
-              {(booking as any).created_by && (
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Created by:</span>
-                  <span className="font-medium text-gray-900">
-                    {(booking as any).created_by}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-
-
-          {/* Address */}
-          <div className="bg-white border border-gray-200 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">
-              Address
-            </h3>
-            <div className="space-y-2">
-              <p className="text-sm text-gray-900">
-                {booking.user.address || 'No address provided'}
-              </p>
-            </div>
+            )}
           </div>
 
           {/* Payment management - shared component handles all payment/refund UI */}
