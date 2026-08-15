@@ -102,8 +102,9 @@ class InvoiceGenerator {
         const total = rentPerDay * quantity;
         calculatedSubtotal += total;
         
-        // Format: "Product Name - Product Code"
-        const itemName = `${product.name} - ${product.code || ''}`;
+        // Format: "Product Name - Product Code (Size)"
+        const sizeLabel = product.size ? ` (${product.size})` : '';
+        const itemName = `${product.name} - ${product.code || ''}${sizeLabel}`;
 
         // Get pickup and drop dates for this product
         const pickupDate = product.booked_from ? new Date(product.booked_from).toLocaleDateString('en-GB') : 

@@ -623,7 +623,7 @@ export default function InventoryPage() {
                     const map = p.size_tracking_map || {};
                     const outStatuses = Object.entries(map)
                       .filter(([, v]) => v !== 'in_house')
-                      .map(([sz, v]) => `${sz}: ${TRACKING_STATUS_LABELS[v as TrackingStatus] || v}`);
+                      .map(([sz, v]) => `${sz === '_' ? '' : sz + ': '}${TRACKING_STATUS_LABELS[v as TrackingStatus] || v}`);
                     return `${p.code} (${outStatuses.join(', ')})`;
                   }).join(', ')}
                   {outCount > 3 && ` and ${outCount - 3} more...`}

@@ -1308,6 +1308,21 @@ describe('BookingService', () => {
       expect(match.delayed_products[0].days_delayed).toBeGreaterThan(0);
     });
 
+    test('should include size in delayed product data', async () => {
+      await createDelayedTestBooking({
+        picked_up_at: new Date('2024-01-10'),
+      });
+
+      const result = await bookingService.getDelayedBookings();
+      const match = result.find(r => r.booking_id === delayedBookingId);
+
+      expect(match).toBeDefined();
+      expect(match.delayed_products).toHaveLength(1);
+      expect(match.delayed_products[0]).toHaveProperty('size');
+      expect(match.delayed_products[0].size).toBe('M');
+    });
+
+
     test('should NOT return booking when product was never picked up', async () => {
       await createDelayedTestBooking({
         // picked_up_at is NULL — never picked up

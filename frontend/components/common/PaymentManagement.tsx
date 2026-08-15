@@ -678,7 +678,7 @@ export function PaymentManagement({
                             {product.name}
                             {alreadyRefunded && <span className="ml-2 text-xs text-green-600 font-normal">(Refund Completed)</span>}
                           </p>
-                          <p className="text-xs text-gray-500">{product.code}</p>
+                          <p className="text-xs text-gray-500">{product.code}{product.size ? ` · Size: ${product.size}` : ''}</p>
                         </div>
                         <Button
                           onClick={() => setRefundProductId(product.id)}

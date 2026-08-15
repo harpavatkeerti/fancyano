@@ -9,6 +9,7 @@ interface Product {
   product_id: number;
   code: string;
   name: string;
+  size?: string | null;
   rent: number;
   security_deposit: number;
   rent_paid: number;
@@ -467,7 +468,7 @@ export function BookingCancellation({
                                 <div className="flex justify-between">
                                   <div>
                                     <h4 className="font-medium text-gray-900">{product.name}</h4>
-                                    <p className="text-sm text-gray-600">Code: {product.code}</p>
+                                    <p className="text-sm text-gray-600">Code: {product.code}{product.size ? ` · Size: ${product.size}` : ''}</p>
                                     {hasSecurityPaid && (
                                       <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
                                         <span>🔒</span>

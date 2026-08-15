@@ -132,7 +132,7 @@ export default function BookingsPage() {
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all_except_discarded'); // Default excludes discarded
   const [showDiscardConfirm, setShowDiscardConfirm] = useState<number | null>(null); // Booking ID to discard
-  const [delayedBookingsMap, setDelayedBookingsMap] = useState<Map<number, Array<{name: string, code: string, booked_to: string, days_delayed: number}>>>(new Map());
+  const [delayedBookingsMap, setDelayedBookingsMap] = useState<Map<number, Array<{name: string, code: string, size?: string | null, booked_to: string, days_delayed: number}>>>(new Map());
   const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[] }>>({});
 
   // Warning modal state
@@ -282,7 +282,7 @@ export default function BookingsPage() {
   async function fetchDelayedBookings() {
     try {
       const response = await bookingsApi.getDelayed();
-      const map = new Map<number, Array<{name: string, code: string, booked_to: string, days_delayed: number}>>();
+      const map = new Map<number, Array<{name: string, code: string, size?: string | null, booked_to: string, days_delayed: number}>>();
       for (const row of response.data) {
         map.set(row.booking_id, row.delayed_products);
       }
@@ -1256,7 +1256,7 @@ export default function BookingsPage() {
                         <button
                           onClick={() => {
                             const delayInfo = delayedProducts.map(p =>
-                              `${p.name} (${p.code}): ${p.days_delayed} day${p.days_delayed > 1 ? 's' : ''} overdue`
+                              `${p.name} (${p.code}${p.size ? ` · ${p.size}` : ''}): ${p.days_delayed} day${p.days_delayed > 1 ? 's' : ''} overdue`
                             ).join('\n');
                             toast.error(`⚠️ DELAYED PRODUCTS:\n\n${delayInfo}\n\nExpected return: ${new Date(delayedProducts[0].booked_to).toLocaleDateString('en-GB')}\n\n⚠️ FOLLOW UP REQUIRED - Product(s) not returned!`, 10000);
                           }}

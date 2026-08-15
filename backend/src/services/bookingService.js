@@ -1106,6 +1106,7 @@ class BookingService {
           json_build_object(
             'name', p.name,
             'code', p.code,
+            'size', bp.size,
             'booked_to', bp.booked_to,
             'days_delayed', (CURRENT_DATE - bp.booked_to::date)
           )

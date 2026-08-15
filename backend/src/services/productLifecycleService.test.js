@@ -1775,6 +1775,21 @@ describe('ProductLifecycleService', () => {
       expect(result.is_partial).toBe(false);
     });
 
+    test('should include size in cancellation preview product data', async () => {
+      // Set size on the booking_product
+      await pool.query('UPDATE booking_products SET size = $1 WHERE id = $2', ['44', testBookingProductId]);
+
+      const result = await productLifecycleService.calculateCancellationPreview(testBookingId);
+
+      expect(result.all_products).toHaveLength(1);
+      expect(result.all_products[0]).toHaveProperty('size', '44');
+      expect(result.products_to_cancel[0]).toHaveProperty('size', '44');
+
+      // Reset size
+      await pool.query('UPDATE booking_products SET size = NULL WHERE id = $1', [testBookingProductId]);
+    });
+
+
     // Test: Calculates penalty based on policy (10% of effective rent for 0-5 days)
     test('should calculate penalty amount from policy', async () => {
       const result = await productLifecycleService.calculateCancellationPreview(testBookingId);

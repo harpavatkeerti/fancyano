@@ -825,7 +825,7 @@ export function ProductExchange({
                     const isDisabled = secPaid > 0;
                     return (
                       <option key={product.id} value={product.id} disabled={isDisabled}>
-                        {product.name} ({product.code}) — ₹{product.effective_rent || product.rent}/day
+                        {product.name} ({product.code}{product.size ? ` · Size: ${product.size}` : ''}) — ₹{product.effective_rent || product.rent}/day
                         {isDisabled ? ` (Security paid ₹${secPaid.toLocaleString('en-IN')} — not exchangeable)` : ''}
                       </option>
                     );

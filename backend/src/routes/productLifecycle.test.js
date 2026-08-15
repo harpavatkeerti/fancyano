@@ -66,6 +66,7 @@ describe('Product Lifecycle Routes', () => {
   afterEach(async () => {
     // Cleanup
     if (testBookingId) {
+      await pool.query(`DELETE FROM product_tracking WHERE booking_id = $1`, [testBookingId]);
       await pool.query(`DELETE FROM booking_activity_log WHERE booking_id = $1`, [testBookingId]);
       await pool.query(`DELETE FROM booking_cancellation_history WHERE booking_id = $1`, [testBookingId]);
       await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)`, [testBookingId]);
@@ -639,6 +640,144 @@ describe('Product Lifecycle Routes', () => {
       expect(transaction.rows).toHaveLength(1);
       // Notes should contain the user-provided notes appended with a pipe separator
       expect(transaction.rows[0].notes).toContain(userNotes);
+    });
+  });
+
+  // ── Pickup & Return: size is stored in product_tracking ─────────────────────
+
+  describe('Pickup and Return tracking includes size', () => {
+    let sizedProductId, sizedBookingId, sizedBPId;
+
+    beforeAll(async () => {
+      // Product with available_sizes
+      const res = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, category, available_sizes)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+        ['TEST-LIFECYCLE-SIZE-001', 'Test Sized Product', 50000, 20000, 'test', '{42,44}']
+      );
+      sizedProductId = res.rows[0].id;
+    });
+
+    beforeEach(async () => {
+      const booking = await bookingService.createBooking({
+        userId: 1,
+        customerEmail: 'test-size@lifecycle.com',
+        bookingDate: new Date().toISOString().split('T')[0],
+        products: [{
+          productId: sizedProductId,
+          size: '42',
+          bookedFrom: new Date().toISOString().split('T')[0],
+          bookedTo: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          rent: 50000,
+          securityDeposit: 20000
+        }],
+        transportCharge: 5000,
+        createdBy: 'test-user'
+      });
+      sizedBookingId = booking.booking_id;
+      await bookingService.confirmBooking(sizedBookingId, 'test-user');
+
+      const bpRes = await pool.query(
+        'SELECT id FROM booking_products WHERE booking_id = $1', [sizedBookingId]
+      );
+      sizedBPId = bpRes.rows[0].id;
+
+      // Pay full amount so pickup is allowed
+      await chargeAccountingService.applyPayment(
+        sizedBookingId, 75000, 'Cash', 'test-user', 'Full payment'
+      );
+    });
+
+    afterEach(async () => {
+      if (sizedBookingId) {
+        await pool.query('DELETE FROM product_tracking WHERE booking_id = $1', [sizedBookingId]);
+        await pool.query('DELETE FROM booking_activity_log WHERE booking_id = $1', [sizedBookingId]);
+        await pool.query('DELETE FROM booking_cancellation_history WHERE booking_id = $1', [sizedBookingId]);
+        await pool.query('DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE booking_id = $1)', [sizedBookingId]);
+        await pool.query('DELETE FROM payment_transactions WHERE booking_id = $1', [sizedBookingId]);
+        await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [sizedBookingId]);
+        await pool.query('DELETE FROM bookings WHERE id = $1', [sizedBookingId]);
+        sizedBookingId = null;
+      }
+    });
+
+    afterAll(async () => {
+      await pool.query('DELETE FROM products WHERE id = $1', [sizedProductId]);
+    });
+
+    it('should store size in product_tracking on pickup', async () => {
+      const response = await request(app)
+        .post(`/lifecycle/${sizedBookingId}/products/pickup`)
+        .send({
+          booking_product_ids: [sizedBPId],
+          picked_up_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify product_tracking has size = '42'
+      const tracking = await pool.query(
+        `SELECT size, tracking_status FROM product_tracking
+         WHERE booking_id = $1 AND tracking_status = 'picked_by_customer'
+         ORDER BY id DESC LIMIT 1`,
+        [sizedBookingId]
+      );
+      expect(tracking.rows).toHaveLength(1);
+      expect(tracking.rows[0].size).toBe('42');
+    });
+
+    it('should store size in product_tracking on return', async () => {
+      // First pickup
+      await request(app)
+        .post(`/lifecycle/${sizedBookingId}/products/pickup`)
+        .send({ booking_product_ids: [sizedBPId], picked_up_by: 'test-user' });
+
+      // Then return
+      const response = await request(app)
+        .post(`/lifecycle/${sizedBookingId}/products/return`)
+        .send({
+          returns: [{ booking_product_id: sizedBPId }],
+          returned_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify product_tracking has size = '42' for in_house
+      const tracking = await pool.query(
+        `SELECT size, tracking_status FROM product_tracking
+         WHERE booking_id = $1 AND tracking_status = 'in_house'
+         ORDER BY id DESC LIMIT 1`,
+        [sizedBookingId]
+      );
+      expect(tracking.rows).toHaveLength(1);
+      expect(tracking.rows[0].size).toBe('42');
+    });
+
+    it('should store null size in product_tracking for sizeless products', async () => {
+      // Use the original test product (no size)
+      // Pay full amount
+      await chargeAccountingService.applyPayment(
+        testBookingId, 75000, 'Cash', 'test-user', 'Full payment'
+      );
+
+      const response = await request(app)
+        .post(`/lifecycle/${testBookingId}/products/pickup`)
+        .send({
+          booking_product_ids: [testBookingProductId],
+          picked_up_by: 'test-user'
+        });
+
+      expect(response.status).toBe(200);
+
+      // Verify product_tracking has null size
+      const tracking = await pool.query(
+        `SELECT size, tracking_status FROM product_tracking
+         WHERE booking_id = $1 AND tracking_status = 'picked_by_customer'
+         ORDER BY id DESC LIMIT 1`,
+        [testBookingId]
+      );
+      expect(tracking.rows).toHaveLength(1);
+      expect(tracking.rows[0].size).toBeNull();
     });
   });
 });

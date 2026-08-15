@@ -802,7 +802,7 @@ class ProductLifecycleService {
       // Update product statuses to in_progress
       for (const bpId of bookingProductIds) {
         const result = await client.query(
-          'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3 RETURNING id',
+          'UPDATE booking_products SET status = $1, picked_up_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2 AND status = $3 RETURNING id',
           ['in_progress', bpId, 'confirmed']
         );
 
@@ -835,7 +835,7 @@ class ProductLifecycleService {
       // Insert picked_by_customer tracking row for each picked-up product
       for (const bpId of bookingProductIds) {
         const bpRow = await client.query(
-          `SELECT bp.product_id, p.code
+          `SELECT bp.product_id, p.code, bp.size
            FROM booking_products bp
            JOIN products p ON p.id = bp.product_id
            WHERE bp.id = $1`,
@@ -844,13 +844,14 @@ class ProductLifecycleService {
         if (bpRow.rows[0]) {
           await client.query(
             `INSERT INTO product_tracking
-               (product_id, booking_id, product_code, tracking_status, notes)
-             VALUES ($1, $2, $3, 'picked_by_customer', $4)`,
+               (product_id, booking_id, product_code, tracking_status, notes, size)
+             VALUES ($1, $2, $3, 'picked_by_customer', $4, $5)`,
             [
               bpRow.rows[0].product_id,
               bookingId,
               bpRow.rows[0].code,
-              `Picked up by customer for booking #${bookingId}`
+              `Picked up by customer for booking #${bookingId}`,
+              bpRow.rows[0].size || null
             ]
           );
         }
@@ -903,13 +904,13 @@ class ProductLifecycleService {
 
         // Mark product as completed
         await client.query(
-          'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          'UPDATE booking_products SET status = $1, returned_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
           ['completed', bookingProductId]
         );
 
         // Insert in_house tracking row — product is back in store
         const prodRow = await client.query(
-          `SELECT bp.product_id, p.code
+          `SELECT bp.product_id, p.code, bp.size
            FROM booking_products bp
            JOIN products p ON p.id = bp.product_id
            WHERE bp.id = $1`,
@@ -918,13 +919,14 @@ class ProductLifecycleService {
         if (prodRow.rows[0]) {
           await client.query(
             `INSERT INTO product_tracking
-               (product_id, booking_id, product_code, tracking_status, notes)
-             VALUES ($1, $2, $3, 'in_house', $4)`,
+               (product_id, booking_id, product_code, tracking_status, notes, size)
+             VALUES ($1, $2, $3, 'in_house', $4, $5)`,
             [
               prodRow.rows[0].product_id,
               bookingId,
               prodRow.rows[0].code,
-              `Returned by customer, booking #${bookingId} product completed`
+              `Returned by customer, booking #${bookingId} product completed`,
+              prodRow.rows[0].size || null
             ]
           );
         }
@@ -1026,11 +1028,11 @@ class ProductLifecycleService {
    */
   async calculateSecurityReturn(bookingProductId, lateFee = null, damageFee = 0) {
     const bpResult = await pool.query(
-      'SELECT booking_id, status, booked_to FROM booking_products WHERE id = $1',
+      'SELECT booking_id, status, booked_to, returned_at FROM booking_products WHERE id = $1',
       [bookingProductId]
     );
     if (bpResult.rows.length === 0) throw new Error('Booking product not found');
-    const { booking_id, booked_to } = bpResult.rows[0];
+    const { booking_id, booked_to, returned_at } = bpResult.rows[0];
 
     // ── Auto-calculate suggested late fee ──────────────────────────────────────
     let suggestedLateFee = 0;
@@ -1038,9 +1040,10 @@ class ProductLifecycleService {
     let lateFeePerDay = 0;
 
     if (booked_to) {
-      const currentDate = new Date();
+      // Use returned_at if the product has been returned, otherwise use current date
+      const endDate = returned_at ? new Date(returned_at) : new Date();
       const expectedReturnDate = new Date(booked_to);
-      lateFeeDays = Math.max(0, Math.floor((currentDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
+      lateFeeDays = Math.max(0, Math.floor((endDate - expectedReturnDate) / (1000 * 60 * 60 * 24)));
 
       if (lateFeeDays > 0) {
         const lateFeePolicy = await policyService.getLateFee();
@@ -1088,6 +1091,7 @@ class ProductLifecycleService {
       `SELECT bp.id                                           AS "bpId",
               p.name                                         AS name,
               p.code                                         AS code,
+              bp.size                                        AS size,
               pc.due_amount                                  AS due,
               pc.paid_amount                                 AS paid,
               (pc.due_amount - pc.paid_amount)::INTEGER      AS remaining,
@@ -1500,7 +1504,7 @@ class ProductLifecycleService {
       // 2. Get all booking products with product details AND per-product paid amounts
       const bpResult = await pool.query(
         `SELECT bp.id, bp.product_id, bp.rent, bp.effective_rent, bp.security_deposit, bp.status, bp.created_at,
-                bp.global_discount_share,
+                bp.global_discount_share, bp.size,
                 p.name, p.code,
                 COALESCE((SELECT paid_amount FROM product_charges WHERE booking_product_id = bp.id AND charge_type = 'rent'), 0) as rent_paid,
                 COALESCE((SELECT paid_amount FROM product_charges WHERE booking_product_id = bp.id AND charge_type = 'security'), 0) as security_paid
@@ -1541,6 +1545,7 @@ class ProductLifecycleService {
           product_id: bp.id, // booking_product ID (used by frontend for selection)
           code: bp.code,
           name: bp.name,
+          size: bp.size || null,
           rent: rent,
           effective_rent: effectiveRent,
           security_deposit: securityDeposit,
@@ -1716,6 +1721,7 @@ class ProductLifecycleService {
         `SELECT bp.id                                           AS "bpId",
                 p.name                                         AS name,
                 p.code                                         AS code,
+                bp.size                                        AS size,
                 pc.due_amount                                  AS due,
                 pc.paid_amount                                 AS paid,
                 (pc.due_amount - pc.paid_amount)::INTEGER      AS remaining,

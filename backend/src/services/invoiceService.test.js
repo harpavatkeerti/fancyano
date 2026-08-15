@@ -85,6 +85,22 @@ describe('InvoiceService', () => {
       expect(data.products[0]).toHaveProperty('booking_product_id');
     });
 
+    it('should include size in invoice product data', async () => {
+      // Create a booking with a sized product
+      await pool.query('DELETE FROM booking_products WHERE booking_id = $1', [testBookingId]);
+      await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit, size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [testBookingId, testProductId, '2024-02-01', '2024-02-05', 'confirmed', 50000, 20000, '42']
+      );
+
+      const data = await invoiceService.getInvoiceData(testBookingId);
+      expect(data.products).toHaveLength(1);
+      expect(data.products[0]).toHaveProperty('size');
+      expect(data.products[0].size).toBe('42');
+    });
+
+
     it('should throw error for non-existent booking', async () => {
       await expect(invoiceService.getInvoiceData(999999))
         .rejects

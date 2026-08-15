@@ -277,7 +277,7 @@ export default function CartPage() {
           // Check if dates overlap
           if (fromDate <= bookingTo && toDate >= bookingFrom) {
             errors.push(
-              `${item.product.name} (${item.product.code || 'N/A'}): Already booked from ${new Date(booking.booked_from).toLocaleDateString('en-GB')} to ${new Date(booking.booked_to).toLocaleDateString('en-GB')}`
+              `${item.product.name} (${item.product.code || 'N/A'}${item.size ? ` / ${item.size}` : ''}): Already booked from ${new Date(booking.booked_from).toLocaleDateString('en-GB')} to ${new Date(booking.booked_to).toLocaleDateString('en-GB')}`
             );
           }
         }
@@ -508,7 +508,7 @@ export default function CartPage() {
             const cartItem = cartItems.find(ci => ci.product.id === r.product_id);
             const fromDate = new Date(cartItem?.dateFrom || '').toLocaleDateString('en-GB');
             const toDate = new Date(cartItem?.dateTo || '').toLocaleDateString('en-GB');
-            return `• ${cartItem?.product.name} (${cartItem?.product.code})\n  Selected: ${fromDate} to ${toDate}`;
+            return `• ${cartItem?.product.name} (${cartItem?.product.code}${cartItem?.size ? ` / ${cartItem.size}` : ''})\n  Selected: ${fromDate} to ${toDate}`;
           })
           .join('\n\n');
 
