@@ -294,167 +294,261 @@ class ProductLifecycleService {
   }
 
   /**
-   * Cancel a product in a booking
-   * @param {number} bookingProductId - The booking product to cancel
-   * @param {number} cancellationPenalty - Admin-set cancellation penalty
-   * @param {string} reason - Reason for cancellation
-   * @param {number} userId - User performing the cancellation
-   * @returns {Promise<Object>} - Cancellation details
+   * Cancel a single product within a shared transaction.
+   * This is called by cancelProducts() — do NOT call directly for user-facing cancellation.
+   * @param {number} bookingProductId - Booking product ID
+   * @param {number} cancellationPenalty - Penalty amount
+   * @param {string} reason - Cancellation reason
+   * @param {string} userId - Who is cancelling
+   * @param {Object} client - DB client (shared transaction from cancelProducts)
+   * @returns {Promise<Object>} - Per-product result with diff_amount
    */
-  async cancelProduct(bookingProductId, cancellationPenalty, reason, userId, settlement = {}) {
+  async cancelProduct(bookingProductId, cancellationPenalty, reason, userId, client) {
+    // Get existing booking product with its charges
+    const bpResult = await client.query(
+      'SELECT * FROM booking_products WHERE id = $1',
+      [bookingProductId]
+    );
+
+    if (bpResult.rows.length === 0) {
+      throw new Error('Booking product not found');
+    }
+
+    const bookingProduct = bpResult.rows[0];
+
+    if (['in_progress', 'exchanged', 'cancelled', 'completed', 'discarded'].includes(bookingProduct.status)) {
+      throw new Error(`Cannot cancel product with status: ${bookingProduct.status}`);
+    }
+
+    // Check if any security has been paid — blocks cancel
+    const securityPaidAmount = await this._getSecurityPaidAmount(bookingProductId, client);
+    if (securityPaidAmount > 0) {
+      throw new Error('Cannot cancel product: security deposit has been partially or fully paid. Amount paid: ₹' + securityPaidAmount);
+    }
+
+    // Get per-product paid amounts from product_charges (rent + security paid for THIS product)
+    const chargesResult = await client.query(
+      `SELECT charge_type, due_amount, paid_amount
+       FROM product_charges
+       WHERE booking_product_id = $1 AND charge_type IN ('rent', 'security')`,
+      [bookingProductId]
+    );
+
+    let rentPaid = 0;
+    let securityPaid = 0;
+    for (const charge of chargesResult.rows) {
+      if (charge.charge_type === 'rent') rentPaid = parseInt(charge.paid_amount) || 0;
+      if (charge.charge_type === 'security') securityPaid = parseInt(charge.paid_amount) || 0;
+    }
+
+    // Add cancellation penalty charge FIRST (product still 'confirmed' — payment routing works)
+    if (cancellationPenalty > 0) {
+      await chargeAccountingService.addCharge(
+        bookingProductId,
+        'cancellation_penalty',
+        cancellationPenalty,
+        null,
+        reason || 'Product cancelled',
+        client
+      );
+    }
+
+    // Revoke global discount (sets final_discount to 0, adjusts remaining products)
+    const { discountReverted } = await chargeAccountingService.revokeGlobalDiscountForCancellation(
+      bookingProduct.booking_id, client, bookingProductId
+    );
+
+    // diffAmount: positive = refund to customer, negative = penalty exceeds paid
+    // Negative diff is allowed — extra_refund from cancelProducts() will compensate
+    const totalPaidForProduct = rentPaid + securityPaid;
+    const diffAmount = totalPaidForProduct - cancellationPenalty - discountReverted;
+
+    // Mark penalty as paid (covered by existing per-product payments)
+    if (cancellationPenalty > 0) {
+      await client.query(
+        `UPDATE product_charges SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
+         WHERE booking_product_id = $1 AND charge_type = 'cancellation_penalty'`,
+        [bookingProductId]
+      );
+    }
+
+    // STATUS CHANGE — mark product as cancelled
+    await client.query(
+      'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+      ['cancelled', bookingProductId]
+    );
+
+    // Record cancellation history
+    const cancelResult = await client.query(
+      `INSERT INTO booking_cancellation_history 
+        (booking_id, booking_product_id, cancellation_penalty, reason, cancelled_by)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [
+        bookingProduct.booking_id,
+        bookingProductId,
+        cancellationPenalty,
+        reason,
+        userId
+      ]
+    );
+
+    // Log in booking activity
+    await client.query(
+      `INSERT INTO booking_activity_log 
+        (booking_id, event_type, event_reference_id, details, performed_by)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [
+        bookingProduct.booking_id,
+        'product_cancelled',
+        cancelResult.rows[0].id,
+        {
+          product_id: bookingProduct.product_id,
+          penalty: cancellationPenalty,
+          discount_reverted: discountReverted,
+          diff_amount: diffAmount
+        },
+        userId
+      ]
+    );
+
+    return {
+      booking_product_id: bookingProductId,
+      booking_id: bookingProduct.booking_id,
+      cancellation_penalty: cancellationPenalty,
+      discount_reverted: discountReverted,
+      rent_paid: rentPaid,
+      security_paid: securityPaid,
+      diff_amount: diffAmount,
+      status: 'cancelled'
+    };
+  }
+
+  /**
+   * Cancel multiple products in a single transaction with extra_refund support.
+   * All business logic lives here: penalty lookup, validation, per-product cancellation,
+   * settlement, JSONB audit record, booking status update.
+   *
+   * @param {Object} params
+   * @param {number} params.bookingId - Booking ID (resolved from first booking_product_id)
+   * @param {number[]} params.bookingProductIds - Array of booking_product IDs to cancel
+   * @param {string} params.cancellationReason - Reason for cancellation
+   * @param {string} params.cancelledBy - Who is cancelling
+   * @param {number} params.extraRefund - Integer: editedRefund - calculatedRefund (can be positive or negative)
+   * @param {string} [params.extraRefundNote] - Optional note explaining the refund adjustment
+   * @param {string} params.settlementAction - 'adjust' | 'adjust_security' | 'refund' | 'none'
+   * @param {string} [params.paymentMethod] - Payment method for refund (e.g. 'Cash', 'UPI')
+   * @param {number[]} [params.securityProductIds] - Required when settlementAction === 'adjust_security'
+   * @returns {Promise<Object>} - Aggregated result
+   */
+  async cancelProducts({
+    bookingId,
+    bookingProductIds,
+    cancellationReason,
+    cancelledBy,
+    extraRefund = 0,
+    extraRefundNote,
+    settlementAction = 'none',
+    paymentMethod = 'Cash',
+    securityProductIds = []
+  }) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
-      // Get existing booking product with its charges
-      const bpResult = await client.query(
-        'SELECT * FROM booking_products WHERE id = $1',
-        [bookingProductId]
-      );
-
-      if (bpResult.rows.length === 0) {
-        throw new Error('Booking product not found');
+      // 1. Fetch cancellation preview to get auto-calculated penalties per product
+      const preview = await this.calculateCancellationPreview(bookingId);
+      const defaultPenalties = {};
+      for (const product of preview.products_to_cancel) {
+        defaultPenalties[product.product_id] = product.penalty_amount;
       }
 
-      const bookingProduct = bpResult.rows[0];
-
-      if (['in_progress', 'exchanged', 'cancelled', 'completed', 'discarded'].includes(bookingProduct.status)) {
-        throw new Error(`Cannot cancel product with status: ${bookingProduct.status}`);
-      }
-
-      // Check if any security has been paid — blocks cancel
-      const securityPaidAmount = await this._getSecurityPaidAmount(bookingProductId, client);
-      if (securityPaidAmount > 0) {
-        throw new Error('Cannot cancel product: security deposit has been partially or fully paid. Amount paid: ₹' + securityPaidAmount);
-      }
-
-      // Get per-product paid amounts from product_charges (rent + security paid for THIS product)
-      const chargesResult = await client.query(
-        `SELECT charge_type, due_amount, paid_amount
-         FROM product_charges
-         WHERE booking_product_id = $1 AND charge_type IN ('rent', 'security')`,
-        [bookingProductId]
-      );
-
-      let rentPaid = 0;
-      let securityPaid = 0;
-      for (const charge of chargesResult.rows) {
-        if (charge.charge_type === 'rent') rentPaid = parseInt(charge.paid_amount) || 0;
-        if (charge.charge_type === 'security') securityPaid = parseInt(charge.paid_amount) || 0;
-      }
-
-      // Add cancellation penalty charge FIRST (product still 'confirmed' — payment routing works)
-      if (cancellationPenalty > 0) {
-        await chargeAccountingService.addCharge(
-          bookingProductId,
-          'cancellation_penalty',
-          cancellationPenalty,
-          null,
-          reason || 'Product cancelled',
+      // 2. Cancel each product (within the shared transaction)
+      const results = [];
+      for (const bpId of bookingProductIds) {
+        const penaltyAmount = defaultPenalties[bpId] || 0;
+        const result = await this.cancelProduct(
+          bpId,
+          penaltyAmount,
+          cancellationReason || 'Cancelled by user',
+          cancelledBy || 'system',
           client
         );
+        results.push(result);
       }
 
-      // Revoke global discount (sets final_discount to 0, adjusts remaining products)
-      const { discountReverted } = await chargeAccountingService.revokeGlobalDiscountForCancellation(
-        bookingProduct.booking_id, client, bookingProductId
-      );
+      // 3. Compute totals
+      const totalDiffAmount = results.reduce((sum, r) => sum + (r.diff_amount || 0), 0);
+      const totalPenalty = results.reduce((sum, r) => sum + (r.cancellation_penalty || 0), 0);
+      const totalDiscountReverted = results.reduce((sum, r) => sum + (r.discount_reverted || 0), 0);
+      const totalPaid = results.reduce((sum, r) => sum + (r.rent_paid || 0) + (r.security_paid || 0), 0);
 
-      // diffAmount: positive = refund to customer, negative = collect from customer
-      // discount_reverted is deducted from the refund
-      const totalPaidForProduct = rentPaid + securityPaid;
-      const diffAmount = totalPaidForProduct - cancellationPenalty - discountReverted;
+      // calculatedRefund = totalDiffAmount (= totalPaid - totalPenalty - totalDiscountReverted)
+      // editedRefund = calculatedRefund + extraRefund
+      const calculatedRefund = totalDiffAmount;
+      const editedRefund = calculatedRefund + extraRefund;
 
-      // Block cancellation if refund is negative — penalty + discount exceeds what was paid
-      if (diffAmount < 0) {
+      // 4. Validate bounds: 0 <= editedRefund <= totalPaid
+      if (editedRefund < 0) {
         throw new Error(
-          `Cannot cancel: refund would be negative (₹${diffAmount}). ` +
-          `Paid: ₹${totalPaidForProduct}, Penalty: ₹${cancellationPenalty}, ` +
-          `Discount reverted: ₹${discountReverted}`
+          `Invalid extra_refund: edited refund would be negative (₹${editedRefund}). ` +
+          `Calculated refund: ₹${calculatedRefund}, extra_refund: ₹${extraRefund}`
+        );
+      }
+      if (editedRefund > totalPaid) {
+        throw new Error(
+          `Invalid extra_refund: edited refund (₹${editedRefund}) exceeds total paid (₹${totalPaid}). ` +
+          `Calculated refund: ₹${calculatedRefund}, extra_refund: ₹${extraRefund}`
         );
       }
 
-      // MONEY FIRST — process settlement before status change, in same transaction
-      const { action: settlementAction = 'none', method: settlementMethod = 'Cash', notes: settlementNotes, security_product_ids: settlementSecProductIds = [] } = settlement;
+      // 5. Process settlement ONCE with editedRefund as the amount
       let settlementResult = null;
-      const settlementAmount = Math.abs(diffAmount);
-      if (settlementAction !== 'none' && settlementAmount > 0) {
+      if (settlementAction !== 'none' && editedRefund > 0) {
         settlementResult = await this.processCancellationSettlement(
-          bookingProduct.booking_id, settlementAmount, settlementAction,
-          settlementMethod, userId, settlementNotes, client,
-          [bookingProductId], settlementSecProductIds
+          bookingId, editedRefund, settlementAction,
+          paymentMethod, cancelledBy, extraRefundNote,
+          client, bookingProductIds, securityProductIds
         );
       }
 
-      // Mark penalty as paid if covered (by existing per-product payments or by settlement)
-      if (cancellationPenalty > 0 && (diffAmount >= 0 || settlementResult)) {
-        await client.query(
-          `UPDATE product_charges SET paid_amount = due_amount, updated_at = CURRENT_TIMESTAMP
-           WHERE booking_product_id = $1 AND charge_type = 'cancellation_penalty'`,
-          [bookingProductId]
-        );
-      }
-
-      // STATUS CHANGE LAST — mark product as cancelled
+      // 6. Append audit record to bookings.cancellation_adjustments JSONB array
+      const adjustmentEntry = {
+        cancelled_product_ids: bookingProductIds,
+        calculated_refund: calculatedRefund,
+        edited_refund: editedRefund,
+        extra_refund: extraRefund,
+        total_penalty: totalPenalty,
+        discount_reverted: totalDiscountReverted,
+        total_paid: totalPaid,
+        note: extraRefundNote || null,
+        cancelled_by: cancelledBy,
+        cancelled_at: new Date().toISOString()
+      };
       await client.query(
-        'UPDATE booking_products SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['cancelled', bookingProductId]
+        `UPDATE bookings
+         SET cancellation_adjustments = COALESCE(cancellation_adjustments, '[]'::jsonb) || $1::jsonb,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2`,
+        [JSON.stringify([adjustmentEntry]), bookingId]
       );
 
-      // Record cancellation history
-      const cancelResult = await client.query(
-        `INSERT INTO booking_cancellation_history 
-          (booking_id, booking_product_id, cancellation_penalty, reason, cancelled_by)
-         VALUES ($1, $2, $3, $4, $5)
-         RETURNING id`,
-        [
-          bookingProduct.booking_id,
-          bookingProductId,
-          cancellationPenalty,
-          reason,
-          userId
-        ]
-      );
-
-      // Log in booking activity
-      await client.query(
-        `INSERT INTO booking_activity_log 
-          (booking_id, event_type, event_reference_id, details, performed_by)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [
-          bookingProduct.booking_id,
-          'product_cancelled',
-          cancelResult.rows[0].id,
-          {
-            product_id: bookingProduct.product_id,
-            penalty: cancellationPenalty,
-            discount_reverted: discountReverted,
-            diff_amount: diffAmount
-          },
-          userId
-        ]
-      );
-
-      // Update booking date range (recalculate from remaining active products)
-      await this.updateBookingDateRange(bookingProduct.booking_id, client);
+      // 7. Update booking date range (recalculate from remaining active products)
+      await this.updateBookingDateRange(bookingId, client);
 
       await client.query('COMMIT');
 
-      // Update booking status (after commit, uses its own transaction)
-      const bookingService = require('./bookingService');
-      const statusResult = await bookingService.updateBookingStatus(bookingProduct.booking_id);
+      // 8. Update booking status (after commit, uses its own transaction)
+      const statusResult = await bookingService.updateBookingStatus(bookingId);
 
       return {
-        booking_product_id: bookingProductId,
-        booking_id: bookingProduct.booking_id,
-        cancellation_penalty: cancellationPenalty,
-        discount_reverted: discountReverted,
-        rent_paid: rentPaid,
-        security_paid: securityPaid,
-        diff_amount: diffAmount,
+        message: `${bookingProductIds.length} product(s) cancelled successfully`,
+        cancelled_products: results,
+        total_diff_amount: totalDiffAmount,
+        edited_refund: editedRefund,
+        extra_refund: extraRefund,
         settlement: settlementResult,
-        has_active_products: !statusResult.all_terminal,
-        status: 'cancelled'
+        has_active_products: !statusResult.all_terminal
       };
     } catch (error) {
       await client.query('ROLLBACK');
@@ -468,7 +562,7 @@ class ProductLifecycleService {
    * Process settlement after cancellation — refund or adjust the computed refund amount
    * @param {number} bookingId - The booking ID
    * @param {number} amount - Amount to settle (from cancelProduct result)
-   * @param {'refund' | 'adjust' | 'collect' | 'none'} action - Settlement action
+   * @param {'refund' | 'adjust' | 'adjust_security' | 'none'} action - Settlement action
    * @param {string} paymentMethod - Payment method for refund/collect (e.g. 'Cash', 'UPI')
    * @param {string} recordedBy - User performing the settlement
    * @param {string} notes - Optional notes
@@ -476,8 +570,8 @@ class ProductLifecycleService {
    * @returns {Promise<Object>} - Settlement details
    */
   async processCancellationSettlement(bookingId, amount, action, paymentMethod, recordedBy, notes, existingClient, excludeProductIds = [], securityProductIds = []) {
-    if (!['refund', 'adjust', 'adjust_security', 'collect', 'none'].includes(action)) {
-      throw new Error('settlement_action must be "refund", "adjust", "adjust_security", "collect", or "none"');
+    if (!['refund', 'adjust', 'adjust_security', 'none'].includes(action)) {
+      throw new Error('settlement_action must be "refund", "adjust", "adjust_security", or "none"');
     }
 
     if (action === 'none' || amount <= 0) {
@@ -680,26 +774,6 @@ class ProductLifecycleService {
             );
           }
         }
-      } else if (action === 'collect') {
-        // Collect penalty from customer — record incoming payment
-        await client.query(
-          `INSERT INTO payment_transactions 
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP)`,
-          [bookingId, amount, paymentMethod || 'Cash',
-            notes || 'Cancellation penalty collection', recordedBy]
-        );
-
-        await client.query(
-          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
-           VALUES ($1, 'payment_applied', $2, $3)`,
-          [bookingId, JSON.stringify({
-            amount: amount,
-            method: paymentMethod || 'Cash',
-            reason: 'Cancellation penalty collection',
-            notes
-          }), recordedBy]
-        );
       }
 
       if (ownClient) await client.query('COMMIT');
@@ -708,7 +782,7 @@ class ProductLifecycleService {
         booking_id: bookingId,
         settlement_action: action,
         amount: amount,
-        method: (action === 'refund' || action === 'collect') ? (paymentMethod || 'Cash') : 'Adjustment',
+        method: action === 'refund' ? (paymentMethod || 'Cash') : 'Adjustment',
         transaction_recorded: true
       };
     } catch (error) {
@@ -1626,15 +1700,14 @@ class ProductLifecycleService {
 
   /**
    * Calculate cancellation summary for a specific set of selected products.
-   * Accepts user overrides for penalties and extra refund. Returns all computed values.
-   * This is the single source of truth for the live preview — frontend should NOT compute anything.
+   * Returns all computed values using auto-calculated penalties (no overrides).
+   * The frontend displays calculated_refund and lets the admin edit the final refund.
+   * extra_refund = editedRefund - calculatedRefund (computed by frontend, sent at cancel time).
    * @param {number} bookingId - Booking ID
    * @param {number[]} selectedProductIds - Array of booking_product IDs the user selected to cancel
-   * @param {Object} penaltyOverrides - Map of { booking_product_id: penalty_amount } for user-edited penalties
-   * @param {number} extraRefund - Extra refund amount (optional, default 0)
-   * @returns {Promise<Object>} - Complete summary with all totals and refund amount
+   * @returns {Promise<Object>} - Complete summary with all totals and calculated_refund
    */
-  async calculateCancellationSummary(bookingId, selectedProductIds = [], penaltyOverrides = {}, extraRefund = 0) {
+  async calculateCancellationSummary(bookingId, selectedProductIds = []) {
     try {
       // Get the full preview first (all products, per-product paid amounts, penalties)
       const preview = await this.calculateCancellationPreview(bookingId);
@@ -1647,7 +1720,7 @@ class ProductLifecycleService {
         selectedProductIds.includes(p.product_id)
       );
 
-      // Calculate totals for selected products, applying penalty overrides
+      // Calculate totals for selected products using auto-calculated penalties
       let totalSelectedRent = 0;
       let totalSelectedSecurity = 0;
       let totalSelectedRentPaid = 0;
@@ -1659,12 +1732,7 @@ class ProductLifecycleService {
         totalSelectedSecurity += product.security_deposit || 0;
         totalSelectedRentPaid += product.rent_paid || 0;
         totalSelectedSecurityPaid += product.security_paid || 0;
-
-        // Use override if provided, otherwise use backend-calculated penalty
-        const penalty = penaltyOverrides[product.product_id] !== undefined
-          ? (penaltyOverrides[product.product_id] || 0)
-          : product.penalty_amount || 0;
-        totalPenalty += penalty;
+        totalPenalty += product.penalty_amount || 0;
       }
 
       const totalPaidForSelected = totalSelectedRentPaid + totalSelectedSecurityPaid;
@@ -1674,23 +1742,10 @@ class ProductLifecycleService {
       const discountReverted = await chargeAccountingService.getActiveGlobalDiscountShare(
         bookingId, selectedProductIds
       );
-      const refundBeforeDiscount = Math.floor(totalPaidForSelected - totalPenalty + extraRefund);
-      const refundAmount = Math.max(0, refundBeforeDiscount - discountReverted);
-      const refundBlocked = (refundBeforeDiscount - discountReverted) < 0;
 
-      // Payment action
-      let paymentAction = 'none';
-      let paymentDifference = 0;
-      if (refundBlocked) {
-        paymentAction = 'blocked';
-        paymentDifference = Math.abs(refundBeforeDiscount - discountReverted);
-      } else if (refundAmount > 0) {
-        paymentAction = 'refund';
-        paymentDifference = refundAmount;
-      } else if (totalPenalty + discountReverted > totalPaidForSelected) {
-        paymentAction = 'collect';
-        paymentDifference = Math.ceil(totalPenalty + discountReverted - totalPaidForSelected);
-      }
+      // calculated_refund can be negative (penalty + discount > paid). No clamping.
+      // The admin will see this and set editedRefund >= 0 (default: max(0, calculatedRefund)).
+      const calculatedRefund = Math.floor(totalPaidForSelected - totalPenalty - discountReverted);
 
       // Dues on products that will remain active after this cancellation (non-security only).
       // Security is tracked separately via eligible_security_products and requires
@@ -1747,11 +1802,8 @@ class ProductLifecycleService {
         selected_security_paid: totalSelectedSecurityPaid,
         total_penalty: totalPenalty,
         discount_reverted: discountReverted,
-        extra_refund: extraRefund,
-        refund_amount: refundAmount,
-        refund_blocked: refundBlocked,
-        payment_action: paymentAction,
-        payment_difference: paymentDifference,
+        total_paid_for_selected: totalPaidForSelected,
+        calculated_refund: calculatedRefund,
         remaining_dues_on_other_products: remainingDuesOnOtherProducts,
         eligible_security_products: eligibleSecResult.rows,
       };

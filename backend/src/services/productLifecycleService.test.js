@@ -758,7 +758,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0, // no penalty — avoids negative refund guard
         'Customer request',
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.booking_product_id).toBe(testBookingProductId);
@@ -779,7 +780,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0,
         'Goodwill gesture',
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.cancellation_penalty).toBe(0);
@@ -803,7 +805,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         250,
         'Customer cancelled after payment',
-        testUserId
+        testUserId,
+        pool
       );
 
       expect(result.status).toBe('cancelled');
@@ -830,7 +833,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         1250,
         'Cancel after half-rent payment',
-        testUserId
+        testUserId,
+        pool
       );
 
       expect(result.status).toBe('cancelled');
@@ -839,19 +843,20 @@ describe('ProductLifecycleService', () => {
       expect(result.diff_amount).toBe(0);
     });
 
-    // Test: Penalty > amount paid should be blocked (negative refund guard)
-    test('should block cancellation when penalty exceeds amount paid', async () => {
+    // Test: Penalty > amount paid is now allowed (negative diff_amount ok — clamped by frontend)
+    test('should allow cancellation when penalty exceeds amount paid', async () => {
       // Pay 50% of rent (minimum first payment = 1250), but set penalty higher than that
       await chargeAccountingService.applyPayment(testBookingId, 1250, 'Cash', 'test-user', 'Half rent payment');
 
-      await expect(
-        productLifecycleService.cancelProduct(
-          testBookingProductId,
-          2000, // 2000 penalty > 1250 paid → negative refund
-          'Test',
-          testUserId
-        )
-      ).rejects.toThrow(); // negative refund guard fires
+      const result = await productLifecycleService.cancelProduct(
+        testBookingProductId,
+        2000, // 2000 penalty > 1250 paid → negative diff_amount is allowed now
+        'Test',
+        testUserId,
+        pool
+      );
+      expect(result.status).toBe('cancelled');
+      expect(result.diff_amount).toBeLessThan(0);
     });
 
     // Test: Prevents cancelling a product that's already cancelled or completed
@@ -866,7 +871,8 @@ describe('ProductLifecycleService', () => {
           testBookingProductId,
           300,
           'Test',
-          testUserId
+          testUserId,
+          pool
         )
       ).rejects.toThrow('Cannot cancel product with status: cancelled');
     });
@@ -878,7 +884,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0,
         'Out of stock',
-        String(testUserId)
+        String(testUserId),
+        pool
       );
       
       const history = await pool.query(
@@ -898,7 +905,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0,
         'Test',
-        String(testUserId)
+        String(testUserId),
+        pool
       );
       
       const log = await pool.query(
@@ -916,7 +924,8 @@ describe('ProductLifecycleService', () => {
       const result = await productLifecycleService.pickupProducts(
         testBookingId,
         [testBookingProductId],
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.booking_id).toBe(testBookingId);
@@ -1316,7 +1325,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0,
         'Test cancel with no security',
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.status).toBe('cancelled');
@@ -1336,7 +1346,8 @@ describe('ProductLifecycleService', () => {
           testBookingProductId,
           0,
           'Test cancel with partial security',
-          testUserId
+          testUserId,
+          pool
         )
       ).rejects.toThrow('Cannot cancel product: security deposit has been partially or fully paid');
     });
@@ -1354,7 +1365,8 @@ describe('ProductLifecycleService', () => {
           testBookingProductId,
           300,
           'Test cancel with full security',
-          testUserId
+          testUserId,
+          pool
         )
       ).rejects.toThrow('Cannot cancel product: security deposit has been partially or fully paid');
     });
@@ -1367,7 +1379,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         [{ productId: testProductId2, size: 'L', bookedFrom: t, bookedTo: t5, rent: 3000, securityDeposit: 1200 }],
         'Test exchange with no security',
-        String(testUserId)
+        String(testUserId),
+        pool
       );
       
       expect(result.old_booking_product_id).toBe(testBookingProductId);
@@ -1436,31 +1449,27 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         300, // penalty < 500 paid
         'Test cancel with sufficient funds',
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.status).toBe('cancelled');
       expect(result.diff_amount).toBeGreaterThanOrEqual(0);
     });
 
-    // Test: Cancel with diffAmount < 0 (penalty > paid) → throws error, no status change
-    test('should block cancel when penalty exceeds paid amount', async () => {
+    // Test: Cancel with diffAmount < 0 (penalty > paid) → now ALLOWED
+    test('should allow cancel when penalty exceeds paid amount (negative diff_amount)', async () => {
       // No rent paid (0 by default), penalty = 500 → diffAmount = -500
-      await expect(
-        productLifecycleService.cancelProduct(
-          testBookingProductId,
-          500, // penalty > 0 paid
-          'Test cancel with insufficient funds',
-          testUserId
-        )
-      ).rejects.toThrow('Cannot cancel: refund would be negative');
-      
-      // Verify product status unchanged
-      const product = await pool.query(
-        'SELECT status FROM booking_products WHERE id = $1',
-        [testBookingProductId]
+      const result = await productLifecycleService.cancelProduct(
+        testBookingProductId,
+        500, // penalty > 0 paid
+        'Test cancel with insufficient funds',
+        testUserId,
+        pool
       );
-      expect(product.rows[0].status).toBe('confirmed');
+
+      expect(result.status).toBe('cancelled');
+      expect(result.diff_amount).toBeLessThan(0);
     });
 
     // Test: Cancel with zero penalty and zero paid → diffAmount = 0 → allowed
@@ -1469,7 +1478,8 @@ describe('ProductLifecycleService', () => {
         testBookingProductId,
         0,
         'Free cancellation',
-        testUserId
+        testUserId,
+        pool
       );
       
       expect(result.status).toBe('cancelled');
@@ -1921,9 +1931,7 @@ describe('ProductLifecycleService', () => {
     test('should return summary with all products selected', async () => {
       const result = await productLifecycleService.calculateCancellationSummary(
         testBookingId,
-        [testBookingProductId], // select all
-        {},  // no penalty overrides
-        0    // no extra refund
+        [testBookingProductId]
       );
 
       expect(result.selected_count).toBe(1);
@@ -1933,48 +1941,39 @@ describe('ProductLifecycleService', () => {
       expect(result.selected_rent_paid).toBe(0);
       expect(result.selected_security_paid).toBe(0);
       expect(result.total_penalty).toBe(250); // 10% of 2500
-      expect(result.extra_refund).toBe(0);
-      expect(result.refund_amount).toBe(0); // 0 paid - 250 penalty = negative → blocked
-      // Service returns 'blocked' when penalty > paid (negative refund guard)
-      expect(result.payment_action).toBe('blocked');
-      expect(result.payment_difference).toBe(250); // penalty > paid
+      // calculated_refund = 0 paid - 250 penalty = -250 (negative is now allowed)
+      expect(result.calculated_refund).toBe(-250);
+      expect(result.total_paid_for_selected).toBe(0)
     });
 
     // Test: Returns zero totals when no products selected
     test('should return zero totals for empty selection', async () => {
       const result = await productLifecycleService.calculateCancellationSummary(
         testBookingId,
-        [],  // nothing selected
-        {},
-        0
+        []
       );
 
       expect(result.selected_count).toBe(0);
       expect(result.total_count).toBe(1); // 1 product exists but none selected
       expect(result.selected_rent).toBe(0);
       expect(result.total_penalty).toBe(0);
-      expect(result.refund_amount).toBe(0);
-      expect(result.payment_action).toBe('none');
+      expect(result.calculated_refund).toBe(0);
     });
 
-    // Test: Penalty override replaces backend-calculated penalty
-    test('should apply penalty overrides', async () => {
+    // Test: Auto-calculated penalty (overrides no longer supported)
+    test('should use auto-calculated penalty', async () => {
       const result = await productLifecycleService.calculateCancellationSummary(
         testBookingId,
-        [testBookingProductId],
-        { [testBookingProductId]: 100 }, // override penalty from 250 to 100
-        0
+        [testBookingProductId]
       );
 
-      expect(result.total_penalty).toBe(100); // overridden
-      // No payments, so refund is 0 and action is blocked (penalty > paid)
-      expect(result.refund_amount).toBe(0);
-      expect(result.payment_action).toBe('blocked');
-      expect(result.payment_difference).toBe(100);
+      expect(result.total_penalty).toBe(250); // auto-calculated 10% of 2500
+      expect(result.calculated_refund).toBe(-250);
+      expect(result).not.toHaveProperty('payment_action');
     });
 
-    // Test: Extra refund is added to refund amount
-    test('should include extra refund in calculation', async () => {
+    // Test: calculated_refund based on paid amounts
+    test('should return calculated_refund based on paid amounts', async () => {
       // Set up paid amounts first
       await pool.query(
         `UPDATE product_charges SET paid_amount = 2500 WHERE booking_product_id = $1 AND charge_type = 'rent'`,
@@ -1988,19 +1987,17 @@ describe('ProductLifecycleService', () => {
       try {
         const result = await productLifecycleService.calculateCancellationSummary(
           testBookingId,
-          [testBookingProductId],
-          {},  // use default penalty (250)
-          500  // extra refund
+          [testBookingProductId]
         );
 
         expect(result.selected_rent_paid).toBe(2500);
         expect(result.selected_security_paid).toBe(1000);
         expect(result.total_penalty).toBe(250);
-        expect(result.extra_refund).toBe(500);
-        // refund = (2500 + 1000) - 250 + 500 = 3750
-        expect(result.refund_amount).toBe(3750);
-        expect(result.payment_action).toBe('refund');
-        expect(result.payment_difference).toBe(3750);
+        expect(result.total_paid_for_selected).toBe(3500);
+        // calculated_refund = (2500 + 1000) - 250 = 3250
+        expect(result.calculated_refund).toBe(3250);
+        expect(result).not.toHaveProperty('extra_refund');
+        expect(result).not.toHaveProperty('refund_amount');
       } finally {
         // Reset paid amounts for subsequent tests
         await pool.query(
@@ -2028,9 +2025,7 @@ describe('ProductLifecycleService', () => {
       // Select only the first product
       const result = await productLifecycleService.calculateCancellationSummary(
         testBookingId,
-        [testBookingProductId], // only first product
-        {},
-        0
+        [testBookingProductId]
       );
 
       expect(result.selected_count).toBe(1);
@@ -2046,7 +2041,7 @@ describe('ProductLifecycleService', () => {
     // Test: Throws error for non-existent booking
     test('should throw error for non-existent booking', async () => {
       await expect(
-        productLifecycleService.calculateCancellationSummary(999999, [1], {}, 0)
+        productLifecycleService.calculateCancellationSummary(999999, [1])
       ).rejects.toThrow('Booking not found');
     });
   });
@@ -2188,7 +2183,7 @@ describe('ProductLifecycleService', () => {
         productLifecycleService.processCancellationSettlement(
           testBookingId, 500, 'invalid', null, 'test-user', null
         )
-      ).rejects.toThrow('settlement_action must be "refund", "adjust", "adjust_security", "collect", or "none"');
+      ).rejects.toThrow('settlement_action must be "refund", "adjust", "adjust_security", or "none"');
     });
   });
 

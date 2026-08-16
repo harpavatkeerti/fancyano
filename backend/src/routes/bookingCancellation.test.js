@@ -652,28 +652,28 @@ describe('Booking Cancellation Routes', () => {
       expect(response.body).toHaveProperty('selected_rent_paid', 0);
       expect(response.body).toHaveProperty('selected_security_paid', 0);
       expect(response.body).toHaveProperty('total_penalty');
-      expect(response.body).toHaveProperty('refund_amount', 0); // no payments, refund is 0
-      expect(response.body).toHaveProperty('payment_action');
-      expect(response.body).toHaveProperty('payment_difference');
+      expect(response.body).toHaveProperty('calculated_refund'); // no payments, calculated_refund <= 0
+      expect(response.body).toHaveProperty('total_paid_for_selected', 0);
     });
 
-    it('should apply penalty overrides', async () => {
+    it('should use auto-calculated penalties (penalty_overrides ignored)', async () => {
       const response = await request(app)
         .post('/cancellation/calculate-summary')
         .send({
           booking_id: summaryBookingId,
-          selected_product_ids: [summaryBPId],
-          penalty_overrides: { [summaryBPId]: 500 }
+          selected_product_ids: [summaryBPId]
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.total_penalty).toBe(500);
-      // No payments → penalty > paid → 'blocked' (negative refund scenario requiring collection)
-      expect(response.body.payment_action).toBe('blocked');
-      expect(response.body.payment_difference).toBe(500);
+      // Penalty is auto-calculated — not overridable
+      expect(typeof response.body.total_penalty).toBe('number');
+      // calculated_refund = total_paid - penalty - discount_reverted
+      expect(typeof response.body.calculated_refund).toBe('number');
+      expect(response.body).not.toHaveProperty('payment_action');
+      expect(response.body).not.toHaveProperty('refund_amount');
     });
 
-    it('should include extra refund in calculation', async () => {
+    it('should return calculated_refund after payment', async () => {
       // First apply a payment so there's something to refund
       const chargeAccountingService = require('../services/chargeAccountingService');
       await chargeAccountingService.applyPayment(summaryBookingId, 50000, 'Cash', 'test-user', 'Full rent payment');
@@ -682,16 +682,15 @@ describe('Booking Cancellation Routes', () => {
         .post('/cancellation/calculate-summary')
         .send({
           booking_id: summaryBookingId,
-          selected_product_ids: [summaryBPId],
-          extra_refund: 1000
+          selected_product_ids: [summaryBPId]
         });
 
       expect(response.status).toBe(200);
       expect(response.body.selected_rent_paid).toBe(50000);
-      expect(response.body.extra_refund).toBe(1000);
-      // refund = 50000 - penalty + 1000
-      expect(response.body.refund_amount).toBeGreaterThan(0);
-      expect(response.body.payment_action).toBe('refund');
+      expect(response.body.total_paid_for_selected).toBe(50000);
+      // calculated_refund = 50000 - penalty - discount
+      expect(typeof response.body.calculated_refund).toBe('number');
+      expect(response.body).not.toHaveProperty('extra_refund');
     });
 
     it('should return zero totals for empty selection', async () => {
@@ -705,7 +704,7 @@ describe('Booking Cancellation Routes', () => {
       expect(response.status).toBe(200);
       expect(response.body.selected_count).toBe(0);
       expect(response.body.selected_rent).toBe(0);
-      expect(response.body.refund_amount).toBe(0);
+      expect(response.body.calculated_refund).toBe(0);
     });
 
     it('should return 400 for missing required fields', async () => {
@@ -919,19 +918,22 @@ describe('Booking Cancellation Routes', () => {
       // Pay ₹9,000 — all goes to rent (rent_paid=9000, security_paid=0)
       await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
 
+      // Penalty = 0% (0-1 days from booking policy) → diff = 9000 - 0 = 9000
+      const expectedPenalty = 0;
+      const expectedDiff = 9000 - expectedPenalty; // 9000
+
       const response = await request(app)
         .post('/cancellation')
         .send({
           booking_product_ids: [settleBPId],
-          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
           cancellation_reason: 'Test',
           cancelled_by: 'test-user',
           settlement_action: 'adjust'
         });
 
       expect(response.status).toBe(200);
-      // diff_amount = 9000 - 920 = 8080
-      expect(response.body.total_diff_amount).toBe(8080);
+      // diff_amount = 9000 - 0 = 9000
+      expect(response.body.total_diff_amount).toBe(expectedDiff);
 
       // No adjustment transaction recorded (product excluded → balance = 0)
       const txResult = await pool.query(
@@ -940,14 +942,33 @@ describe('Booking Cancellation Routes', () => {
       );
       const types = txResult.rows.map(r => r.type);
       expect(types).not.toContain('adjustment');
-      // A refund for the full 8080 should have been issued instead
+      // A refund for the full diff should have been issued instead
       expect(types).toContain('refund');
     });
 
-    // Case 8: Two-product booking, cancel A with adjust, B has ₹3,000 dues →
-    //   adjustment of ₹3,000, refund of (diff_amount − 3,000)
-    it('Case 8: two-product booking, cancel A with adjust, B has ₹3,000 dues → adjustment=3000, refund=diff-3000', async () => {
+    // Case 8: Two-product booking with non-zero penalty, cancel A with adjust, B has ₹3,000 dues
+    it('Case 8: two-product booking, non-zero penalty, cancel A with adjust → adjustment+refund', async () => {
       const chargeAccountingService = require('../services/chargeAccountingService');
+
+      // Set up a specific penalty policy for this test (15% for 4-6 days range)
+      const testPenaltyPct = 15;
+      await policyService.upsertPolicy({
+        policy_key: 'test_settle_case8',
+        policy_name: 'Settlement Case 8 penalty',
+        policy_type: 'cancellation_penalty',
+        value_type: 'percentage',
+        value: testPenaltyPct,
+        days_from_booking_min: 4,
+        days_from_booking_max: 6,
+        created_by: 'test-user'
+      });
+
+      // Backdate product created_at by 5 days to hit the 4-6 days policy range
+      await pool.query(
+        `UPDATE booking_products SET created_at = CURRENT_TIMESTAMP - INTERVAL '5 days' WHERE id = $1`,
+        [settleBPId]
+      );
+
       // Pay ₹9,000 BEFORE adding product B so the full amount goes to product A's rent
       await chargeAccountingService.applyPayment(settleBookingId, 9000, 'Cash', 'test-user', 'Test payment');
 
@@ -965,19 +986,24 @@ describe('Booking Cancellation Routes', () => {
         [bp2Id]
       );
 
+      // Penalty derived from policy: 15% of effective_rent 9200 = 1380
+      const rent = 9200;
+      const expectedPenalty = Math.floor(rent * testPenaltyPct / 100); // 1380
+      const expectedDiff = 9000 - expectedPenalty; // 7620
+      const expectedAdjust = Math.min(expectedDiff, 3000); // 3000
+      const expectedRefund = expectedDiff - expectedAdjust; // 4620
+
       const response = await request(app)
         .post('/cancellation')
         .send({
           booking_product_ids: [settleBPId],
-          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
           cancellation_reason: 'Test',
           cancelled_by: 'test-user',
           settlement_action: 'adjust'
         });
 
       expect(response.status).toBe(200);
-      // diff_amount = 9000 - 920 = 8080; adjust cap = min(8080, 3000) = 3000; refund = 5080
-      expect(response.body.total_diff_amount).toBe(8080);
+      expect(response.body.total_diff_amount).toBe(expectedDiff);
 
       const txResult = await pool.query(
         `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 ORDER BY transaction_date`,
@@ -985,12 +1011,12 @@ describe('Booking Cancellation Routes', () => {
       );
       const txTypes = txResult.rows.map(r => r.type);
       expect(txTypes).toContain('adjustment');
-      expect(txTypes).toContain('refund');
-
       const adjustTx = txResult.rows.find(r => r.type === 'adjustment');
-      expect(parseFloat(adjustTx.amount)).toBe(3000);
+      expect(parseFloat(adjustTx.amount)).toBe(expectedAdjust); // 3000
+
+      expect(txTypes).toContain('refund');
       const refundTx = txResult.rows.find(r => r.type === 'refund');
-      expect(parseFloat(refundTx.amount)).toBe(5080);
+      expect(parseFloat(refundTx.amount)).toBe(expectedRefund); // 3700
     });
 
     // Case 9: Two-product booking, cancel A with refund → refund for full diff_amount, B's dues unchanged
@@ -1012,11 +1038,14 @@ describe('Booking Cancellation Routes', () => {
         [bp2Id]
       );
 
+      // Penalty = 0% (0-1 days from booking policy) → diff = 9000
+      const expectedPenalty = 0;
+      const expectedDiff = 9000 - expectedPenalty; // 9000
+
       const response = await request(app)
         .post('/cancellation')
         .send({
           booking_product_ids: [settleBPId],
-          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 920 }],
           cancellation_reason: 'Test',
           cancelled_by: 'test-user',
           settlement_action: 'refund',
@@ -1024,7 +1053,7 @@ describe('Booking Cancellation Routes', () => {
         });
 
       expect(response.status).toBe(200);
-      expect(response.body.total_diff_amount).toBe(8080);
+      expect(response.body.total_diff_amount).toBe(expectedDiff);
 
       const txResult = await pool.query(
         `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 ORDER BY transaction_date`,
@@ -1034,7 +1063,7 @@ describe('Booking Cancellation Routes', () => {
       expect(txTypes).not.toContain('adjustment');
       expect(txTypes).toContain('refund');
       const refundTx = txResult.rows.find(r => r.type === 'refund');
-      expect(parseFloat(refundTx.amount)).toBe(8080);
+      expect(parseFloat(refundTx.amount)).toBe(expectedDiff); // 9000
 
       // Product B's dues remain unchanged
       const bp2Charges = await pool.query(
@@ -1065,16 +1094,40 @@ describe('Booking Cancellation Routes', () => {
       expect(parseInt(txResult.rows[0].cnt)).toBe(0);
     });
 
-    // Case 11: Cancel with penalty=0, no other dues, payment=rent → refund = rent_paid
-    it('Case 11: cancel with penalty=0, payment=rent → refund transaction equals rent paid', async () => {
+    // Case 11: Cancel with non-zero penalty, full rent paid, refund
+    it('Case 11: cancel with 20% penalty, full rent paid → refund = rent - penalty', async () => {
       const chargeAccountingService = require('../services/chargeAccountingService');
+
+      // Set up a specific penalty policy for this test (20% for 7-10 days range)
+      const testPenaltyPct = 20;
+      await policyService.upsertPolicy({
+        policy_key: 'test_settle_case11',
+        policy_name: 'Settlement Case 11 penalty',
+        policy_type: 'cancellation_penalty',
+        value_type: 'percentage',
+        value: testPenaltyPct,
+        days_from_booking_min: 7,
+        days_from_booking_max: 10,
+        created_by: 'test-user'
+      });
+
+      // Backdate product created_at by 8 days to hit the 7-10 days policy range
+      await pool.query(
+        `UPDATE booking_products SET created_at = CURRENT_TIMESTAMP - INTERVAL '8 days' WHERE id = $1`,
+        [settleBPId]
+      );
+
       await chargeAccountingService.applyPayment(settleBookingId, 9200, 'Cash', 'test-user', 'Full rent payment');
+
+      // Penalty derived from policy: 20% of effective_rent 9200 = 1840
+      const rent = 9200;
+      const expectedPenalty = Math.floor(rent * testPenaltyPct / 100); // 1840
+      const expectedDiff = 9200 - expectedPenalty; // 7360
 
       const response = await request(app)
         .post('/cancellation')
         .send({
           booking_product_ids: [settleBPId],
-          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 0 }],
           cancellation_reason: 'Test',
           cancelled_by: 'test-user',
           settlement_action: 'refund',
@@ -1082,43 +1135,34 @@ describe('Booking Cancellation Routes', () => {
         });
 
       expect(response.status).toBe(200);
-      // diff_amount = rent_paid - 0 = 9200
-      expect(response.body.total_diff_amount).toBe(9200);
+      expect(response.body.total_diff_amount).toBe(expectedDiff);
 
       const txResult = await pool.query(
         `SELECT type, amount FROM payment_transactions WHERE booking_id = $1 AND type = 'refund'`,
         [settleBookingId]
       );
       expect(txResult.rows).toHaveLength(1);
-      expect(parseFloat(txResult.rows[0].amount)).toBe(9200);
+      expect(parseFloat(txResult.rows[0].amount)).toBe(expectedDiff); // 7360
     });
 
-    // Case 12: Cancel where penalty > rent_paid → HTTP 400 before settlement
-    it('Case 12: cancel where penalty > amount paid → HTTP 400, no settlement recorded', async () => {
-      // Directly set paid_amount to ₹3,000 on the rent charge to bypass minimum-payment validation
-      await pool.query(
-        `UPDATE product_charges SET paid_amount = 3000
-         WHERE booking_product_id = $1 AND charge_type = 'rent'`,
-        [settleBPId]
-      );
-      // Insert a matching payment_transaction so the DB is consistent
-      await pool.query(
-        `INSERT INTO payment_transactions (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, 3000, 'payment', 'Cash', 'Partial payment', 'test-user', CURRENT_TIMESTAMP)`,
-        [settleBookingId]
-      );
+    // Case 12: extra_refund validation — edited refund > total paid → HTTP 400
+    it('Case 12: extra_refund that makes edited refund exceed total paid → HTTP 400', async () => {
+      const chargeAccountingService = require('../services/chargeAccountingService');
+      // Pay ₹5,000 (above 50% minimum of ₹4,600 for rent=9,200)
+      await chargeAccountingService.applyPayment(settleBookingId, 5000, 'Cash', 'test-user', 'Partial payment');
 
       const response = await request(app)
         .post('/cancellation')
         .send({
           booking_product_ids: [settleBPId],
-          cancellation_penalties: [{ booking_product_id: settleBPId, penalty_amount: 8000 }],
           cancellation_reason: 'Test',
           cancelled_by: 'test-user',
+          extra_refund: 50000, // Way too much — edited refund would exceed total paid (₹5,000)
           settlement_action: 'refund'
         });
 
       expect(response.status).toBe(400);
+      expect(response.body.error).toContain('Invalid extra_refund');
 
       // No new refund/adjustment transactions recorded
       const txResult = await pool.query(

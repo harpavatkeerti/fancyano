@@ -30,9 +30,7 @@ router.post('/calculate-summary', checkSalesmanPermission('cancellation_allowed'
   try {
     const {
       booking_id,
-      selected_product_ids,
-      penalty_overrides,
-      extra_refund
+      selected_product_ids
     } = req.body;
 
     if (!booking_id || !selected_product_ids || !Array.isArray(selected_product_ids)) {
@@ -43,9 +41,7 @@ router.post('/calculate-summary', checkSalesmanPermission('cancellation_allowed'
 
     const summary = await productLifecycleService.calculateCancellationSummary(
       parseInt(booking_id),
-      selected_product_ids.map(id => parseInt(id)),
-      penalty_overrides || {},
-      parseInt(extra_refund) || 0
+      selected_product_ids.map(id => parseInt(id))
     );
 
     res.json(summary);
@@ -79,10 +75,11 @@ router.post('/', checkSalesmanPermission('cancellation_allowed'), async (req, re
   try {
     const {
       booking_product_ids, // Array of booking_product IDs to cancel
-      cancellation_penalties, // Array of { booking_product_id, penalty_amount }
       cancellation_reason,
       cancelled_by,
-      settlement_action, // 'adjust' | 'adjust_security' | 'collect' | 'none' (default 'none')
+      extra_refund,      // Integer: editedRefund - calculatedRefund
+      extra_refund_note, // Optional note explaining the refund adjustment
+      settlement_action, // 'adjust' | 'adjust_security' | 'refund' | 'none' (default 'none')
       payment_method,    // Payment method (e.g. 'Cash', 'UPI')
       settlement_notes,  // Optional notes for settlement
       security_product_ids  // Required when settlement_action === 'adjust_security'
@@ -93,58 +90,35 @@ router.post('/', checkSalesmanPermission('cancellation_allowed'), async (req, re
         error: 'booking_product_ids array is required',
         example: {
           booking_product_ids: [1, 2],
-          cancellation_penalties: [{ booking_product_id: 1, penalty_amount: 300 }],
+          extra_refund: 0,
           settlement_action: 'adjust',
           payment_method: 'Cash'
         }
       });
     }
 
-    const results = [];
-
-    // Resolve the booking_id from the first booking_product to fetch default penalties
-    const previewBookingId = await bookingService.getBookingIdByBookingProductId(booking_product_ids[0]);
-    let defaultPenalties = {};
-    if (previewBookingId) {
-      const preview = await productLifecycleService.calculateCancellationPreview(previewBookingId);
-      for (const product of preview.products_to_cancel) {
-        defaultPenalties[product.product_id] = product.penalty_amount;
-      }
+    // Resolve booking_id from the first booking_product
+    const bookingId = await bookingService.getBookingIdByBookingProductId(booking_product_ids[0]);
+    if (!bookingId) {
+      return res.status(404).json({ error: 'Booking not found for the given product' });
     }
 
-    // Cancel each product
-    for (const bpId of booking_product_ids) {
-      const penaltyInfo = cancellation_penalties?.find(p => p.booking_product_id === bpId);
-      // Use manual override if provided, otherwise use policy-based default
-      const penaltyAmount = penaltyInfo ? penaltyInfo.penalty_amount : (defaultPenalties[bpId] || 0);
-
-      const result = await productLifecycleService.cancelProduct(
-        bpId,
-        penaltyAmount,
-        cancellation_reason || 'Cancelled by user',
-        cancelled_by || 'system',
-        {
-          action: settlement_action || 'none',
-          method: payment_method || 'Cash',
-          notes: settlement_notes,
-          security_product_ids: security_product_ids || []
-        }
-      );
-      
-      results.push(result);
-    }
-
-    // Aggregate results
-    const totalDiffAmount = results.reduce((sum, r) => sum + (r.diff_amount || 0), 0);
-    
-    res.json({
-      message: `${booking_product_ids.length} product(s) cancelled successfully`,
-      cancelled_products: results,
-      total_diff_amount: totalDiffAmount,
-      settlement: results[0]?.settlement || null
+    // Delegate everything to the service layer
+    const result = await productLifecycleService.cancelProducts({
+      bookingId,
+      bookingProductIds: booking_product_ids,
+      cancellationReason: cancellation_reason,
+      cancelledBy: cancelled_by || req.user?.id || 'system',
+      extraRefund: parseInt(extra_refund) || 0,
+      extraRefundNote: extra_refund_note || settlement_notes,
+      settlementAction: settlement_action || 'none',
+      paymentMethod: payment_method || 'Cash',
+      securityProductIds: security_product_ids || []
     });
+
+    res.json(result);
   } catch (error) {
-    if (error.message.includes('Cannot cancel')) {
+    if (error.message.includes('Cannot cancel') || error.message.includes('Invalid extra_refund')) {
       return res.status(400).json({ error: error.message });
     }
     console.error('Error cancelling products:', error);

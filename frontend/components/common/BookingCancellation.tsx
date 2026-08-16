@@ -52,11 +52,8 @@ interface CancellationSummary {
   selected_security_paid: number;
   total_penalty: number;
   discount_reverted: number;
-  extra_refund: number;
-  refund_amount: number;
-  refund_blocked: boolean;
-  payment_action: 'collect' | 'refund' | 'blocked' | 'none';
-  payment_difference: number;
+  total_paid_for_selected: number;
+  calculated_refund: number;
   remaining_dues_on_other_products: number;
   eligible_security_products: EligibleSecProduct[];
 }
@@ -91,22 +88,22 @@ export function BookingCancellation({
   // Product selection for partial cancellation
   const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
 
-  // Manual penalty editing
-  const [editingPenalties, setEditingPenalties] = useState<{ [key: number]: string }>({});
-
-  // Extra refund fields
-  const [extraRefund, setExtraRefund] = useState<string>('');
-  const [extraRefundNote, setExtraRefundNote] = useState('');
 
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [settlementAction, setSettlementAction] = useState<'adjust' | 'adjust_security' | 'collect'>('adjust');
+  const [settlementAction, setSettlementAction] = useState<'adjust' | 'adjust_security'>('adjust');
   const [refundMethod, setRefundMethod] = useState('Cash');
   const [selectedSecProductIds, setSelectedSecProductIds] = useState<number[]>([]);
 
+  // Editable final refund — admin can modify this value
+  const [editedRefund, setEditedRefund] = useState<string>('');
+  const [extraRefundNote, setExtraRefundNote] = useState('');
+
   // ── Settlement derived values (must be at top level — hooks rules) ───────────
   const settlementEligibleSecProducts: EligibleSecProduct[] = summary?.eligible_security_products ?? [];
-  const settlementDues = Math.min(summary?.refund_amount ?? 0, summary?.remaining_dues_on_other_products ?? 0);
-  const settlementRemainder = (summary?.refund_amount ?? 0) - settlementDues;
+  // Compute editedRefund as a number for settlement calculations
+  const editedRefundNum = parseInt(editedRefund) || 0;
+  const settlementDues = Math.min(editedRefundNum, summary?.remaining_dues_on_other_products ?? 0);
+  const settlementRemainder = editedRefundNum - settlementDues;
   const settlementTotalSelectedCap = settlementEligibleSecProducts
     .filter(p => selectedSecProductIds.includes(p.bpId))
     .reduce((sum, p) => sum + p.remaining, 0);
@@ -137,26 +134,11 @@ export function BookingCancellation({
   const canBeCancelled = bookingStatus !== 'pending' && bookingStatus !== 'cancelled' && bookingStatus !== 'completed' && bookingStatus !== 'discarded';
 
   // Build penalty overrides map from editing state
-  const getPenaltyOverrides = useCallback((): { [key: number]: number } => {
-    const overrides: { [key: number]: number } = {};
-    for (const [productId, value] of Object.entries(editingPenalties)) {
-      if (value === '') {
-        overrides[parseInt(productId)] = 0;
-      } else {
-        const parsed = parseFloat(value);
-        if (!isNaN(parsed)) {
-          overrides[parseInt(productId)] = parsed;
-        }
-      }
-    }
-    return overrides;
-  }, [editingPenalties]);
+  // (removed — penalties are now read-only, always auto-calculated)
 
-  // Fetch summary from backend whenever selection, penalties, or extra refund changes
+  // Fetch summary from backend whenever selection changes
   const fetchSummary = useCallback(async (
-    productIds: number[],
-    penalties: { [key: number]: number },
-    extra: number
+    productIds: number[]
   ) => {
     if (productIds.length === 0) {
       setSummary(null);
@@ -167,10 +149,11 @@ export function BookingCancellation({
       const response = await bookingCancellationApi.calculateSummary({
         booking_id: bookingId,
         selected_product_ids: productIds,
-        penalty_overrides: Object.keys(penalties).length > 0 ? penalties : undefined,
-        extra_refund: extra || undefined,
       });
       setSummary(response.data);
+      // Initialize editedRefund from backend-calculated value
+      const calcRefund = response.data.calculated_refund;
+      setEditedRefund(String(Math.max(0, calcRefund)));
     } catch (error: any) {
       console.error('Error fetching cancellation summary:', error);
     } finally {
@@ -178,20 +161,19 @@ export function BookingCancellation({
     }
   }, [bookingId]);
 
-  // Debounced summary fetch — triggers whenever inputs change
+  // Debounced summary fetch — triggers when product selection changes
   useEffect(() => {
     if (!preview || !showCancelModal) return;
 
     if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
     summaryTimerRef.current = setTimeout(() => {
-      const extra = parseFloat(extraRefund) || 0;
-      fetchSummary(selectedProducts, getPenaltyOverrides(), extra);
+      fetchSummary(selectedProducts);
     }, 300);
 
     return () => {
       if (summaryTimerRef.current) clearTimeout(summaryTimerRef.current);
     };
-  }, [selectedProducts, editingPenalties, extraRefund, preview, showCancelModal, fetchSummary, getPenaltyOverrides]);
+  }, [selectedProducts, preview, showCancelModal, fetchSummary]);
 
   useEffect(() => {
     if (autoOpen && canBeCancelled) {
@@ -262,20 +244,6 @@ export function BookingCancellation({
     }
   }
 
-  function handlePenaltyEdit(productId: number, value: string) {
-    setEditingPenalties(prev => ({
-      ...prev,
-      [productId]: value
-    }));
-  }
-
-  // Get display penalty for a product (user-edited or backend default)
-  function getDisplayPenalty(product: ProductPenalty): number | string {
-    const editedValue = editingPenalties[product.product_id];
-    if (editedValue !== undefined) return editedValue;
-    return product.penalty_amount;
-  }
-
   function handleProceedToConfirmation() {
     if (selectedProducts.length === 0) {
       toast.error('Please select at least one product to cancel');
@@ -287,14 +255,8 @@ export function BookingCancellation({
       return;
     }
 
-    // Set default settlement action based on payment scenario
-    if (summary?.payment_action === 'collect') {
-      setSettlementAction('collect');
-    } else {
-      // For all refund scenarios, always use 'adjust' — it auto-adjusts dues first,
-      // then refunds the remainder. This is the single correct default.
-      setSettlementAction('adjust');
-    }
+    // Always default to 'adjust' — it auto-adjusts dues first, then refunds the remainder
+    setSettlementAction('adjust');
     // Reset security product selection when opening confirmation
     setSelectedSecProductIds([]);
 
@@ -305,31 +267,27 @@ export function BookingCancellation({
     try {
       setLoading(true);
 
-      // Build penalty overrides for products that were manually edited
-      const penaltyOverrides = getPenaltyOverrides();
-      const cancellationPenalties = Object.entries(penaltyOverrides).map(([id, amount]) => ({
-        booking_product_id: parseInt(id),
-        penalty_amount: amount,
-      }));
-
-      // Global discount is automatically revoked by backend during cancellation
+      // Compute extra_refund = editedRefund - calculatedRefund
+      const calculatedRefund = summary?.calculated_refund ?? 0;
+      const editedRefundValue = parseInt(editedRefund) || 0;
+      const extraRefundAmount = editedRefundValue - calculatedRefund;
 
       const result = await bookingCancellationApi.cancel({
         booking_product_ids: selectedProducts,
-        cancellation_penalties: cancellationPenalties.length > 0 ? cancellationPenalties : undefined,
         cancellation_reason: cancellationReason,
         cancelled_by: userName,
-        settlement_action: settlementAction,
-        payment_method: (settlementAction === 'adjust' || settlementAction === 'collect') ? refundMethod : undefined,
+        extra_refund: extraRefundAmount,
+        extra_refund_note: extraRefundNote || undefined,
+        settlement_action: editedRefundValue > 0 ? settlementAction : 'none',
+        payment_method: settlementAction === 'adjust' ? refundMethod : undefined,
         settlement_notes: extraRefundNote || undefined,
         security_product_ids: settlementAction === 'adjust_security' ? selectedSecProductIds : undefined,
       });
 
       const isPartial = preview && selectedProducts.length < preview.all_products.length;
-      const actionLabel = settlementAction === 'collect' ? 'Payment' : 'Settlement';
-      const diffAmount = result.data?.total_diff_amount || 0;
+      const refundAmt = result.data?.edited_refund || 0;
       const settlementMsg = result.data?.settlement?.transaction_recorded
-        ? ` (${actionLabel} of ₹${Math.floor(Math.abs(diffAmount)).toLocaleString('en-IN')} recorded)`
+        ? ` (Settlement of ₹${Math.floor(Math.abs(refundAmt)).toLocaleString('en-IN')} recorded)`
         : '';
       toast.success(
         (isPartial ? 'Products cancelled successfully' : 'Booking cancelled successfully') + settlementMsg
@@ -338,15 +296,14 @@ export function BookingCancellation({
       setShowCancelModal(false);
       setShowConfirmation(false);
       setCancellationReason('');
-      setExtraRefund('');
+      setEditedRefund('');
       setExtraRefundNote('');
       setBookingDiscountInput('0');
       setBookingDiscount(0);
       setPreview(null);
       setSummary(null);
       setSelectedProducts([]);
-      setEditingPenalties({});
-      setSettlementAction('refund');
+      setSettlementAction('adjust');
       setRefundMethod('Cash');
       onCancellationComplete();
     } catch (error: any) {
@@ -443,7 +400,7 @@ export function BookingCancellation({
                         const isSelected = selectedProducts.includes(product.product_id);
                         const penaltyProduct = preview.products_to_cancel.find(p => p.product_id === product.product_id);
                         const calculatedPenalty = penaltyProduct ? penaltyProduct.penalty_amount : 0;
-                        const currentPenalty = penaltyProduct ? getDisplayPenalty(penaltyProduct) : calculatedPenalty;
+                        const currentPenalty = calculatedPenalty;
 
                         return (
                           <div
@@ -493,20 +450,12 @@ export function BookingCancellation({
                                       <label className="text-sm font-medium text-gray-700">
                                         Cancellation Penalty:
                                       </label>
-                                      <div className="flex items-center space-x-2">
-                                        <span className="text-xs text-gray-500">₹</span>
-                                        <input
-                                          type="number"
-                                          value={editingPenalties[product.product_id] ?? currentPenalty}
-                                          onChange={(e) => handlePenaltyEdit(product.product_id, e.target.value)}
-                                          className="w-32 px-3 py-1 border border-gray-300 rounded-md text-sm"
-                                          step="0.01"
-                                          min="0"
-                                        />
-                                      </div>
+                                      <span className="text-sm font-medium text-gray-900">
+                                        ₹{Math.floor(currentPenalty).toLocaleString('en-IN')}
+                                      </span>
                                     </div>
                                     <p className="text-xs text-gray-500 mt-1">
-                                      Auto-calculated: ₹{calculatedPenalty.toFixed(2)} ({preview.penalty_percentage}% of rent)
+                                      Auto-calculated: {preview.penalty_percentage}% of rent
                                     </p>
                                   </div>
                                 )}
@@ -558,90 +507,87 @@ export function BookingCancellation({
                             <span>Penalty Deduction:</span>
                             <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
                           </div>
-                          {summary.extra_refund > 0 && (
-                            <div className="flex justify-between text-xs text-gray-600">
-                              <span>Extra Refund:</span>
-                              <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
-                            </div>
-                          )}
                           {summary.discount_reverted > 0 && (
                             <div className="flex justify-between text-xs text-red-600 font-medium">
                               <span>Discount Reverted:</span>
                               <span>- ₹{Math.floor(summary.discount_reverted).toLocaleString('en-IN')}</span>
                             </div>
                           )}
+                          <div className="flex justify-between text-xs text-gray-600 font-medium mt-1">
+                            <span>Calculated Refund:</span>
+                            <span className={summary.calculated_refund < 0 ? 'text-red-600' : ''}>
+                              ₹{Math.floor(summary.calculated_refund).toLocaleString('en-IN')}
+                            </span>
+                          </div>
                         </div>
 
-                        <div className="border-t border-yellow-300 pt-2 mt-1">
+                        {/* Editable Final Refund */}
+                        <div className="border-t border-yellow-300 pt-3 mt-1">
                           <div className="flex justify-between items-center">
-                            {summary.refund_blocked ? (
-                              <>
-                                <span className="font-semibold text-red-900">⚠️ Cancellation Blocked</span>
-                                <span className="font-bold text-red-600 text-lg">
-                                  Deficit: ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
-                                </span>
-                              </>
-                            ) : summary.payment_action === 'collect' ? (
-                              <>
-                                <span className="font-semibold text-yellow-900">Amount to Collect:</span>
-                                <span className="font-bold text-orange-600 text-lg">
-                                  ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <span className="font-semibold text-yellow-900">Refund Amount:</span>
-                                <span className="font-bold text-green-600 text-lg">
-                                  ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
-                                </span>
-                              </>
-                            )}
+                            <label className="font-semibold text-yellow-900">Final Refund Amount:</label>
+                            <div className="flex items-center space-x-2">
+                              <span className="text-yellow-800 font-medium">₹</span>
+                              <input
+                                type="number"
+                                value={editedRefund}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  // Only allow integers
+                                  if (val === '' || /^[0-9]+$/.test(val)) {
+                                    setEditedRefund(val);
+                                  }
+                                }}
+                                className="w-36 px-3 py-2 border border-yellow-400 rounded-md text-lg font-bold text-green-700 focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
+                                min="0"
+                                max={summary.total_paid_for_selected}
+                                step="1"
+                              />
+                            </div>
                           </div>
-                          {summary.refund_blocked && (
-                            <p className="text-xs text-red-700 mt-1">
-                              Refund after discount revocation and penalty is negative. Cancellation is not allowed.
-                            </p>
-                          )}
+                          {(() => {
+                            const editedVal = parseInt(editedRefund) || 0;
+                            const extraRefundVal = editedVal - summary.calculated_refund;
+                            const isNegativeExtra = extraRefundVal < 0;
+                            return (
+                              <>
+                                {editedVal > summary.total_paid_for_selected && (
+                                  <p className="text-xs text-red-600 mt-1">
+                                    ⚠️ Cannot exceed total paid (₹{summary.total_paid_for_selected.toLocaleString('en-IN')})
+                                  </p>
+                                )}
+                                {isNegativeExtra && (
+                                  <p className="text-xs text-orange-600 mt-1">
+                                    ⚠️ Refund is ₹{Math.abs(extraRefundVal).toLocaleString('en-IN')} less than calculated — reducing the refund doesn't make sense in most cases.
+                                  </p>
+                                )}
+                                {extraRefundVal > 0 && (
+                                  <p className="text-xs text-blue-600 mt-1">
+                                    Extra ₹{extraRefundVal.toLocaleString('en-IN')} added to calculated refund.
+                                  </p>
+                                )}
+                              </>
+                            );
+                          })()}
+                          {/* Note field for refund adjustments */}
+                          {(() => {
+                            const editedVal = parseInt(editedRefund) || 0;
+                            const extraRefundVal = editedVal - summary.calculated_refund;
+                            return extraRefundVal !== 0 ? (
+                              <div className="mt-2">
+                                <textarea
+                                  value={extraRefundNote}
+                                  onChange={(e) => setExtraRefundNote(e.target.value)}
+                                  className="w-full px-3 py-2 border border-yellow-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-yellow-500"
+                                  rows={2}
+                                  placeholder="Reason for adjusting refund amount..."
+                                />
+                              </div>
+                            ) : null;
+                          })()}
                         </div>
                       </div>
                     </div>
                   )}
-
-                  {/* Extra Refund Section */}
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                    <h3 className="font-semibold text-blue-900 mb-3">Additional Refund (Optional)</h3>
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-sm font-medium text-blue-800 mb-2">
-                          Extra Refund Amount
-                        </label>
-                        <div className="flex items-center space-x-2">
-                          <span className="text-blue-800">₹</span>
-                          <input
-                            type="number"
-                            value={extraRefund}
-                            onChange={(e) => setExtraRefund(e.target.value)}
-                            className="flex-1 px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            placeholder="0.00"
-                            step="0.01"
-                            min="0"
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-blue-800 mb-2">
-                          Note/Reason for Extra Refund
-                        </label>
-                        <textarea
-                          value={extraRefundNote}
-                          onChange={(e) => setExtraRefundNote(e.target.value)}
-                          className="w-full px-3 py-2 border border-blue-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                          rows={2}
-                          placeholder="e.g., Goodwill gesture, damaged product compensation..."
-                        />
-                      </div>
-                    </div>
-                  </div>
 
                   {/* Cancellation Reason */}
                   <div>
@@ -664,10 +610,9 @@ export function BookingCancellation({
                         setShowCancelModal(false);
                         setPreview(null);
                         setSelectedProducts([]);
-                        setEditingPenalties({});
-                        setExtraRefund('');
+                        setEditedRefund('');
                         setExtraRefundNote('');
-                        setSettlementAction('refund');
+                        setSettlementAction('adjust');
                         setRefundMethod('Cash');
                       }}
                       className="flex-1 py-3 px-4 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-medium transition-colors"
@@ -676,10 +621,10 @@ export function BookingCancellation({
                     </button>
                     <button
                       onClick={handleProceedToConfirmation}
-                      disabled={selectedProducts.length === 0 || !cancellationReason.trim() || (summary?.refund_blocked === true)}
+                      disabled={selectedProducts.length === 0 || !cancellationReason.trim() || (parseInt(editedRefund) || 0) > (summary?.total_paid_for_selected ?? 0)}
                       className="flex-1 py-3 px-4 bg-red-600 hover:bg-red-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white rounded-lg font-medium transition-colors"
                     >
-                      {summary?.refund_blocked ? 'Cancellation Not Allowed' : 'Proceed to Confirm'}
+                      Proceed to Confirm
                     </button>
                   </div>
                 </div>
@@ -738,44 +683,42 @@ export function BookingCancellation({
                       <span>Penalty Deduction:</span>
                       <span>- ₹{Math.floor(summary.total_penalty).toLocaleString('en-IN')}</span>
                     </div>
-                    {summary.extra_refund > 0 && (
-                      <div className="flex justify-between text-xs text-gray-500">
-                        <span>Extra Refund:</span>
-                        <span>+ ₹{Math.floor(summary.extra_refund).toLocaleString('en-IN')}</span>
-                      </div>
-                    )}
                     {summary.discount_reverted > 0 && (
                       <div className="flex justify-between text-xs text-red-600 font-medium pt-1">
                         <span>Discount Reverted:</span>
                         <span>- ₹{Math.floor(summary.discount_reverted).toLocaleString('en-IN')}</span>
                       </div>
                     )}
+                    {(() => {
+                      const editedVal = parseInt(editedRefund) || 0;
+                      const extraRefundVal = editedVal - summary.calculated_refund;
+                      return (
+                        <>
+                          {extraRefundVal !== 0 && (
+                            <div className={`flex justify-between text-xs font-medium pt-1 ${extraRefundVal > 0 ? 'text-blue-600' : 'text-orange-600'}`}>
+                              <span>{extraRefundVal > 0 ? 'Extra Refund:' : 'Reduced Refund:'}</span>
+                              <span>{extraRefundVal > 0 ? '+' : ''} ₹{extraRefundVal.toLocaleString('en-IN')}</span>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                     <div className="flex justify-between pt-2 border-t border-gray-200">
-                      {summary.payment_action === 'collect' ? (
-                        <>
-                          <span className="font-semibold">Amount to Collect:</span>
-                          <span className="font-bold text-orange-600">
-                            ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')}
-                          </span>
-                        </>
-                      ) : (
-                        <>
-                          <span className="font-semibold">Refund Amount:</span>
-                          <span className="font-bold text-green-600">
-                            ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')}
-                          </span>
-                        </>
-                      )}
+                      <span className="font-semibold">Final Refund Amount:</span>
+                      <span className="font-bold text-green-600">
+                        ₹{(parseInt(editedRefund) || 0).toLocaleString('en-IN')}
+                      </span>
                     </div>
                   </div>
                 </div>
               )}
 
               {/* Settlement — non-security auto-adjustment is mandatory; choice is for remainder only */}
-              {summary && summary.refund_amount > 0 && (() => {
+              {summary && (() => {
+                const editedRefundNum = parseInt(editedRefund) || 0;
                 const eligibleSecProducts = settlementEligibleSecProducts;
                 const dues = settlementDues;
-                const remainder = settlementRemainder;
+                const remainder = editedRefundNum - dues;
                 const hasEligibleSec = eligibleSecProducts.length > 0 && remainder > 0;
                 const secCredit = settlementSecCredit;
                 const secExcess = settlementSecExcess;
@@ -785,7 +728,7 @@ export function BookingCancellation({
                 return (
                   <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
                     <h4 className="font-semibold text-green-900 mb-3">
-                      Settle ₹{Math.floor(summary.refund_amount).toLocaleString('en-IN')} refund
+                      Settle ₹{editedRefundNum.toLocaleString('en-IN')} refund
                     </h4>
 
                     {/* Mandatory auto-adjustment banner */}
@@ -902,22 +845,8 @@ export function BookingCancellation({
                 );
               })()}
 
-              {/* Collection — when penalty exceeds per-product paid */}
-              {summary && summary.payment_action === 'collect' && summary.payment_difference > 0 && (
-                <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mb-6">
-                  <h4 className="font-semibold text-orange-900 mb-3">
-                    Collect ₹{Math.floor(summary.payment_difference).toLocaleString('en-IN')} cancellation penalty from customer
-                  </h4>
-                  <PaymentMethodInput
-                    method={refundMethod}
-                    onMethodChange={setRefundMethod}
-                    notes={extraRefundNote}
-                    onNotesChange={setExtraRefundNote}
-                    amount={summary.payment_difference}
-                    colorScheme="orange"
-                  />
-                </div>
-              )}
+
+
 
               <div className="flex space-x-3">
                 <button
