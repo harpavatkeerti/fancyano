@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { feedbackApi, bookingsApi, CreateFeedbackData } from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 
 interface FeedbackFormProps {
   onClose: () => void;
@@ -19,6 +21,7 @@ export default function FeedbackForm({ onClose, onSuccess, userName, bookingId }
     booking_id: bookingId,
   });
   const [submitting, setSubmitting] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Booking search state (only used when bookingId is not pre-provided)
   const [bookings, setBookings] = useState<any[]>([]);
@@ -80,24 +83,25 @@ export default function FeedbackForm({ onClose, onSuccess, userName, bookingId }
     e.preventDefault();
 
     if (!formData.booking_id) {
-      toast.error('Please select an associated booking');
+      addAlert('Please select an associated booking');
       return;
     }
 
     if (formData.rating === 0) {
-      toast.error('Please select a rating');
+      addAlert('Please select a rating');
       return;
     }
 
     try {
       setSubmitting(true);
+      clearAlerts();
       await feedbackApi.create(formData);
       toast.success('Feedback submitted successfully');
       onSuccess?.();
       onClose();
     } catch (error) {
       console.error('Error submitting feedback:', error);
-      toast.error('Failed to submit feedback');
+      addAlert('Failed to submit feedback');
     } finally {
       setSubmitting(false);
     }
@@ -119,6 +123,8 @@ export default function FeedbackForm({ onClose, onSuccess, userName, bookingId }
 
         {/* Modal Content */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Inline alert banner for validation / submission errors */}
+          <AlertBanner alerts={alerts} onDismiss={removeAlert} />
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Feedback by

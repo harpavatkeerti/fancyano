@@ -1,12 +1,17 @@
 'use client';
 
 import { productExchangesApi, productsApi, bookingsApi, settingsApi, availabilityApi, paymentTransactionsApi } from '@/lib/api';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import React, { useState, useEffect } from 'react';
 
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { sortSizes } from '@/lib/productConstants';
+import { UrgentDetailsModal } from './UrgentDetailsModal';
+import type { UrgentConflict } from '@rental/shared';
 
 interface ProductExchangeProps {
   bookingId: number;
@@ -41,6 +46,7 @@ export function ProductExchange({
   const [exchangeReason, setExchangeReason] = useState('');
   const [loading, setLoading] = useState(false);
   const [fetchingExchanges, setFetchingExchanges] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Refund modal state
   const [showRefundModal, setShowRefundModal] = useState(false);
@@ -52,6 +58,8 @@ export function ProductExchange({
   const [productDates, setProductDates] = useState<Record<number, { booked_from: string; booked_to: string }>>({});
   const [productBookings, setProductBookings] = useState<Record<number, any[]>>({}); // Bookings for each product for availability checking
   const [availabilityErrors, setAvailabilityErrors] = useState<Record<number, string>>({});
+  const [urgentConflictsMap, setUrgentConflictsMap] = useState<Record<number, UrgentConflict[]>>({});
+  const [showUrgentDetailProductId, setShowUrgentDetailProductId] = useState<number | null>(null);
 
   // Payment collection state
 
@@ -201,7 +209,7 @@ export function ProductExchange({
     }
   }
 
-  async function checkProductAvailability(productId: number, dateFrom: string, dateTo: string): Promise<{ available: boolean; message?: string; isUrgent?: boolean }> {
+  async function checkProductAvailability(productId: number, dateFrom: string, dateTo: string): Promise<{ available: boolean; message?: string; isUrgent?: boolean; conflicts?: UrgentConflict[] }> {
     if (!dateFrom || !dateTo) {
       return { available: false, message: 'Please select both pickup and drop dates' };
     }
@@ -228,11 +236,16 @@ export function ProductExchange({
           booked_to: dateTo,
         }]);
 
-        if (tightResponse.data.has_tight_schedule) {
+        if (tightResponse.data.has_tight_schedule && tightResponse.data.conflicts.length > 0) {
+          const conflicts = tightResponse.data.conflicts;
+          const conflictSummary = conflicts.map(c =>
+            `${c.product_code}: ${c.gap_days} day gap ${c.direction === 'before' ? 'before pickup' : 'after return'} (Order #${c.neighbour_booking_id})`
+          ).join('; ');
           return {
             available: true,
             isUrgent: true,
-            message: tightResponse.data.warnings.join(' ')
+            message: conflictSummary,
+            conflicts,
           };
         }
       } catch (tightError) {
@@ -284,13 +297,13 @@ export function ProductExchange({
       }
     } catch (error) {
       console.error('Error fetching products:', error);
-      toast.error('Failed to load available products');
+      addAlert('Failed to load available products');
     }
   }
 
   async function handleExchange() {
     if (!selectedOriginalProduct || !selectedExchangedProduct) {
-      toast.error('Please select both original and exchanged products');
+      addAlert('Please select both original and exchanged products');
       return;
     }
 
@@ -299,19 +312,21 @@ export function ProductExchange({
     const exchangedProduct = availableProducts.find(p => p.id === selectedExchangedProduct);
 
     if (!originalProduct || !exchangedProduct) {
-      toast.error('Product not found');
+      addAlert('Product not found');
       return;
     }
 
     try {
       setLoading(true);
 
+      clearAlerts();
+
       const exchangeBy = userName;
 
       // Validate dates for all products
       const mainProductDates = productDates[selectedExchangedProduct];
       if (!mainProductDates?.booked_from || !mainProductDates?.booked_to) {
-        toast.error('Please select dates for the main exchanged product');
+        addAlert('Please select dates for the main exchanged product');
         return;
       }
 
@@ -322,7 +337,7 @@ export function ProductExchange({
         mainProductDates.booked_to
       );
       if (!mainAvailability.available && !mainAvailability.isUrgent) {
-        toast.error(mainAvailability.message || 'Main product is not available for selected dates');
+        addAlert(mainAvailability.message || 'Main product is not available for selected dates');
         return;
       }
 
@@ -330,7 +345,7 @@ export function ProductExchange({
       for (const additionalProductId of additionalProducts) {
         const dates = productDates[additionalProductId];
         if (!dates?.booked_from || !dates?.booked_to) {
-          toast.error(`Please select dates for all additional products`);
+          addAlert(`Please select dates for all additional products`);
           return;
         }
 
@@ -341,7 +356,7 @@ export function ProductExchange({
         );
         if (!availability.available && !availability.isUrgent) {
           const product = availableProducts.find(p => p.id === additionalProductId);
-          toast.error(`${product?.name || 'Product'} is not available for selected dates: ${availability.message}`);
+          addAlert(`${product?.name || 'Product'} is not available for selected dates: ${availability.message}`);
           return;
         }
       }
@@ -407,7 +422,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error exchanging product:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to exchange product');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to exchange product');
     } finally {
       setLoading(false);
     }
@@ -415,17 +430,17 @@ export function ProductExchange({
 
   async function handlePaymentCollection() {
     if (!pendingExchangeData) {
-      toast.error('Invalid exchange data');
+      addAlert('Invalid exchange data');
       return;
     }
 
     if (totalPaymentDue <= 0) {
-      toast.error('No payment to collect');
+      addAlert('No payment to collect');
       return;
     }
 
     if (!paymentMethod || paymentMethod.trim() === '') {
-      toast.error('Please select a payment method');
+      addAlert('Please select a payment method');
       return;
     }
 
@@ -440,7 +455,7 @@ export function ProductExchange({
         productDates[pendingExchangeData.exchanged_product_id];
 
       if (!mainProductDates?.booked_from || !mainProductDates?.booked_to) {
-        toast.error('Please select dates for the exchanged product');
+        addAlert('Please select dates for the exchanged product');
         return;
       }
 
@@ -524,7 +539,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error recording payment:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to record payment');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to record payment');
     } finally {
       setLoading(false);
     }
@@ -558,7 +573,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error preparing exchange deletion:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to prepare exchange deletion');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to prepare exchange deletion');
       setLoading(false);
     }
   }
@@ -584,7 +599,7 @@ export function ProductExchange({
           toast.success(`Exchange deleted and ₹${refundAmountValue.toFixed(2)} refunded successfully`);
         } catch (refundError) {
           console.error('Error recording refund:', refundError);
-          toast.warning('Exchange deleted but failed to record refund transaction');
+          addAlert('Exchange deleted but failed to record refund transaction', 'warning');
         }
       } else {
         toast.success('Exchange deleted successfully');
@@ -597,7 +612,7 @@ export function ProductExchange({
       }
     } catch (error: any) {
       console.error('Error deleting exchange:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to delete exchange');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to delete exchange');
     } finally {
       setLoading(false);
       setShowRefundModal(false);
@@ -612,12 +627,12 @@ export function ProductExchange({
 
     const refundAmountValue = parseFloat(refundAmount);
     if (isNaN(refundAmountValue) || refundAmountValue < 0) {
-      toast.error('Please enter a valid refund amount');
+      addAlert('Please enter a valid refund amount');
       return;
     }
 
     if (refundAmountValue > refundLapsedAmount) {
-      toast.error(`Refund amount cannot exceed ₹${refundLapsedAmount.toFixed(2)}`);
+      addAlert(`Refund amount cannot exceed ₹${refundLapsedAmount.toFixed(2)}`);
       return;
     }
 
@@ -797,6 +812,8 @@ export function ProductExchange({
             </div>
 
             <div className="p-6 space-y-6">
+              {/* Inline alert banner for exchange errors */}
+              <AlertBanner alerts={alerts} onDismiss={removeAlert} />
               {/* Original Product */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1310,16 +1327,32 @@ export function ProductExchange({
                                                 ...prev,
                                                 [product.id]: availability.message || 'Not available'
                                               }));
+                                              setUrgentConflictsMap(prev => {
+                                                const m = { ...prev };
+                                                delete m[product.id];
+                                                return m;
+                                              });
                                             } else if (availability.isUrgent) {
                                               setAvailabilityErrors(prev => ({
                                                 ...prev,
                                                 [product.id]: `⚠️ ${availability.message || 'Tight schedule'}`
                                               }));
+                                              if (availability.conflicts && availability.conflicts.length > 0) {
+                                                setUrgentConflictsMap(prev => ({
+                                                  ...prev,
+                                                  [product.id]: availability.conflicts!
+                                                }));
+                                              }
                                             } else {
                                               setAvailabilityErrors(prev => {
                                                 const newErrors = { ...prev };
                                                 delete newErrors[product.id];
                                                 return newErrors;
+                                              });
+                                              setUrgentConflictsMap(prev => {
+                                                const m = { ...prev };
+                                                delete m[product.id];
+                                                return m;
                                               });
                                             }
                                           });
@@ -1334,12 +1367,23 @@ export function ProductExchange({
                                         <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                                         </svg>
-                                        <p className={`text-sm font-medium ${availabilityErrors[product.id].includes('⚠️')
-                                          ? 'text-orange-700'
-                                          : 'text-red-700'
-                                          }`}>
-                                          {availabilityErrors[product.id]}
-                                        </p>
+                                        <div className="flex-1">
+                                          <p className={`text-sm font-medium ${availabilityErrors[product.id].includes('⚠️')
+                                            ? 'text-orange-700'
+                                            : 'text-red-700'
+                                            }`}>
+                                            {availabilityErrors[product.id]}
+                                          </p>
+                                          {urgentConflictsMap[product.id] && urgentConflictsMap[product.id].length > 0 && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setShowUrgentDetailProductId(product.id)}
+                                              className="mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium underline"
+                                            >
+                                              View Details
+                                            </button>
+                                          )}
+                                        </div>
                                       </div>
                                     </div>
                                   )}
@@ -1572,19 +1616,25 @@ export function ProductExchange({
                   <input
                     type="number"
                     value={refundAmount}
-                    onChange={(e) => setRefundAmount(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (isIntegerInput(val)) {
+                        setRefundAmount(val);
+                      }
+                    }}
+                    onKeyDown={integerKeyDown(() => refundAmount, setRefundAmount)}
                     min="0"
                     max={refundLapsedAmount}
-                    step="0.01"
+                    step="1"
                     className="w-full pl-8 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    placeholder="0.00"
+                    placeholder="0"
                   />
                 </div>
                 <div className="flex justify-between mt-2 text-xs text-gray-600">
-                  <span>Maximum: ₹{refundLapsedAmount.toFixed(2)}</span>
+                  <span>Maximum: ₹{Math.floor(refundLapsedAmount).toLocaleString('en-IN')}</span>
                   <button
                     type="button"
-                    onClick={() => setRefundAmount(refundLapsedAmount.toFixed(2))}
+                    onClick={() => setRefundAmount(String(Math.floor(refundLapsedAmount)))}
                     className="text-blue-600 hover:text-blue-700 font-medium"
                   >
                     Use Max
@@ -1592,10 +1642,10 @@ export function ProductExchange({
                 </div>
               </div>
 
-              {parseFloat(refundAmount) > 0 && parseFloat(refundAmount) < refundLapsedAmount && (
+              {parseInt(refundAmount) > 0 && parseInt(refundAmount) < refundLapsedAmount && (
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
                   <p className="text-sm font-semibold text-yellow-800">
-                    Final Lapsed Amount: ₹{(refundLapsedAmount - parseFloat(refundAmount)).toFixed(2)}
+                    Final Lapsed Amount: ₹{Math.floor(refundLapsedAmount - parseInt(refundAmount)).toLocaleString('en-IN')}
                   </p>
                   <p className="text-xs text-yellow-700 mt-1">
                     This remaining amount will be shown as non-refundable in history
@@ -1630,6 +1680,15 @@ export function ProductExchange({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Urgent Conflict Details Modal */}
+      {showUrgentDetailProductId !== null && urgentConflictsMap[showUrgentDetailProductId] && (
+        <UrgentDetailsModal
+          bookingId={bookingId}
+          conflicts={urgentConflictsMap[showUrgentDetailProductId]}
+          onClose={() => setShowUrgentDetailProductId(null)}
+        />
       )}
     </div>
   );

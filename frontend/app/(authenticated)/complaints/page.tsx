@@ -5,6 +5,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@/lib/authContext';
 import { ComplaintForm, FeedbackForm } from '@/components/common';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 
 // ─── Multi-Select Dropdown ────────────────────────────────────────────────────
 function MultiSelect({
@@ -104,6 +106,7 @@ function StatusBadge({ status }: { status: string }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function ComplaintsPage() {
   const { isAdmin, user } = useAuth();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [activeTab, setActiveTab] = useState<'complaints' | 'feedback'>('complaints');
 
   // Sorting
@@ -154,7 +157,7 @@ export default function ComplaintsPage() {
       }
     } catch (error) {
       console.error('Error fetching data:', error);
-      toast.error('Failed to fetch data');
+      addAlert('Failed to fetch data');
     } finally {
       setLoading(false);
     }
@@ -309,7 +312,7 @@ export default function ComplaintsPage() {
       await fetchData();
     } catch (error: any) {
       console.error('Error updating complaint:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to update complaint');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to update complaint');
     }
   };
 
@@ -328,7 +331,7 @@ export default function ComplaintsPage() {
       toast.success('Note added successfully');
     } catch (error) {
       console.error('Error adding note:', error);
-      toast.error('Failed to add note');
+      addAlert('Failed to add note');
     }
   };
 
@@ -366,6 +369,8 @@ export default function ComplaintsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       <h1 className="text-3xl font-bold text-black">Complaints & Feedback</h1>
 
       <div className="bg-white rounded-lg shadow-sm">

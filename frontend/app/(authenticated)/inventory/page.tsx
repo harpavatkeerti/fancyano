@@ -1,15 +1,18 @@
 'use client';
 
-import { productsApi, bookingsApi, vendorsApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, Vendor } from '@/lib/api';
+import { productsApi, bookingsApi, vendorsApi, productCategoriesApi, TrackingStatus, TRACKING_STATUS_LABELS, MANUAL_TRACKING_STATUSES, Vendor, ProductCategory, ProductTypeDefinition } from '@/lib/api';
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import {
-  MALE_PRODUCT_TYPES, FEMALE_PRODUCT_TYPES,
   MALE_NUMERIC_SIZES, STANDARD_SIZES, FANCY_COSTUME_SIZES,
-  getSizesForProduct, NO_SIZE_TYPES, sortSizes,
+  NO_SIZE_TYPES, sortSizes,
+  getSizesForSizeType, getSizeTypeLabel,
 } from '@/lib/productConstants';
 
 
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { Product } from '@/types';
 import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner, PhoneInput } from '@/components/common';
 import DateRangePicker from '@/components/common/DateRangePicker';
@@ -19,9 +22,10 @@ import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
 export default function InventoryPage() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addStep, setAddStep] = useState<1 | 2>(1);
+  const [addStep, setAddStep] = useState<1 | 2 | 3>(1);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [viewingProduct, setViewingProduct] = useState<Product | null>(null);
   const [productBookings, setProductBookings] = useState<Record<string, any[]>>({});
@@ -56,7 +60,6 @@ export default function InventoryPage() {
     rent: '',
     security_deposit: '',
     category: '',
-    gender: '', // Male or Female
     available_sizes: [] as string[],
     rent_overrides: {} as Record<string, number>,
     description: '',
@@ -64,7 +67,11 @@ export default function InventoryPage() {
     image: '', // Keep for backward compatibility
     images: [] as string[], // New: array of images
     vendor_id: null as number | null,
+    category_id: null as number | null,
   });
+
+  // ── Product categories (dynamic from API) ──
+  const [inventoryCategories, setInventoryCategories] = useState<ProductCategory[]>([]);
 
   // Vendor search state
   const [vendorSearchQuery, setVendorSearchQuery] = useState('');
@@ -90,12 +97,22 @@ export default function InventoryPage() {
 
   useEffect(() => {
     fetchProducts();
+    fetchInventoryCategories();
   }, []);
 
   // Reset image index when viewing product changes
   useEffect(() => {
     setCurrentImageIndex(0);
   }, [viewingProduct]);
+
+  async function fetchInventoryCategories() {
+    try {
+      const response = await productCategoriesApi.getAll();
+      setInventoryCategories(response.data.categories || []);
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+    }
+  }
 
   async function fetchProducts() {
     try {
@@ -241,7 +258,7 @@ export default function InventoryPage() {
 
     // Block submit if the code is known to be taken (only for new products)
     if (!editingProduct && codeCheckStatus === 'taken') {
-      toast.error('⚠️ A product with this code already exists.');
+      addAlert('A product with this code already exists.');
       return;
     }
 
@@ -265,8 +282,7 @@ export default function InventoryPage() {
         purchase_price: formData.purchase_price ? parseFloat(formData.purchase_price) : null,
         rent: baseRent, // Ensure it's a whole number
         security_deposit: Math.round((parseFloat(formData.security_deposit) || 0) / 100) * 100, // Round to nearest ₹100
-        // Set gender to null for Fancy Costumes (uses age-based sizes instead), or if empty for Other
-        gender: (formData.name === 'Fancy Costumes' || !formData.gender) ? null : formData.gender,
+
         // Sizes: send array or null for sizeless products
         available_sizes: formData.available_sizes.length > 0 ? formData.available_sizes : null,
         // Rent overrides: only if there are any
@@ -300,7 +316,7 @@ export default function InventoryPage() {
         }
         if (Object.keys(vErrors).length > 0) {
           setVendorFieldErrors(vErrors);
-          toast.warning('Please fix vendor field errors before submitting');
+          addAlert('Please fix vendor field errors before submitting', 'warning');
           return;
         }
         // Name changed or no vendor selected: create new vendor
@@ -345,9 +361,9 @@ export default function InventoryPage() {
 
     // Give a friendly message for duplicate code (409 Conflict)
     if (status === 409 || serverError?.toLowerCase().includes('already exists')) {
-      toast.error('⚠️ A product with this code already exists.');
+      addAlert('⚠️ A product with this code already exists.', 'warning');
     } else {
-      toast.error(`Failed to save product: ${serverError}`);
+      addAlert(`Failed to save product: ${serverError}`, 'error');
     }
   }
 
@@ -398,13 +414,13 @@ export default function InventoryPage() {
       rent: product.rent.toString(),
       security_deposit: product.security_deposit?.toString() || '',
       category: product.category || '',
-      gender: (product as any).gender || '',
       available_sizes: product.available_sizes || [],
       rent_overrides: rentOverrides,
       description: product.description || '',
       image: singleImage,
       images: images,
       vendor_id: product.vendor_id || null,
+      category_id: (product as any).category_id || null,
     });
 
     // Show rent overrides section if there are any
@@ -447,7 +463,7 @@ export default function InventoryPage() {
     } catch (error: any) {
       console.error('Error archiving product:', error);
       const message = error.response?.data?.error || 'Error archiving product';
-      toast.error(message);
+      addAlert(message);
     }
   }
 
@@ -459,7 +475,7 @@ export default function InventoryPage() {
     } catch (error: any) {
       console.error('Error restoring product:', error);
       const message = error.response?.data?.error || 'Error restoring product';
-      toast.error(message);
+      addAlert(message);
     }
   }
 
@@ -471,13 +487,13 @@ export default function InventoryPage() {
       rent: '',
       security_deposit: '',
       category: '',
-      gender: '',
       available_sizes: [],
       rent_overrides: {},
       description: '',
       image: '',
       images: [],
       vendor_id: null,
+      category_id: null,
     });
     setCodeCheckStatus('idle');
     setCodeDropdownOpen(false);
@@ -524,7 +540,7 @@ export default function InventoryPage() {
       setProductBookings(prev => ({ ...prev, [key]: response.data || [] }));
     } catch (error) {
       console.error('Error fetching product bookings:', error);
-      toast.error('Error loading availability calendar');
+      addAlert('Error loading availability calendar');
     }
   }
 
@@ -539,9 +555,9 @@ export default function InventoryPage() {
       const matchesProductType =
         !filterProductType || p.name === filterProductType;
 
-      // Category filter (gender)
+      // Category filter
       const matchesCategory =
-        !filterCategory || (p as any).gender === filterCategory;
+        !filterCategory || p.category_name === filterCategory;
 
       // Size filter — check if any size in available_sizes matches
       const matchesSize = !filterSize || (p.available_sizes || []).includes(filterSize);
@@ -593,6 +609,8 @@ export default function InventoryPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-800">Inventory</h1>
         <Button onClick={() => {
@@ -606,41 +624,49 @@ export default function InventoryPage() {
 
       {/* Out-of-House Alert Banner */}
       {outCount > 0 && (
-        <div className="bg-gradient-to-r from-orange-50 to-red-50 border-l-4 border-orange-500 rounded-lg p-4 shadow-md">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="bg-orange-500 rounded-full p-2">
-                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-orange-900">
-                  ⚠️ {outCount} Product{outCount > 1 ? 's' : ''} Out of House
-                </h3>
-                <p className="text-sm text-orange-700 mt-1">
-                  {outProducts.slice(0, 3).map(p => {
-                    const map = p.size_tracking_map || {};
-                    const outStatuses = Object.entries(map)
-                      .filter(([, v]) => v !== 'in_house')
-                      .map(([sz, v]) => `${sz === '_' ? '' : sz + ': '}${TRACKING_STATUS_LABELS[v as TrackingStatus] || v}`);
-                    return `${p.code} (${outStatuses.join(', ')})`;
-                  }).join(', ')}
-                  {outCount > 3 && ` and ${outCount - 3} more...`}
-                </p>
-              </div>
+        <div className="bg-orange-50 border-l-4 border-orange-500 rounded-r-lg px-4 py-2.5 shadow-sm">
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="text-orange-600 text-lg flex-shrink-0">⚠️</span>
+              <span className="text-sm font-bold text-orange-900 flex-shrink-0">
+                {outCount} Out
+              </span>
+              <span className="text-xs text-orange-700 truncate">
+                {outProducts.slice(0, 3).map(p => {
+                  const map = p.size_tracking_map || {};
+                  const outEntries = Object.entries(map).filter(([, v]) => v !== 'in_house');
+                  return outEntries.map(([sz, v]) => {
+                    const sizeLabel = sz === '_' ? '' : ` (${sz})`;
+                    return `${p.code}${sizeLabel}: ${TRACKING_STATUS_LABELS[v as TrackingStatus] || v}`;
+                  }).join(' | ');
+                }).join(' | ')}
+                {outCount > 3 && ` +${outCount - 3} more`}
+              </span>
             </div>
-            <button
-              onClick={() => {
-                setFilterTrackingStatus(MANUAL_TRACKING_STATUSES);
-                setTimeout(() => {
-                  document.querySelector('table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                }, 100);
-              }}
-              className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white font-semibold rounded-lg transition-colors shadow-md"
-            >
-              View All Out Products
-            </button>
+            {(() => {
+              const isOutFilterActive = MANUAL_TRACKING_STATUSES.every(s => filterTrackingStatus.includes(s)) && filterTrackingStatus.length === MANUAL_TRACKING_STATUSES.length;
+              return (
+                <button
+                  onClick={() => {
+                    if (isOutFilterActive) {
+                      setFilterTrackingStatus([]);
+                    } else {
+                      setFilterTrackingStatus(MANUAL_TRACKING_STATUSES);
+                      setTimeout(() => {
+                        document.querySelector('table')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }, 100);
+                    }
+                  }}
+                  className={`px-3 py-1.5 text-white text-xs font-semibold rounded-lg transition-colors flex-shrink-0 ${
+                    isOutFilterActive
+                      ? 'bg-red-600 hover:bg-red-700 ring-2 ring-red-300'
+                      : 'bg-orange-500 hover:bg-orange-600'
+                  }`}
+                >
+                  {isOutFilterActive ? '✕ Clear Out Filter' : 'View All Out Products'}
+                </button>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -679,16 +705,13 @@ export default function InventoryPage() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Types</option>
-                <option value="Sherwani">Sherwani</option>
-                <option value="Indo Western">Indo Western</option>
-                <option value="Suit">Suit</option>
-                <option value="Kurta Pajama">Kurta Pajama</option>
-                <option value="Lehenga">Lehenga</option>
-                <option value="Girlish Crop Top">Girlish Crop Top</option>
-                <option value="Gowns">Gowns</option>
-                <option value="Artificial Jewelleries">Artificial Jewelleries</option>
-                <option value="Fancy Costumes">Fancy Costumes</option>
-                <option value="Other">Other</option>
+                {inventoryCategories.map((cat) => (
+                  <optgroup key={cat.id ?? 'neutral'} label={cat.name}>
+                    {(cat.types || []).map((type) => (
+                      <option key={type.id} value={type.name}>{type.name}</option>
+                    ))}
+                  </optgroup>
+                ))}
               </select>
             </div>
 
@@ -700,8 +723,9 @@ export default function InventoryPage() {
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="">All Categories</option>
-                <option value="Male">Male</option>
-                <option value="Female">Female</option>
+                {inventoryCategories.filter(cat => cat.id !== null).map((cat) => (
+                  <option key={cat.id} value={cat.name}>{cat.name}</option>
+                ))}
               </select>
             </div>
 
@@ -906,7 +930,7 @@ export default function InventoryPage() {
                     </td>
                     {/* Category */}
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500" rowSpan={hasSizes ? sizes.length + 1 : 1}>
-                      {(product as any).gender || <span className="text-gray-400">N/A</span>}
+                      {product.category_name || <span className="text-gray-400">N/A</span>}
                     </td>
                     {/* Status */}
                     <td className="px-6 py-4 whitespace-nowrap" rowSpan={hasSizes ? sizes.length + 1 : 1}>
@@ -1096,108 +1120,39 @@ export default function InventoryPage() {
               <div className="flex px-8 pt-4 gap-2">
                 <div className={`h-1 flex-1 rounded-full transition-colors ${addStep >= 1 ? 'bg-red-600' : 'bg-gray-200'}`} />
                 <div className={`h-1 flex-1 rounded-full transition-colors ${addStep >= 2 ? 'bg-red-600' : 'bg-gray-200'}`} />
+                <div className={`h-1 flex-1 rounded-full transition-colors ${addStep >= 3 ? 'bg-red-600' : 'bg-gray-200'}`} />
               </div>
             )}
 
             <form onSubmit={handleSubmit} className="px-8 py-6 space-y-6 max-h-[75vh] overflow-y-auto">
 
-              {/* ── STEP 1 (Add mode): Product Type + Code ── */}
+              {/* ── STEP 1 (Add mode): Select Category (Men / Women / etc.) ── */}
               {(!editingProduct && addStep === 1) && (
                 <div className="space-y-6">
-                  {/* Product Type grid */}
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-3">Product Type *</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {(['Sherwani', 'Indo Western', 'Suit', 'Kurta Pajama', 'Lehenga', 'Girlish Crop Top', 'Gowns', 'Artificial Jewelleries', 'Fancy Costumes', 'Other'] as const).map((type) => (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() => {
-                            const maleProducts = MALE_PRODUCT_TYPES;
-                            const femaleProducts = FEMALE_PRODUCT_TYPES;
-                            let autoGender = '';
-                            if (maleProducts.includes(type)) autoGender = 'Male';
-                            else if (femaleProducts.includes(type)) autoGender = 'Female';
-                            else if (type === 'Artificial Jewelleries') autoGender = 'Female';
-                            setFormData({ ...formData, name: type, gender: autoGender, available_sizes: [], rent_overrides: {} });
-                          }}
-                          className={`px-4 py-2.5 rounded-xl text-sm font-medium border-2 text-left transition-all duration-150 ${
-                            formData.name === type
-                              ? 'bg-red-600 text-white border-red-600 shadow-sm'
-                              : 'bg-white text-gray-700 border-gray-200 hover:border-red-300 hover:bg-red-50'
-                          }`}
-                        >
-                          {type}
-                        </button>
-                      ))}
-                    </div>
-                    {/* Gender for "Other" */}
-                    {formData.name === 'Other' && (
-                      <div className="mt-3 flex gap-4">
-                        {(['Male', 'Female', ''] as const).map((g) => (
-                          <label key={g || 'none'} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                            <input
-                              type="radio"
-                              name="gender"
-                              value={g}
-                              checked={formData.gender === g}
-                              onChange={() => setFormData({ ...formData, gender: g, available_sizes: [], rent_overrides: {} })}
-                              className="accent-red-600"
-                            />
-                            {g || 'None'}
-                          </label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Select Category *</label>
+                    {inventoryCategories.length === 0 ? (
+                      <p className="text-gray-500 text-sm">No categories found. Please create categories in Settings first.</p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3">
+                        {inventoryCategories.map((cat) => (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setFormData({ ...formData, category_id: cat.id })}
+                            className={`px-5 py-4 rounded-xl text-sm font-semibold border-2 text-left transition-all duration-150 ${
+                              formData.category_id === cat.id
+                                ? 'bg-red-600 text-white border-red-600 shadow-md'
+                                : 'bg-white text-gray-700 border-gray-200 hover:border-red-300 hover:bg-red-50'
+                            }`}
+                          >
+                            {cat.name}
+                            <span className="block text-xs font-normal mt-0.5 opacity-75">
+                              {cat.types.filter(t => t.category_id === cat.id).length} product type{cat.types.filter(t => t.category_id === cat.id).length !== 1 ? 's' : ''}
+                            </span>
+                          </button>
                         ))}
                       </div>
-                    )}
-                  </div>
-
-                  {/* Product Code */}
-                  <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Product Code *</label>
-                    <input
-                      type="text"
-                      value={formData.code}
-                      disabled={!formData.name}
-                      onChange={(e) => {
-                        const newCode = e.target.value.toUpperCase();
-                        setFormData({ ...formData, code: newCode });
-                        checkCodeDuplicate(newCode);
-                      }}
-                      placeholder={formData.name ? 'e.g. SHR-001' : 'Select product type first'}
-                      className={`w-full px-4 py-2.5 border-2 rounded-xl text-sm font-medium bg-white focus:outline-none transition-colors ${
-                        !formData.name
-                          ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50'
-                          : codeCheckStatus === 'taken'
-                            ? 'border-red-400 focus:border-red-500 text-gray-900'
-                            : codeCheckStatus === 'available'
-                              ? 'border-green-400 focus:border-green-500 text-gray-900'
-                              : 'border-gray-300 focus:border-red-500 text-gray-900'
-                      }`}
-                    />
-                    {codeCheckStatus === 'checking' && (
-                      <p className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-400">
-                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
-                        </svg>
-                        Checking code availability…
-                      </p>
-                    )}
-                    {codeCheckStatus === 'taken' && (
-                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-red-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                        </svg>
-                        A product with this code already exists — cannot proceed.
-                      </p>
-                    )}
-                    {codeCheckStatus === 'available' && formData.code.trim() && (
-                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-green-600">
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                        Code is available ✓
-                      </p>
                     )}
                   </div>
 
@@ -1212,13 +1167,7 @@ export default function InventoryPage() {
                     </button>
                     <button
                       type="button"
-                      disabled={
-                        !formData.name ||
-                        !formData.code.trim() ||
-                        codeCheckStatus === 'taken' ||
-                        codeCheckStatus === 'checking' ||
-                        codeCheckStatus === 'idle'
-                      }
+                      disabled={!formData.category_id}
                       onClick={() => setAddStep(2)}
                       className="px-6 py-2.5 text-sm font-semibold bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
                     >
@@ -1231,15 +1180,112 @@ export default function InventoryPage() {
                 </div>
               )}
 
-              {/* ── STEP 2 (Add) or full form (Edit) ── */}
-              {(editingProduct || addStep === 2) && (
+              {/* ── STEP 2 (Add mode): Product Type + Code ── */}
+              {(!editingProduct && addStep === 2) && (() => {
+                const selectedCat = inventoryCategories.find(c => c.id === formData.category_id);
+                const availableTypes = selectedCat?.types || [];
+                return (
+                <div className="space-y-6">
+                  {/* Back to category */}
+                  <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
+                    <button type="button" onClick={() => setAddStep(1)} className="text-gray-400 hover:text-gray-600 transition-colors" title="Go back">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                    </button>
+                    <div>
+                      <p className="text-xs text-gray-500">Category</p>
+                      <p className="text-sm font-semibold text-gray-900">{selectedCat?.name || 'Unknown'}</p>
+                    </div>
+                  </div>
+
+                  {/* Product Type grid */}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-3">Product Type *</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {availableTypes.map((type) => (
+                        <button
+                          key={type.id}
+                          type="button"
+                          onClick={() => {
+                            setFormData({ ...formData, name: type.name, available_sizes: [], rent_overrides: {} });
+                          }}
+                          className={`px-4 py-2.5 rounded-xl text-sm font-medium border-2 text-left transition-all duration-150 ${
+                            formData.name === type.name
+                              ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                              : 'bg-white text-gray-700 border-gray-200 hover:border-red-300 hover:bg-red-50'
+                          }`}
+                        >
+                          {type.name}
+                          {type.category_id === null && <span className="ml-1 text-xs opacity-60">(All)</span>}
+                        </button>
+                      ))}
+                    </div>
+
+                  </div>
+
+                  {/* Product Code */}
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Product Code *</label>
+                    <input
+                      type="text"
+                      value={formData.code}
+                      disabled={!formData.name}
+                      onChange={(e) => { const newCode = e.target.value.toUpperCase(); setFormData({ ...formData, code: newCode }); checkCodeDuplicate(newCode); }}
+                      placeholder={formData.name ? 'e.g. SHR-001' : 'Select product type first'}
+                      className={`w-full px-4 py-2.5 border-2 rounded-xl text-sm font-medium bg-white focus:outline-none transition-colors ${
+                        !formData.name ? 'border-gray-200 text-gray-400 cursor-not-allowed bg-gray-50'
+                          : codeCheckStatus === 'taken' ? 'border-red-400 focus:border-red-500 text-gray-900'
+                            : codeCheckStatus === 'available' ? 'border-green-400 focus:border-green-500 text-gray-900'
+                              : 'border-gray-300 focus:border-red-500 text-gray-900'
+                      }`}
+                    />
+                    {codeCheckStatus === 'checking' && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs text-gray-400">
+                        <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" /></svg>
+                        Checking code availability…
+                      </p>
+                    )}
+                    {codeCheckStatus === 'taken' && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-red-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" /></svg>
+                        A product with this code already exists — cannot proceed.
+                      </p>
+                    )}
+                    {codeCheckStatus === 'available' && formData.code.trim() && (
+                      <p className="mt-1.5 flex items-center gap-1.5 text-xs font-semibold text-green-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg>
+                        Code is available ✓
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Step 2 Footer */}
+                  <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+                    <button type="button" onClick={() => setAddStep(1)} className="px-5 py-2.5 text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-colors">Back</button>
+                    <button
+                      type="button"
+                      disabled={!formData.name || !formData.code.trim() || codeCheckStatus === 'taken' || codeCheckStatus === 'checking' || codeCheckStatus === 'idle'}
+                      onClick={() => setAddStep(3)}
+                      className="px-6 py-2.5 text-sm font-semibold bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                    >
+                      Next
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                    </button>
+                  </div>
+                </div>
+                );
+              })()}
+
+              {/* ── STEP 3 (Add) or full form (Edit) ── */}
+              {(editingProduct || addStep === 3) && (
                 <>
-                  {/* Step 2 summary pill — back button */}
+                  {/* Step 3 summary pill — back button */}
                   {!editingProduct && (
                     <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl border border-gray-200">
                       <button
                         type="button"
-                        onClick={() => setAddStep(1)}
+                        onClick={() => setAddStep(2)}
                         className="text-gray-400 hover:text-gray-600 transition-colors"
                         title="Go back"
                       >
@@ -1248,8 +1294,10 @@ export default function InventoryPage() {
                         </svg>
                       </button>
                       <div>
-                        <p className="text-xs text-gray-500">Product Type &amp; Code</p>
-                        <p className="text-sm font-semibold text-gray-900">{formData.name} · <span className="font-mono">{formData.code}</span></p>
+                        <p className="text-xs text-gray-500">Category &middot; Product Type &amp; Code</p>
+                        <p className="text-sm font-semibold text-gray-900">
+                          {inventoryCategories.find(c => c.id === formData.category_id)?.name || ''} &middot; {formData.name} &middot; <span className="font-mono">{formData.code}</span>
+                        </p>
                       </div>
                     </div>
                   )}
@@ -1262,58 +1310,23 @@ export default function InventoryPage() {
                         value={formData.name}
                         onChange={(e) => {
                           const newName = e.target.value;
-                          const maleProducts = MALE_PRODUCT_TYPES;
-                          const femaleProducts = FEMALE_PRODUCT_TYPES;
-                          let autoGender = '';
-                          if (maleProducts.includes(newName)) autoGender = 'Male';
-                          else if (femaleProducts.includes(newName)) autoGender = 'Female';
-                          else if (newName === 'Artificial Jewelleries') autoGender = 'Female';
-                          setFormData({ ...formData, name: newName, gender: autoGender, available_sizes: [], rent_overrides: {} });
+                          setFormData({ ...formData, name: newName, available_sizes: [], rent_overrides: {} });
                         }}
                         required
                         className="w-full px-4 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:outline-none focus:ring-2 focus:ring-red-500"
                       >
-                        <optgroup label="Male">
-                          <option value="Sherwani">Sherwani</option>
-                          <option value="Indo Western">Indo Western</option>
-                          <option value="Suit">Suit</option>
-                          <option value="Kurta Pajama">Kurta Pajama</option>
-                        </optgroup>
-                        <optgroup label="Female">
-                          <option value="Lehenga">Lehenga</option>
-                          <option value="Girlish Crop Top">Girlish Crop Top</option>
-                          <option value="Gowns">Gowns</option>
-                          <option value="Artificial Jewelleries">Artificial Jewelleries</option>
-                        </optgroup>
-                        <optgroup label="Special Categories">
-                          <option value="Fancy Costumes">Fancy Costumes</option>
-                          <option value="Other">Other</option>
-                        </optgroup>
+                        {inventoryCategories.map((cat) => (
+                          <optgroup key={cat.id ?? 'neutral'} label={cat.name}>
+                            {(cat.types || []).map((type) => (
+                              <option key={type.id} value={type.name}>{type.name}</option>
+                            ))}
+                          </optgroup>
+                        ))}
                       </select>
                     </div>
                   )}
 
-                  {/* Edit mode: gender for Other */}
-                  {editingProduct && formData.name === 'Other' && (
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">Category (Optional)</label>
-                      <div className="flex space-x-4">
-                        {(['Male', 'Female', ''] as const).map((g) => (
-                          <label key={g || 'none'} className="flex items-center">
-                            <input
-                              type="radio"
-                              name="gender"
-                              value={g}
-                              checked={formData.gender === g}
-                              onChange={() => setFormData({ ...formData, gender: g, available_sizes: [], rent_overrides: {} })}
-                              className="mr-2"
-                            />
-                            <span className="text-sm">{g || 'None'}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+
 
                   {/* Edit mode: code field */}
                   {editingProduct && (
@@ -1354,9 +1367,18 @@ export default function InventoryPage() {
                       <Input
                         label="Purchase Price (₹) *"
                         type="number"
-                        step="0.01"
+                        step="1"
                         value={formData.purchase_price}
-                        onChange={(e) => handlePurchasePriceChange(e.target.value)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (isIntegerInput(val)) {
+                            handlePurchasePriceChange(val);
+                          }
+                        }}
+                        onKeyDown={integerKeyDown(
+                          () => formData.purchase_price,
+                          (v) => handlePurchasePriceChange(v)
+                        )}
                         required
                         placeholder="Enter purchase price"
                       />
@@ -1368,7 +1390,17 @@ export default function InventoryPage() {
                         type="number"
                         step="100"
                         value={formData.rent}
-                        onChange={(e) => setFormData({ ...formData, rent: e.target.value })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (isIntegerInput(val)) {
+                            setFormData({ ...formData, rent: val });
+                          }
+                        }}
+                        onKeyDown={integerKeyDown(
+                          () => formData.rent,
+                          (v) => setFormData({ ...formData, rent: v }),
+                          100
+                        )}
                         required
                       />
                       <p className="text-xs text-gray-500 mt-1">Adjust by ₹100 increments</p>
@@ -1379,7 +1411,17 @@ export default function InventoryPage() {
                         type="number"
                         step="100"
                         value={formData.security_deposit}
-                        onChange={(e) => setFormData({ ...formData, security_deposit: e.target.value })}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (isIntegerInput(val)) {
+                            setFormData({ ...formData, security_deposit: val });
+                          }
+                        }}
+                        onKeyDown={integerKeyDown(
+                          () => formData.security_deposit,
+                          (v) => setFormData({ ...formData, security_deposit: v }),
+                          100
+                        )}
                         onBlur={(e) => {
                           const value = e.target.value;
                           if (value && !isNaN(parseFloat(value))) {
@@ -1403,8 +1445,14 @@ export default function InventoryPage() {
                   </div>
 
                   {/* Sizes */}
-                  {formData.name && !NO_SIZE_TYPES.includes(formData.name) && (() => {
-                    const possibleSizes = getSizesForProduct(formData.name, formData.gender);
+                  {formData.name && (() => {
+                    // Look up the selected product type from categories to get its size_type
+                    const allTypes = inventoryCategories.flatMap(c => c.types || []);
+                    const selectedTypeObj = allTypes.find(t => t.name === formData.name);
+                    const sizeType = selectedTypeObj?.size_type;
+                    // All dynamic types have size_type; if not found, no sizes
+                    if (!sizeType || sizeType === 'none') return null;
+                    const possibleSizes = getSizesForSizeType(sizeType);
                     if (possibleSizes.length === 0) return null;
                     const toggleSize = (sz: string) => {
                       const current = formData.available_sizes;
@@ -1474,10 +1522,27 @@ export default function InventoryPage() {
                                     placeholder={`₹${baseRent}`}
                                     onChange={(e) => {
                                       const val = e.target.value;
-                                      const newOverrides = { ...formData.rent_overrides };
-                                      if (val === '' || parseInt(val) === baseRent) delete newOverrides[sz];
-                                      else newOverrides[sz] = parseInt(val);
-                                      setFormData({ ...formData, rent_overrides: newOverrides });
+                                      if (isIntegerInput(val)) {
+                                        const newOverrides = { ...formData.rent_overrides };
+                                        if (val === '' || parseInt(val) === baseRent) delete newOverrides[sz];
+                                        else newOverrides[sz] = parseInt(val);
+                                        setFormData({ ...formData, rent_overrides: newOverrides });
+                                      }
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                                        e.preventDefault();
+                                        return;
+                                      }
+                                      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                                        e.preventDefault();
+                                        const current = overrideValue ?? baseRent;
+                                        const next = e.key === 'ArrowUp' ? current + 100 : Math.max(0, current - 100);
+                                        const newOverrides = { ...formData.rent_overrides };
+                                        if (next === baseRent) delete newOverrides[sz];
+                                        else newOverrides[sz] = next;
+                                        setFormData({ ...formData, rent_overrides: newOverrides });
+                                      }
                                     }}
                                     className={`w-20 px-2 py-1 text-sm border rounded-lg focus:outline-none focus:ring-1 focus:ring-red-500 ${overrideValue !== undefined ? 'border-blue-400 bg-blue-50' : 'border-gray-300'}`}
                                   />
@@ -1763,7 +1828,7 @@ export default function InventoryPage() {
                 <div className="bg-gray-50 p-3 rounded-lg">
                   <p className="text-xs text-gray-500 uppercase tracking-wide">Category</p>
                   <p className="text-sm font-semibold text-gray-900 mt-1">
-                    {(viewingProduct as any).gender || <span className="text-gray-400">N/A</span>}
+                    {viewingProduct.category_name || <span className="text-gray-400">N/A</span>}
                   </p>
                 </div>
                 <div className="bg-gray-50 p-3 rounded-lg">

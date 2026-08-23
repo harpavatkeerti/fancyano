@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { bookingCancellationApi, bookingsApi } from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { SecurityAllocationSection, computeSecAllocationPreview } from './SecurityAllocationSection';
 import type { EligibleSecProduct, SecAllocationEntry } from './SecurityAllocationSection';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
 interface Product {
   product_id: number;
@@ -84,6 +87,7 @@ export function BookingCancellation({
   const [loading, setLoading] = useState(false);
   const [fetchingPreview, setFetchingPreview] = useState(false);
   const [fetchingSummary, setFetchingSummary] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Product selection for partial cancellation
   const [selectedProducts, setSelectedProducts] = useState<number[]>([]);
@@ -183,7 +187,7 @@ export function BookingCancellation({
 
   async function handleOpenCancelModal() {
     if (!canBeCancelled) {
-      toast.error('This booking cannot be cancelled');
+      addAlert('This booking cannot be cancelled');
       return;
     }
 
@@ -217,7 +221,7 @@ export function BookingCancellation({
       }
     } catch (error: any) {
       console.error('Error fetching cancellation preview:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to fetch cancellation details');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to fetch cancellation details');
     } finally {
       setFetchingPreview(false);
     }
@@ -246,12 +250,12 @@ export function BookingCancellation({
 
   function handleProceedToConfirmation() {
     if (selectedProducts.length === 0) {
-      toast.error('Please select at least one product to cancel');
+      addAlert('Please select at least one product to cancel');
       return;
     }
 
     if (!cancellationReason.trim()) {
-      toast.error('Please provide a cancellation reason');
+      addAlert('Please provide a cancellation reason');
       return;
     }
 
@@ -266,6 +270,7 @@ export function BookingCancellation({
   async function handleConfirmCancellation() {
     try {
       setLoading(true);
+      clearAlerts();
 
       // Compute extra_refund = editedRefund - calculatedRefund
       const calculatedRefund = summary?.calculated_refund ?? 0;
@@ -308,7 +313,7 @@ export function BookingCancellation({
       onCancellationComplete();
     } catch (error: any) {
       console.error('Error cancelling booking:', error);
-      toast.error(error.response?.data?.details || error.response?.data?.error || 'Failed to cancel booking');
+      addAlert(error.response?.data?.details || error.response?.data?.error || 'Failed to cancel booking');
     } finally {
       setLoading(false);
     }
@@ -366,6 +371,8 @@ export function BookingCancellation({
                 </div>
               ) : preview ? (
                 <div className="space-y-6">
+                  {/* Inline alert banner for errors/warnings */}
+                  <AlertBanner alerts={alerts} onDismiss={removeAlert} />
                   {/* Policy Information */}
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                     <h3 className="font-semibold text-blue-900 mb-2">Cancellation Policy</h3>
@@ -533,10 +540,11 @@ export function BookingCancellation({
                                 onChange={(e) => {
                                   const val = e.target.value;
                                   // Only allow integers
-                                  if (val === '' || /^[0-9]+$/.test(val)) {
+                                  if (isIntegerInput(val)) {
                                     setEditedRefund(val);
                                   }
                                 }}
+                                onKeyDown={integerKeyDown(() => editedRefund, (v) => setEditedRefund(v))}
                                 className="w-36 px-3 py-2 border border-yellow-400 rounded-md text-lg font-bold text-green-700 focus:outline-none focus:ring-2 focus:ring-yellow-500 bg-white"
                                 min="0"
                                 max={summary.total_paid_for_selected}

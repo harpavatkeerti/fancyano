@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { complaintsApi, bookingsApi, CreateComplaintData } from '@/lib/api';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 
 interface ComplaintFormProps {
   onClose: () => void;
@@ -19,6 +21,7 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
     booking_id: bookingId,
   });
   const [submitting, setSubmitting] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Booking search state (only used when bookingId is not pre-provided)
   const [bookings, setBookings] = useState<any[]>([]);
@@ -80,24 +83,25 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
     e.preventDefault();
 
     if (!formData.booking_id) {
-      toast.error('Please select an associated booking');
+      addAlert('Please select an associated booking');
       return;
     }
 
     if (!formData.title.trim()) {
-      toast.error('Please enter a title');
+      addAlert('Please enter a title');
       return;
     }
 
     try {
       setSubmitting(true);
+      clearAlerts();
       await complaintsApi.create(formData);
       toast.success('Complaint submitted successfully');
       onSuccess?.();
       onClose();
     } catch (error) {
       console.error('Error submitting complaint:', error);
-      toast.error('Failed to submit complaint');
+      addAlert('Failed to submit complaint');
     } finally {
       setSubmitting(false);
     }
@@ -119,6 +123,8 @@ export default function ComplaintForm({ onClose, onSuccess, userName, bookingId 
 
         {/* Modal Content */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Inline alert banner for validation / submission errors */}
+          <AlertBanner alerts={alerts} onDismiss={removeAlert} />
           <div>
             <p className="text-sm font-medium text-gray-500">Raised by</p>
             <p className="text-sm text-gray-900 mt-0.5">{formData.raised_by}</p>

@@ -5,12 +5,15 @@ import { usersApi } from '@/lib/api';
 import { User } from '@/types';
 import { Button, Input, PhoneInput } from '@/components/common';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
 import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
 import { formatDateWithOrdinal as formatDate } from '@/lib/dateUtils';
 
 export default function UsersPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -50,21 +53,21 @@ export default function UsersPage() {
     // Validate primary phone (create only — locked on edit)
     if (!editingUser) {
       if (!formData.phone) {
-        toast.warning('Mobile number is required');
+        addAlert('Mobile number is required', 'warning');
         return;
       }
       if (!isValidPhoneNumber(formData.phone, formData.phone_country)) {
-        toast.warning('Please enter a valid mobile number');
+        addAlert('Please enter a valid mobile number', 'warning');
         return;
       }
     }
     // Validate alternate phone
     if (!formData.alternate_phone) {
-      toast.warning('Alternate mobile number is required');
+      addAlert('Alternate mobile number is required', 'warning');
       return;
     }
     if (!isValidPhoneNumber(formData.alternate_phone, formData.alternate_phone_country)) {
-      toast.warning('Please enter a valid alternate mobile number');
+      addAlert('Please enter a valid alternate mobile number', 'warning');
       return;
     }
     // Check both are not the same
@@ -73,7 +76,7 @@ export default function UsersPage() {
     const full1 = `${c1?.callingCode}${formData.phone}`;
     const full2 = `${c2?.callingCode}${formData.alternate_phone}`;
     if (full1 === full2) {
-      toast.warning('Mobile number and alternate mobile number cannot be the same');
+      addAlert('Mobile number and alternate mobile number cannot be the same', 'warning');
       return;
     }
     try {
@@ -106,7 +109,7 @@ export default function UsersPage() {
       toast.success(editingUser ? 'User updated successfully' : 'User created successfully');
     } catch (error: any) {
       const msg = error?.response?.data?.error || (editingUser ? 'Error updating user' : 'Error creating user');
-      toast.error(msg);
+      addAlert(msg);
     }
   }
 
@@ -128,7 +131,7 @@ export default function UsersPage() {
       setShowAddModal(true);
     } catch (error) {
       console.error('Error fetching user details:', error);
-      toast.error('Failed to load user details');
+      addAlert('Failed to load user details');
     }
   }
 
@@ -151,7 +154,7 @@ export default function UsersPage() {
       toast.success('Customer deactivated successfully');
     } catch (error: any) {
       const msg = error?.response?.data?.error || 'Error deactivating customer';
-      toast.error(msg);
+      addAlert(msg);
     }
   }
 
@@ -251,6 +254,8 @@ export default function UsersPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       {/* Page Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-black">User Management:</h1>

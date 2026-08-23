@@ -4,6 +4,8 @@ import { productTrackingApi, ProductTracking, TrackingStatus, TRACKING_STATUS_LA
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/common';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
 
 import { Product } from '@/types';
@@ -25,6 +27,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
   const [trackingType, setTrackingType] = useState<TrackingStatus | ''>('');
   const [notes, setNotes] = useState('');
   const [loading, setLoading] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   useEffect(() => {
     if (productId) {
@@ -78,7 +81,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
         setSelectedProduct(product);
         await fetchTrackingHistory(product.id);
       } else {
-        toast.error(`Product with code "${code}" not found`);
+        addAlert(`Product with code "${code}" not found`);
       }
     } catch (error) {
       console.error('Error searching product:', error);
@@ -99,6 +102,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
 
     try {
       setLoading(true);
+      clearAlerts();
       await productTrackingApi.create({
         product_id: selectedProduct.id,
         booking_id: bookingId,
@@ -114,7 +118,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
       toast.success('Product tracked out successfully.');
     } catch (error: any) {
       console.error('Error creating tracking record:', error);
-      toast.error(error?.response?.data?.error || 'Error creating tracking record');
+      addAlert(error?.response?.data?.error || 'Error creating tracking record');
     } finally {
       setLoading(false);
     }
@@ -140,7 +144,7 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
       toast.success('Product marked as returned — now In House.');
     } catch (error) {
       console.error('Error marking as returned:', error);
-      toast.error('Error marking product as returned');
+      addAlert('Error marking product as returned');
     } finally {
       setLoading(false);
     }
@@ -165,6 +169,9 @@ export function ProductTrackingModal({ onClose, productId, productCode, bookingI
             ×
           </button>
         </div>
+
+        {/* Inline alert banner for errors */}
+        <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
 
         {/* Product Info */}
         {selectedProduct && (

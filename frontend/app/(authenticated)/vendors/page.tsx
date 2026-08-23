@@ -5,12 +5,15 @@ import { vendorsApi, Vendor } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import PhoneInput from '@/components/common/PhoneInput';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
 import { formatDateWithOrdinal as formatDate } from '@/lib/dateUtils';
 import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
 
 export default function VendorsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -42,7 +45,7 @@ export default function VendorsPage() {
       setVendors(response.data);
     } catch (error) {
       console.error('Error fetching vendors:', error);
-      toast.error('Failed to load vendors');
+      addAlert('Failed to load vendors');
     } finally {
       setLoading(false);
     }
@@ -53,23 +56,23 @@ export default function VendorsPage() {
 
     // Frontend validation (backend is authoritative)
     if (!formData.name.trim()) {
-      toast.warning('Vendor name is required');
+      addAlert('Vendor name is required', 'warning');
       return;
     }
     if (!formData.phone.trim()) {
-      toast.warning('Phone number is required');
+      addAlert('Phone number is required', 'warning');
       return;
     }
     if (formData.gst_number.trim() && !GST_REGEX.test(formData.gst_number.trim())) {
-      toast.warning('Invalid GST number format. Expected format: 22AAAAA0000A1Z5 (15 characters)');
+      addAlert('Invalid GST number format. Expected format: 22AAAAA0000A1Z5 (15 characters)', 'warning');
       return;
     }
     if (formData.pan_number.trim() && !PAN_REGEX.test(formData.pan_number.trim())) {
-      toast.warning('Invalid PAN number format. Expected format: ABCDE1234F (10 characters)');
+      addAlert('Invalid PAN number format. Expected format: ABCDE1234F (10 characters)', 'warning');
       return;
     }
     if (formData.notes.length > 255) {
-      toast.warning('Notes must be 255 characters or fewer');
+      addAlert('Notes must be 255 characters or fewer', 'warning');
       return;
     }
 
@@ -103,7 +106,7 @@ export default function VendorsPage() {
       resetForm();
     } catch (error: any) {
       const msg = error?.response?.data?.error || (editingVendor ? 'Error updating vendor' : 'Error creating vendor');
-      toast.error(msg);
+      addAlert(msg);
     }
   }
 
@@ -142,7 +145,7 @@ export default function VendorsPage() {
       toast.success('Vendor deleted successfully');
     } catch (error: any) {
       const msg = error?.response?.data?.error || 'Error deleting vendor';
-      toast.error(msg);
+      addAlert(msg);
     }
   }
 
@@ -274,6 +277,8 @@ export default function VendorsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       {/* Page Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-black">Vendor Management:</h1>
