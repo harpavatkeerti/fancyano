@@ -2,10 +2,13 @@
 
 import { paymentTransactionsApi, bookingsApi, lifecycleApi, type PaymentTransaction, type PaymentSummary } from '@/lib/api';
 import { useEffect, useState } from 'react';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 import { SecurityAllocationSection } from './SecurityAllocationSection';
 import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
 import { RefundSettlementSection } from './RefundSettlementSection';
@@ -182,12 +185,12 @@ export function PaymentManagement({
     try {
       const amount = parseFloat(formData.amount);
       if (isNaN(amount) || amount <= 0) {
-        toast.warning('Please enter a valid amount');
+        addAlert('Please enter a valid amount', 'warning');
         return;
       }
 
       if (!formData.method) {
-        toast.warning('Please select a payment method');
+        addAlert('Please select a payment method', 'warning');
         return;
       }
 
@@ -197,7 +200,7 @@ export function PaymentManagement({
         const remainingBalance = getOutstandingBalance();
 
         if (amount > remainingBalance) {
-          toast.error(`Payment exceeds outstanding balance. Maximum allowed: ₹${Math.floor(remainingBalance).toLocaleString('en-IN')}`);
+          addAlert(`Payment exceeds outstanding balance. Maximum allowed: ₹${Math.floor(remainingBalance).toLocaleString('en-IN')}`);
           return;
         }
       }
@@ -219,6 +222,7 @@ export function PaymentManagement({
       }
 
       await paymentTransactionsApi.create(payload);
+      clearAlerts();
 
       // Auto-confirm booking on first payment if still pending
       if (transactionType === 'payment' && bookingStatus === 'pending') {
@@ -243,7 +247,7 @@ export function PaymentManagement({
     } catch (error) {
       console.error('Error recording transaction:', error);
       const message = (error as any).response?.data?.details || (error as any).response?.data?.error || 'Error recording transaction';
-      toast.error(message);
+      addAlert(message);
     }
   }
 
@@ -328,6 +332,8 @@ export function PaymentManagement({
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for payment errors/warnings */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       {/* Payment Summary - Hide for fully cancelled bookings */}
       {!isFullyCancelled && (
         <div className="bg-white border border-gray-200 rounded-lg p-6">
@@ -658,6 +664,9 @@ export function PaymentManagement({
               </button>
             </div>
 
+            {/* Alert banner INSIDE the refund modal */}
+            <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-2" />
+
             {/* Product list — shown when no product is selected yet */}
             {refundProductId === null ? (
               <div className="space-y-3">
@@ -722,6 +731,9 @@ export function PaymentManagement({
               {transactionType === 'payment' ? '💰 Collect Payment' : transactionType === 'refund' ? '💸 Refund Payment' : 'Record Adjustment'}
             </h3>
 
+            {/* Alert banner INSIDE the modal so errors are visible over the overlay */}
+            <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-2" />
+
             <div className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -730,7 +742,16 @@ export function PaymentManagement({
                 <input
                   type="number"
                   value={formData.amount}
-                  onChange={(e) => setFormData({ ...formData, amount: e.target.value })}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (isIntegerInput(val)) {
+                      setFormData({ ...formData, amount: val });
+                    }
+                  }}
+                  onKeyDown={integerKeyDown(
+                    () => formData.amount,
+                    (v) => setFormData({ ...formData, amount: v })
+                  )}
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="Enter amount"
                 />

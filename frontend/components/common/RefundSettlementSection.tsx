@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { lifecycleApi } from '@/lib/api';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { SecurityAllocationSection } from './SecurityAllocationSection';
 import type { EligibleSecProduct, SecAllocationEntry } from './SecurityAllocationSection';
@@ -243,9 +244,17 @@ export function RefundSettlementSection({
             max={calc.total_security}
             placeholder="₹ 0"
             value={lateFeeInput}
-            onChange={e => setLateFeeInput(e.target.value)}
+            onChange={e => {
+              const val = e.target.value;
+              if (isIntegerInput(val)) {
+                setLateFeeInput(val);
+              }
+            }}
             onBlur={handleFeeCommit}
-            onKeyDown={e => e.key === 'Enter' && handleFeeCommit()}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { handleFeeCommit(); return; }
+              integerKeyDown(() => lateFeeInput, setLateFeeInput)(e);
+            }}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm"
           />
           {calc.late_fee_days > 0 && (
@@ -267,9 +276,17 @@ export function RefundSettlementSection({
             max={calc.total_security}
             placeholder="₹ 0"
             value={damageFeeInput}
-            onChange={e => setDamageFeeInput(e.target.value)}
+            onChange={e => {
+              const val = e.target.value;
+              if (isIntegerInput(val)) {
+                setDamageFeeInput(val);
+              }
+            }}
             onBlur={handleFeeCommit}
-            onKeyDown={e => e.key === 'Enter' && handleFeeCommit()}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { handleFeeCommit(); return; }
+              integerKeyDown(() => damageFeeInput, setDamageFeeInput)(e);
+            }}
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-orange-400 text-sm"
           />
         </div>
