@@ -6,7 +6,8 @@ import { productsApi, bookingsApi, availabilityApi } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
-import { DateRangePicker } from '@/components/common';
+import { DateRangePicker, TightScheduleWarningModal } from '@/components/common';
+import type { UrgentConflict } from '@rental/shared';
 import { toast } from '@/lib/toast';
 import { sortSizes } from '@/lib/productConstants';
 
@@ -27,7 +28,7 @@ export default function ProductDetailPage() {
 
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
-  const [warningMessage, setWarningMessage] = useState('');
+  const [warningConflicts, setWarningConflicts] = useState<UrgentConflict[]>([]);
   const [pendingAddToCart, setPendingAddToCart] = useState(false);
 
   useEffect(() => {
@@ -178,7 +179,7 @@ export default function ProductDetailPage() {
 
   async function checkTightSchedule() {
     if (!product || !dateFrom || !dateTo) {
-      return { hasTightSchedule: false, message: '' };
+      return { hasTightSchedule: false, conflicts: [] };
     }
 
     try {
@@ -192,14 +193,14 @@ export default function ProductDetailPage() {
       if (response.data.has_tight_schedule) {
         return {
           hasTightSchedule: true,
-          message: response.data.warnings.join(' ')
+          conflicts: response.data.conflicts
         };
       }
 
-      return { hasTightSchedule: false, message: '' };
+      return { hasTightSchedule: false, conflicts: [] };
     } catch (error) {
       console.error('Error checking tight schedule:', error);
-      return { hasTightSchedule: false, message: '' };
+      return { hasTightSchedule: false, conflicts: [] };
     }
   }
 
@@ -256,7 +257,7 @@ export default function ProductDetailPage() {
     // Check for tight schedule (bookings within 2 days)
     const tightScheduleCheck = await checkTightSchedule();
     if (tightScheduleCheck.hasTightSchedule) {
-      setWarningMessage(tightScheduleCheck.message);
+      setWarningConflicts(tightScheduleCheck.conflicts);
       setShowWarningModal(true);
       setPendingAddToCart(true);
       // Navigation will happen after the user confirms the warning modal
@@ -609,50 +610,24 @@ export default function ProductDetailPage() {
 
 
       {/* Tight Schedule Warning Modal */}
-      {showWarningModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <div className="flex items-start gap-4 mb-6">
-              <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
-                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
-                <p className="text-sm text-gray-600">
-                  {warningMessage} Do you still want to proceed?
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => {
-                  setShowWarningModal(false);
-                  setPendingAddToCart(false);
-                }}
-                className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowWarningModal(false);
-                  const wasPendingBookNow = pendingAddToCart;
-                  setPendingAddToCart(false);
-                  addToCartConfirmed();
-                  // If triggered via Book Now, navigate to cart after confirming
-                  if (wasPendingBookNow) {
-                    router.push('/cart');
-                  }
-                }}
-                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
-              >
-                Continue
-              </button>
-            </div>
-          </div>
-        </div>
+      {showWarningModal && warningConflicts.length > 0 && (
+        <TightScheduleWarningModal
+          conflicts={warningConflicts}
+          onCancel={() => {
+            setShowWarningModal(false);
+            setPendingAddToCart(false);
+          }}
+          onContinue={() => {
+            setShowWarningModal(false);
+            const wasPendingBookNow = pendingAddToCart;
+            setPendingAddToCart(false);
+            addToCartConfirmed();
+            // If triggered via Book Now, navigate to cart after confirming
+            if (wasPendingBookNow) {
+              router.push('/cart');
+            }
+          }}
+        />
       )}
     </div>
   );

@@ -48,6 +48,7 @@ const routePermissions = {
     '/api/booking-discard':     'bookingDiscard',
     '/api/lifecycle':           'productLifecycle',
     '/api/booking-preview':     'bookingPreview',
+    '/api/product-categories':  'productCategories',
   }
 };
 

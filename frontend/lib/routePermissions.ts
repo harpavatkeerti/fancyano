@@ -24,8 +24,8 @@ const routePermissions = {
     '/credit-notes':['admin'] as Role[],
     '/reports':     ['admin'] as Role[],
     '/settings':    ['admin'] as Role[],
-    // /bookings (list) is admin-only, but /bookings/[id] is shared
-    '/bookings':    ['admin'] as Role[],
+    // /bookings (list) is shared between admin and salesman; /bookings/[id] is shared too
+    '/bookings':    ['admin', 'salesman'] as Role[],
   },
 };
 

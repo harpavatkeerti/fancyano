@@ -128,3 +128,38 @@ export function getSizesForProduct(productType: string, gender?: string | null):
   // Fallback: no known type — return empty
   return [];
 }
+
+// ── Size-type based helper (for dynamic product types from DB) ──────────────
+
+/**
+ * Returns the valid sizes for a given size_type value from the product_types table.
+ * This replaces hardcoded product-type-to-size mapping for dynamically created types.
+ * @param sizeType - 'numeric' | 'standard' | 'fancy' | 'none'
+ */
+export function getSizesForSizeType(sizeType: string): string[] {
+  switch (sizeType) {
+    case 'numeric':
+      return [...MALE_NUMERIC_SIZES];
+    case 'standard':
+      return STANDARD_SIZES.map(s => s.value);
+    case 'fancy':
+      return [...FANCY_COSTUME_SIZES];
+    case 'none':
+      return [];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Returns the size type label for display.
+ */
+export function getSizeTypeLabel(sizeType: string): string {
+  switch (sizeType) {
+    case 'numeric':  return 'Numeric (34–46)';
+    case 'standard': return 'Standard (S–XXL)';
+    case 'fancy':    return 'Age-Based';
+    case 'none':     return 'No Sizes';
+    default:         return sizeType;
+  }
+}

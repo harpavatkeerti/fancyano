@@ -1,41 +1,63 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { productsApi } from '@/lib/api';
+import { productsApi, productCategoriesApi } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
 
+interface CategoryWithTypes {
+  id: number | null;
+  name: string;
+  types?: { id: number; name: string; category_id: number | null }[];
+}
+
 export default function SalesmanHome() {
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
-  const [genderFilter, setGenderFilter] = useState<'Male' | 'Female'>('Male');
+  const [categories, setCategories] = useState<CategoryWithTypes[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<string>('');
 
   useEffect(() => {
-    fetchProducts();
+    fetchData();
   }, []);
 
-  async function fetchProducts() {
+  async function fetchData() {
     try {
-      const response = await productsApi.getAll();
-      setProducts(response.data);
+      const [productsRes, categoriesRes] = await Promise.all([
+        productsApi.getAll(),
+        productCategoriesApi.getAll(),
+      ]);
+      setProducts(productsRes.data);
+
+      // Extract real categories (exclude the virtual "Accessories & Others" with id=null)
+      const cats: CategoryWithTypes[] = (categoriesRes.data.categories || []).filter((c: any) => c.id !== null);
+      setCategories(cats);
+
+      // Default to first category
+      if (cats.length > 0) {
+        setCategoryFilter(cats[0].name);
+      }
     } catch (error) {
-      console.error('Error fetching products:', error);
+      console.error('Error fetching data:', error);
     } finally {
       setLoading(false);
     }
   }
 
-  // Filter products by selected gender
-  const filteredProducts = products.filter(
-    (p) => (p as any).gender === genderFilter
-  );
+  // Filter products by selected category
+  const filteredProducts = categoryFilter
+    ? products.filter((p) => p.category_name === categoryFilter)
+    : products;
 
-  // Get newly added products (last 4 of filtered)
-  const newlyAdded = filteredProducts.slice(-4);
+  // Get product types for the selected category (for the Categories grid)
+  const selectedCat = categories.find(c => c.name === categoryFilter);
+  const categoryTypes = selectedCat?.types || [];
 
-  // Get products for continue browsing (first 4 of filtered)
-  const continueBrowsing = filteredProducts.slice(0, 4);
+  // Get newly added products sorted by created_at (most recent first)
+  const newlyAdded = [...filteredProducts]
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, 4);
 
   if (loading) {
     return (
@@ -59,51 +81,29 @@ export default function SalesmanHome() {
         </div>
       </div>
 
-      {/* Gender Filter Buttons - Compact */}
-      <div className="flex gap-3 mb-8">
-        <button
-          onClick={() => setGenderFilter('Male')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold transition-all duration-200 cursor-pointer
-            ${genderFilter === 'Male'
-              ? 'bg-red-600 text-white shadow-md shadow-red-200'
-              : 'bg-white text-gray-600 border border-gray-300 hover:border-red-300 hover:text-red-600'
-            }`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="7" r="4" fill="currentColor" />
-            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="currentColor" />
-          </svg>
-          FOR MEN
-          {genderFilter === 'Male' && (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          )}
-        </button>
-
-        <button
-          onClick={() => setGenderFilter('Female')}
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold transition-all duration-200 cursor-pointer
-            ${genderFilter === 'Female'
-              ? 'bg-red-600 text-white shadow-md shadow-red-200'
-              : 'bg-white text-gray-600 border border-gray-300 hover:border-red-300 hover:text-red-600'
-            }`}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="12" cy="7" r="4" fill="currentColor" />
-            <path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" fill="currentColor" />
-            <rect x="10" y="3" width="4" height="1" rx="0.5" fill="currentColor" opacity="0.5" />
-          </svg>
-          FOR WOMEN
-          {genderFilter === 'Female' && (
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
-          )}
-        </button>
+      {/* Category Filter Buttons */}
+      <div className="flex gap-3 mb-8 flex-wrap">
+        {categories.map((cat) => (
+          <button
+            key={cat.id}
+            onClick={() => setCategoryFilter(cat.name)}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-full text-sm font-semibold transition-all duration-200 cursor-pointer
+              ${categoryFilter === cat.name
+                ? 'bg-red-600 text-white shadow-md shadow-red-200'
+                : 'bg-white text-gray-600 border border-gray-300 hover:border-red-300 hover:text-red-600'
+              }`}
+          >
+            {cat.name}
+            {categoryFilter === cat.name && (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            )}
+          </button>
+        ))}
       </div>
 
-      {/* Categories Section */}
+      {/* Product Types in selected category */}
       <div className="mb-12">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-2xl font-bold text-gray-900">Categories</h2>
@@ -115,26 +115,20 @@ export default function SalesmanHome() {
           </Link>
         </div>
         <div className="grid grid-cols-4 gap-6">
-          {(() => {
-            // Deduplicate by product name — show one card per unique name
-            const seen = new Set<string>();
-            const uniqueCategories = filteredProducts.filter((p) => {
-              if (seen.has(p.name)) return false;
-              seen.add(p.name);
-              return true;
-            }).slice(0, 4);
-
-            return uniqueCategories.map((product) => (
+          {categoryTypes.slice(0, 4).map((type) => {
+            // Find a representative product for this type to get its image
+            const representativeProduct = filteredProducts.find(p => p.name === type.name);
+            return (
               <Link
-                key={product.name}
-                href={`/products?search=${encodeURIComponent(product.name)}`}
+                key={type.id}
+                href={`/products?search=${encodeURIComponent(type.name)}`}
                 className="group"
               >
                 <div className="relative aspect-[3/4] rounded-lg overflow-hidden mb-3 bg-gray-100">
-                  {getImageUrl((product as any).image) ? (
+                  {representativeProduct && getImageUrl((representativeProduct as any).image) ? (
                     <img
-                      src={getImageUrl((product as any).image)!}
-                      alt={product.name}
+                      src={getImageUrl((representativeProduct as any).image)!}
+                      alt={type.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                     />
                   ) : (
@@ -143,10 +137,10 @@ export default function SalesmanHome() {
                     </div>
                   )}
                 </div>
-                <h3 className="font-semibold text-gray-900">{product.name}</h3>
+                <h3 className="font-semibold text-gray-900">{type.name}</h3>
               </Link>
-            ));
-          })()}
+            );
+          })}
         </div>
       </div>
 
@@ -163,41 +157,6 @@ export default function SalesmanHome() {
         </div>
         <div className="grid grid-cols-4 gap-6">
           {newlyAdded.map((product) => (
-            <Link
-              key={product.id}
-              href={`/products/${product.id}`}
-              className="group bg-white rounded-lg overflow-hidden border border-gray-200 hover:shadow-lg transition-shadow"
-            >
-              <div className="relative aspect-[3/4] bg-gray-100">
-                {getImageUrl((product as any).image) ? (
-                  <img
-                    src={getImageUrl((product as any).image)!}
-                    alt={product.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center bg-gray-200">
-                    <span className="text-4xl">👔</span>
-                  </div>
-                )}
-              </div>
-              <div className="p-4">
-                <h3 className="font-semibold text-gray-900 mb-1">{product.name}</h3>
-                <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
-                {(product as any).security_deposit > 0 && (
-                  <p className="text-gray-500 text-xs mt-0.5">Security: ₹{Math.floor((product as any).security_deposit).toLocaleString('en-IN')}</p>
-                )}
-              </div>
-            </Link>
-          ))}
-        </div>
-      </div>
-
-      {/* Continue Browsing */}
-      <div className="mb-12">
-        <h2 className="text-2xl font-bold text-gray-900 mb-6">Continue Browsing...</h2>
-        <div className="grid grid-cols-4 gap-6">
-          {continueBrowsing.map((product) => (
             <Link
               key={product.id}
               href={`/products/${product.id}`}

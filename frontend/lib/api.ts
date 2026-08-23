@@ -30,6 +30,7 @@ export const creditNotesApi = api.creditNotes;
 export const productTrackingApi = api.productTracking;
 export const invoicesApi = api.invoices;
 export const vendorsApi = api.vendors;
+export const productCategoriesApi = api.productCategories;
 
 // ── Re-export types from shared ──
 export type {
@@ -45,6 +46,8 @@ export type {
   BookingActivityLog,
   BookingExchangeHistory,
   BookingCancellationHistory,
+  ProductCategory,
+  ProductTypeDefinition,
 } from '@rental/shared';
 
 export type { AvailabilityCheckRequest, AvailabilityResponse, AvailabilityConflict } from '@rental/shared';

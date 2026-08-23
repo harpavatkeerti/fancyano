@@ -1,9 +1,14 @@
 'use client';
 
-import { settingsApi, policiesApi } from '@/lib/api';
+import { settingsApi, policiesApi, productCategoriesApi, ProductCategory, ProductTypeDefinition } from '@/lib/api';
 import { useState, useEffect, useRef } from 'react';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
+
+import { getSizeTypeLabel } from '@/lib/productConstants';
 
 // Each policy tier = one row in rental_policies table
 interface PolicyTier {
@@ -24,6 +29,7 @@ interface SalesmanPermissions {
 
 export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [saving, setSaving] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [editingPolicyType, setEditingPolicyType] = useState<'exchange' | 'cancellation' | null>(null);
@@ -49,6 +55,17 @@ export default function SettingsPage() {
   // Late fee policy (from rental_policies table)
   const [lateFeePolicy, setLateFeePolicy] = useState<any>(null);
   const [lateFeeValue, setLateFeeValue] = useState<string>('200');
+
+  // ── Product Categories & Types state ──────────────────────────────────────
+  const [productCategories, setProductCategories] = useState<ProductCategory[]>([]);
+  const [expandedCategory, setExpandedCategory] = useState<number | null>(null);
+  const [showAddCategoryForm, setShowAddCategoryForm] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [editingCategory, setEditingCategory] = useState<{ id: number; name: string } | null>(null);
+  const [showAddTypeForm, setShowAddTypeForm] = useState<number | null>(null);
+  const [newTypeName, setNewTypeName] = useState('');
+  const [newTypeSizeType, setNewTypeSizeType] = useState('standard');
+  const [editingType, setEditingType] = useState<{ id: number; name: string; size_type: string } | null>(null);
 
   // Payment QR Codes (dual)
   const [rentQrCode, setRentQrCode] = useState<string>('');
@@ -146,6 +163,98 @@ export default function SettingsPage() {
       console.error('Error fetching settings:', error);
     } finally {
       setLoading(false);
+    }
+  }
+
+  // ── Product Categories CRUD ────────────────────────────────────────────────
+
+  async function fetchCategories() {
+    try {
+      const response = await productCategoriesApi.getAll();
+      setProductCategories(response.data.categories || []);
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+    }
+  }
+
+  // Fetch categories on mount
+  useEffect(() => { fetchCategories(); }, []);
+
+  async function handleAddCategory() {
+    if (!newCategoryName.trim()) return;
+    try {
+      await productCategoriesApi.create({ name: newCategoryName.trim() });
+      toast.success(`Category "${newCategoryName.trim()}" created`);
+      setNewCategoryName('');
+      setShowAddCategoryForm(false);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to create category');
+    }
+  }
+
+  async function handleUpdateCategory(id: number, name: string) {
+    try {
+      await productCategoriesApi.update(id, { name: name.trim() });
+      toast.success('Category updated');
+      setEditingCategory(null);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to update category');
+    }
+  }
+
+  async function handleDeleteCategory(id: number, name: string) {
+    if (!confirm(`Delete category "${name}"? This will also deactivate all product types under it.`)) return;
+    try {
+      await productCategoriesApi.delete(id);
+      toast.success(`Category "${name}" deleted`);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to delete category');
+    }
+  }
+
+  async function handleAddType(categoryId: number) {
+    if (!newTypeName.trim()) return;
+    try {
+      await productCategoriesApi.addType(categoryId, {
+        name: newTypeName.trim(),
+        size_type: newTypeSizeType,
+      });
+      toast.success(`Product type "${newTypeName.trim()}" added`);
+      setNewTypeName('');
+      setNewTypeSizeType('standard');
+      setShowAddTypeForm(null);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to add product type');
+    }
+  }
+
+  async function handleUpdateType(typeId: number) {
+    if (!editingType) return;
+    try {
+      await productCategoriesApi.updateType(typeId, {
+        name: editingType.name.trim(),
+        size_type: editingType.size_type,
+      });
+      toast.success('Product type updated');
+      setEditingType(null);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to update product type');
+    }
+  }
+
+  async function handleDeleteType(typeId: number, typeName: string) {
+    if (!confirm(`Delete product type "${typeName}"? This cannot be undone if products are using it.`)) return;
+    try {
+      await productCategoriesApi.deleteType(typeId);
+      toast.success(`Product type "${typeName}" deleted`);
+      fetchCategories();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to delete product type');
     }
   }
 
@@ -286,7 +395,7 @@ export default function SettingsPage() {
       toast.success('Settings saved successfully!');
     } catch (error: any) {
       console.error('Error saving settings:', error);
-      toast.error('Error saving settings. Please try again.');
+      addAlert('Error saving settings. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -336,7 +445,7 @@ export default function SettingsPage() {
       closeEditModal();
     } catch (error: any) {
       console.error('Error saving policy:', error);
-      toast.error(error?.response?.data?.details || error?.response?.data?.error || 'Error saving policy. Please try again.');
+      addAlert(error?.response?.data?.details || error?.response?.data?.error || 'Error saving policy. Please try again.');
     }
   }
 
@@ -361,7 +470,240 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for settings errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       <h1 className="text-3xl font-bold text-gray-800 mb-6">Settings & Policies</h1>
+
+      {/* Exchange Policy Section */}
+
+      {/* ═══ Product Categories & Types ═══ */}
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+        <div className="flex justify-between items-center mb-5">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-800">Product Categories & Types</h2>
+            <p className="text-sm text-gray-500 mt-1">Manage Men, Women, Kids categories and their product types (Sherwani, Lehenga, etc.)</p>
+          </div>
+          <button
+            onClick={() => { setShowAddCategoryForm(true); setNewCategoryName(''); }}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-colors"
+          >
+            + Add Category
+          </button>
+        </div>
+
+        {/* Add category form */}
+        {showAddCategoryForm && (
+          <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <div className="flex items-center gap-3">
+              <input
+                type="text"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+                placeholder="Category name (e.g. Kids, Unisex)"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                autoFocus
+                onKeyDown={(e) => e.key === 'Enter' && handleAddCategory()}
+              />
+              <button
+                onClick={handleAddCategory}
+                disabled={!newCategoryName.trim()}
+                className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Add
+              </button>
+              <button
+                onClick={() => setShowAddCategoryForm(false)}
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Categories list */}
+        {productCategories.length === 0 ? (
+          <p className="text-gray-500 text-sm py-4">No categories yet. Click "+ Add Category" to create one.</p>
+        ) : (
+          <div className="space-y-3">
+            {productCategories.map((cat) => {
+              const isExpanded = expandedCategory === cat.id;
+              // Filter out neutral types for display under each category
+              const categoryTypes = cat.types.filter(t => t.category_id === cat.id);
+              const neutralTypes = cat.types.filter(t => t.category_id === null);
+
+              return (
+                <div key={cat.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                  {/* Category header */}
+                  <div
+                    className="flex items-center justify-between px-4 py-3 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                    onClick={() => setExpandedCategory(isExpanded ? null : cat.id)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-lg">{isExpanded ? '▼' : '▶'}</span>
+                      {editingCategory?.id === cat.id ? (
+                        <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            value={editingCategory.name}
+                            onChange={(e) => setEditingCategory({ ...editingCategory, name: e.target.value })}
+                            className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                            autoFocus
+                            onKeyDown={(e) => e.key === 'Enter' && handleUpdateCategory(cat.id, editingCategory.name)}
+                          />
+                          <button onClick={() => handleUpdateCategory(cat.id, editingCategory.name)} className="text-green-600 hover:text-green-700 text-sm font-medium">Save</button>
+                          <button onClick={() => setEditingCategory(null)} className="text-gray-500 hover:text-gray-700 text-sm">Cancel</button>
+                        </div>
+                      ) : (
+                        <span className="font-semibold text-gray-800">{cat.name}</span>
+                      )}
+                      <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded-full">
+                        {categoryTypes.length} type{categoryTypes.length !== 1 ? 's' : ''}
+                        {neutralTypes.length > 0 && ` + ${neutralTypes.length} shared`}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        onClick={() => setEditingCategory({ id: cat.id, name: cat.name })}
+                        className="text-blue-600 hover:text-blue-700 text-sm font-medium"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCategory(cat.id, cat.name)}
+                        className="text-red-600 hover:text-red-700 text-sm font-medium"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Expanded: product types */}
+                  {isExpanded && (
+                    <div className="px-4 py-3 border-t border-gray-200">
+                      {/* Category-specific types */}
+                      {categoryTypes.length === 0 && (
+                        <p className="text-gray-400 text-sm italic mb-3">No product types yet for this category.</p>
+                      )}
+                      <div className="space-y-2">
+                        {categoryTypes.map((type) => (
+                          <div key={type.id} className="flex items-center justify-between py-2 px-3 bg-white rounded border border-gray-100">
+                            {editingType?.id === type.id ? (
+                              <div className="flex items-center gap-2 flex-1">
+                                <input
+                                  type="text"
+                                  value={editingType.name}
+                                  onChange={(e) => setEditingType({ ...editingType, name: e.target.value })}
+                                  className="px-2 py-1 border border-gray-300 rounded text-sm flex-1 focus:outline-none focus:ring-2 focus:ring-red-500"
+                                  autoFocus
+                                />
+                                <select
+                                  value={editingType.size_type}
+                                  onChange={(e) => setEditingType({ ...editingType, size_type: e.target.value })}
+                                  className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                                >
+                                  <option value="numeric">Numeric (34–46)</option>
+                                  <option value="standard">Standard (S–XXL)</option>
+                                  <option value="fancy">Age-Based</option>
+                                  <option value="none">No Sizes</option>
+                                </select>
+                                <button onClick={() => handleUpdateType(type.id)} className="text-green-600 hover:text-green-700 text-sm font-medium">Save</button>
+                                <button onClick={() => setEditingType(null)} className="text-gray-500 hover:text-gray-700 text-sm">Cancel</button>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="flex items-center gap-3">
+                                  <span className="text-sm font-medium text-gray-800">{type.name}</span>
+                                  <span className="text-xs text-gray-500 bg-blue-50 px-2 py-0.5 rounded">{getSizeTypeLabel(type.size_type)}</span>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={() => setEditingType({ id: type.id, name: type.name, size_type: type.size_type })}
+                                    className="text-blue-600 hover:text-blue-700 text-xs"
+                                  >
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteType(type.id, type.name)}
+                                    className="text-red-600 hover:text-red-700 text-xs"
+                                  >
+                                    Delete
+                                  </button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Neutral types (read-only under each category) */}
+                      {neutralTypes.length > 0 && (
+                        <div className="mt-3 pt-3 border-t border-dashed border-gray-200">
+                          <p className="text-xs text-gray-500 mb-2 font-medium">Shared types (shown for all categories):</p>
+                          <div className="flex flex-wrap gap-2">
+                            {neutralTypes.map((type) => (
+                              <span key={type.id} className="text-xs bg-gray-100 text-gray-600 px-2.5 py-1 rounded-full">
+                                {type.name} · {getSizeTypeLabel(type.size_type)}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Add product type form */}
+                      {showAddTypeForm === cat.id ? (
+                        <div className="mt-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="text"
+                              value={newTypeName}
+                              onChange={(e) => setNewTypeName(e.target.value)}
+                              placeholder="Product type name (e.g. Designer Lehenga)"
+                              className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                              autoFocus
+                              onKeyDown={(e) => e.key === 'Enter' && handleAddType(cat.id)}
+                            />
+                            <select
+                              value={newTypeSizeType}
+                              onChange={(e) => setNewTypeSizeType(e.target.value)}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                            >
+                              <option value="numeric">Numeric (34–46)</option>
+                              <option value="standard">Standard (S–XXL)</option>
+                              <option value="fancy">Age-Based</option>
+                              <option value="none">No Sizes</option>
+                            </select>
+                            <button
+                              onClick={() => handleAddType(cat.id)}
+                              disabled={!newTypeName.trim()}
+                              className="px-3 py-1.5 bg-red-600 text-white text-sm rounded hover:bg-red-700 disabled:opacity-50 transition-colors"
+                            >
+                              Add
+                            </button>
+                            <button
+                              onClick={() => { setShowAddTypeForm(null); setNewTypeName(''); }}
+                              className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-sm rounded hover:bg-gray-50 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setShowAddTypeForm(cat.id); setNewTypeName(''); setNewTypeSizeType('standard'); }}
+                          className="mt-3 text-sm text-red-600 hover:text-red-700 font-medium"
+                        >
+                          + Add Product Type
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Exchange Policy Section */}
       <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
@@ -553,7 +895,13 @@ export default function SettingsPage() {
                 min="0"
                 step="1"
                 value={lateFeeValue}
-                onChange={(e) => setLateFeeValue(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (isIntegerInput(val)) {
+                    setLateFeeValue(val);
+                  }
+                }}
+                onKeyDown={integerKeyDown(() => lateFeeValue, setLateFeeValue)}
                 placeholder="Enter amount"
                 className="w-full pl-8 pr-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
               />
@@ -601,7 +949,7 @@ export default function SettingsPage() {
               <input ref={rentQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
-                if (file.size > 5 * 1024 * 1024) { toast.error('Image too large (max 5MB).'); return; }
+                if (file.size > 5 * 1024 * 1024) { addAlert('Image too large (max 5MB).'); return; }
                 const reader = new FileReader();
                 reader.onload = (ev) => { setRentQrCode(ev.target?.result as string); toast.success('Rent QR loaded! Click Save Changes to apply.'); };
                 reader.readAsDataURL(file);
@@ -632,7 +980,7 @@ export default function SettingsPage() {
               <input ref={securityQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
                 const file = e.target.files?.[0];
                 if (!file) return;
-                if (file.size > 5 * 1024 * 1024) { toast.error('Image too large (max 5MB).'); return; }
+                if (file.size > 5 * 1024 * 1024) { addAlert('Image too large (max 5MB).'); return; }
                 const reader = new FileReader();
                 reader.onload = (ev) => { setSecurityQrCode(ev.target?.result as string); toast.success('Security QR loaded! Click Save Changes to apply.'); };
                 reader.readAsDataURL(file);
@@ -696,9 +1044,26 @@ export default function SettingsPage() {
                           max="100"
                           value={penalty}
                           onChange={(e) => {
-                            const newPenalties = [...modalPenalties];
-                            newPenalties[index] = parseInt(e.target.value) || 0;
-                            setModalPenalties(newPenalties);
+                            const val = e.target.value;
+                            if (isIntegerInput(val)) {
+                              const newPenalties = [...modalPenalties];
+                              newPenalties[index] = parseInt(val) || 0;
+                              setModalPenalties(newPenalties);
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                              e.preventDefault();
+                              return;
+                            }
+                            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              const current = penalty;
+                              const next = e.key === 'ArrowUp' ? Math.min(100, current + 1) : Math.max(0, current - 1);
+                              const newPenalties = [...modalPenalties];
+                              newPenalties[index] = next;
+                              setModalPenalties(newPenalties);
+                            }
                           }}
                           placeholder="Enter"
                           className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"
@@ -735,10 +1100,26 @@ export default function SettingsPage() {
                             min="0"
                             value={day}
                             onChange={(e) => {
-                              const newDays = [...modalDays];
-                              const value = parseInt(e.target.value) || 0;
-                              newDays[index] = value;
-                              setModalDays(newDays);
+                              const val = e.target.value;
+                              if (isIntegerInput(val)) {
+                                const newDays = [...modalDays];
+                                newDays[index] = parseInt(val) || 0;
+                                setModalDays(newDays);
+                              }
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                                e.preventDefault();
+                                return;
+                              }
+                              if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                const current = day;
+                                const next = e.key === 'ArrowUp' ? current + 1 : Math.max(0, current - 1);
+                                const newDays = [...modalDays];
+                                newDays[index] = next;
+                                setModalDays(newDays);
+                              }
                             }}
                             placeholder="Enter"
                             className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"

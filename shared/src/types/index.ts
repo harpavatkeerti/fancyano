@@ -8,7 +8,6 @@ export interface Product {
   security_deposit: number;
   status: 'available' | 'archived';
   category?: string;
-  gender?: string;
   description?: string;
   image?: string;
   created_at: string;
@@ -23,6 +22,10 @@ export interface Product {
   vendor_id?: number | null;
   /** Vendor name — joined from vendors table in list queries */
   vendor_name?: string | null;
+  /** Category FK — references product_categories.id */
+  category_id?: number | null;
+  /** Category name — joined from product_categories table */
+  category_name?: string | null;
 }
 
 // Booking Product (individual product in a booking)
@@ -240,3 +243,25 @@ export interface BookingCancellationHistory {
 }
 
 
+// Product Category (top-level grouping: Men, Women, Kids, etc.)
+export interface ProductCategory {
+  id: number;
+  name: string;
+  display_order: number;
+  is_active: boolean;
+  types: ProductTypeDefinition[];
+  created_at: string;
+  updated_at: string;
+}
+
+// Product Type Definition (subcategory: Sherwani, Lehenga, etc.)
+export interface ProductTypeDefinition {
+  id: number;
+  name: string;
+  category_id: number | null;  // null = neutral type shown for all categories
+  size_type: 'numeric' | 'standard' | 'fancy' | 'none';
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}

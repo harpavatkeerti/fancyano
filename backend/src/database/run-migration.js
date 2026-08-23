@@ -12,7 +12,8 @@ async function runMigration() {
       'add_rental_policy.sql',
       'add_booking_payment_requirements.sql',
       'create_settings_table.sql',
-      '008_product_tracking.sql'
+      '008_product_tracking.sql',
+      '035_drop_gender_column.sql'
     ];
 
     for (const migration of migrations) {

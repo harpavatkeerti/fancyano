@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { productsApi, bookingsApi } from '@/lib/api';
+import { productsApi, bookingsApi, productCategoriesApi, ProductCategory } from '@/lib/api';
 import { Product } from '@/types';
 import Link from 'next/link';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -22,15 +22,27 @@ export default function ProductsPage() {
   const [sortBy, setSortBy] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('');
   const [filtersApplied, setFiltersApplied] = useState(false);
+  const [browseCategories, setBrowseCategories] = useState<ProductCategory[]>([]);
+  const [selectedCategoryTab, setSelectedCategoryTab] = useState('');
 
   useEffect(() => {
     fetchProducts();
+    fetchBrowseCategories();
     // Set search term from URL if provided
     const urlSearch = searchParams?.get('search');
     if (urlSearch) {
       setSearchTerm(urlSearch);
     }
   }, [searchParams]);
+
+  async function fetchBrowseCategories() {
+    try {
+      const response = await productCategoriesApi.getAll();
+      setBrowseCategories(response.data.categories || []);
+    } catch (error) {
+      console.error('Error fetching categories:', error);
+    }
+  }
 
   useEffect(() => {
     // Fetch bookings when availability dates change
@@ -117,14 +129,18 @@ export default function ProductsPage() {
       product.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       product.code.toLowerCase().includes(searchTerm.toLowerCase());
 
-    // Category filter
+    // Category tab filter (by category_name from DB)
+    const matchesCategoryTab =
+      !selectedCategoryTab || (product as any).category_name === selectedCategoryTab;
+
+    // Sidebar category filter (product type)
     const matchesCategory =
-      !selectedCategory || product.name === selectedCategory || (product as any).gender === selectedCategory;
+      !selectedCategory || product.name === selectedCategory;
 
     // Availability filter (only if filters are applied)
     const matchesAvailability = !filtersApplied || isProductAvailable(product.id);
 
-    return matchesSearch && matchesCategory && matchesAvailability;
+    return matchesSearch && matchesCategoryTab && matchesCategory && matchesAvailability;
   });
 
   // Sort products (same logic as admin inventory)
@@ -209,10 +225,10 @@ export default function ProductsPage() {
             </select>
           </div>
 
-          {/* Categories */}
+          {/* Categories (Product Types) */}
           <div className="mb-6">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-semibold text-gray-700">Categories</span>
+              <span className="text-sm font-semibold text-gray-700">Product Type</span>
               <button
                 onClick={() => setSelectedCategory('')}
                 className="text-xs text-red-600 hover:text-red-700"
@@ -225,9 +241,9 @@ export default function ProductsPage() {
               onChange={(e) => setSelectedCategory(e.target.value)}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
             >
-              <option value="">Select</option>
+              <option value="">All Types</option>
               {Array.from(new Set(products.map(p => p.name)))
-                .filter(name => name) // Filter out empty names
+                .filter(name => name)
                 .sort()
                 .map((productType) => (
                   <option key={productType} value={productType}>
@@ -259,8 +275,35 @@ export default function ProductsPage() {
 
         {/* Right Side - Products Grid */}
         <div className="flex-1">
+          {/* Category Tabs */}
+          <div className="flex gap-2 mb-4 flex-wrap">
+            <button
+              onClick={() => setSelectedCategoryTab('')}
+              className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                !selectedCategoryTab
+                  ? 'bg-red-600 text-white'
+                  : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              All
+            </button>
+            {browseCategories.map((cat) => (
+              <button
+                key={cat.id}
+                onClick={() => setSelectedCategoryTab(cat.name)}
+                className={`px-4 py-2 text-sm font-medium rounded-lg transition-colors ${
+                  selectedCategoryTab === cat.name
+                    ? 'bg-red-600 text-white'
+                    : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                }`}
+              >
+                {cat.name}
+              </button>
+            ))}
+          </div>
+
           <h2 className="text-lg font-bold text-gray-900 mb-6">
-            Results showing for...
+            {selectedCategoryTab ? `${selectedCategoryTab}'s Collection` : 'All Products'} ({sortedProducts.length})
           </h2>
           <div className="grid grid-cols-4 gap-6">
             {sortedProducts.map((product) => (
@@ -306,7 +349,7 @@ export default function ProductsPage() {
                     </div>
                   )}
                   <p className="text-xs text-gray-600 mb-1">
-                    {(product as any).gender ? `For ${(product as any).gender}` : ''}
+                    {product.category_name ? `${product.category_name}` : ''}
                   </p>
                   <p className="text-red-600 font-bold">₹{Math.floor(product.rent)} / Day</p>
                   {(product as any).security_deposit > 0 && (

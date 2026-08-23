@@ -24,7 +24,8 @@ class ProductService {
     let query = `
       SELECT p.*,
              lt.size_tracking_map,
-             v.name AS vendor_name
+             v.name AS vendor_name,
+             pc.name AS category_name
       FROM products p
       LEFT JOIN LATERAL (
         SELECT json_object_agg(sub.size, sub.tracking_status) AS size_tracking_map
@@ -36,6 +37,7 @@ class ProductService {
         ) sub
       ) lt ON true
       LEFT JOIN vendors v ON v.id = p.vendor_id
+      LEFT JOIN product_categories pc ON pc.id = p.category_id
       WHERE 1=1`;
     const params = [];
     let paramCount = 0;
@@ -87,6 +89,7 @@ class ProductService {
          ) sub
        ) lt ON true
        LEFT JOIN vendors v ON v.id = p.vendor_id
+       LEFT JOIN product_categories pc ON pc.id = p.category_id
        WHERE p.id = $1`,
       [productId]
     );
@@ -111,13 +114,13 @@ class ProductService {
       rent,
       security_deposit,
       category,
-      gender,
       available_sizes,
       rent_overrides,
       description,
       image,
       images,
       vendor_id,
+      category_id,
     } = productData;
 
     // ── Authoritative uniqueness check: code only ────────────────────────
@@ -139,7 +142,7 @@ class ProductService {
     const result = await pool.query(
       `INSERT INTO products 
         (name, code, purchase_price, rent, security_deposit, 
-         category, gender, available_sizes, rent_overrides, description, status, image, vendor_id) 
+         category, available_sizes, rent_overrides, description, status, image, vendor_id, category_id) 
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
        RETURNING *`,
       [
@@ -149,13 +152,13 @@ class ProductService {
         rent,
         security_deposit || 0,
         category || null,
-        gender || null,
         available_sizes || null,
         rent_overrides ? JSON.stringify(rent_overrides) : null,
         description || null,
         PRODUCT_STATUS.AVAILABLE,
         imageData,
-        vendor_id || null
+        vendor_id || null,
+        category_id || null
       ]
     );
 
@@ -176,13 +179,13 @@ class ProductService {
       rent,
       security_deposit,
       category,
-      gender,
       available_sizes,
       rent_overrides,
       description,
       image,
       images,
       vendor_id,
+      category_id,
     } = productData;
 
     if (security_deposit === undefined || security_deposit === null) {
@@ -256,9 +259,9 @@ class ProductService {
     const result = await pool.query(
       `UPDATE products 
        SET name = $1, code = $2, purchase_price = $3, rent = $4, 
-           security_deposit = $5, category = $6, gender = $7, 
-           available_sizes = $8, rent_overrides = $9, description = $10, image = $11, 
-           vendor_id = $12,
+           security_deposit = $5, category = $6, 
+           available_sizes = $7, rent_overrides = $8, description = $9, image = $10, 
+           vendor_id = $11, category_id = $12,
            updated_at = CURRENT_TIMESTAMP 
        WHERE id = $13 
        RETURNING *`,
@@ -269,12 +272,12 @@ class ProductService {
         rent,
         security_deposit || 0,
         category,
-        gender,
         available_sizes || null,
         rent_overrides ? JSON.stringify(rent_overrides) : null,
         description,
         imageData,
-        vendor_id !== undefined ? (vendor_id || null) : null,
+        vendor_id ?? null,
+        category_id ?? null,
         productId
       ]
     );

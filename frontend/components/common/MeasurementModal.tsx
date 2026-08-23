@@ -4,17 +4,23 @@ import { useState } from 'react';
 import { bookingsApi } from '@/lib/api';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from './AlertBanner';
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-export function isFemaleClothing(productName: string): boolean {
-  const femaleTypes = ['Lehenga', 'Gown', 'Gowns', 'Girlish Crop Top'];
-  return femaleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
+/**
+ * Determines if a product belongs to the "Women" category (for measurement form selection).
+ * Uses the product's category_name from the DB instead of hardcoded product name matching.
+ */
+export function isFemaleClothing(categoryName: string | null | undefined): boolean {
+  return categoryName?.toLowerCase() === 'women';
 }
 
-export function isMaleClothing(productName: string): boolean {
-  const maleTypes = ['Sherwani', 'Suit', 'Kurta Pajama', 'Indo Western'];
-  return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
+/**
+ * Determines if a product belongs to the "Men" category (for measurement form selection).
+ * Uses the product's category_name from the DB instead of hardcoded product name matching.
+ */
+export function isMaleClothing(categoryName: string | null | undefined): boolean {
+  return categoryName?.toLowerCase() === 'men';
 }
 
 /**
@@ -80,6 +86,7 @@ export function MeasurementModal({
 }: MeasurementModalProps) {
   // ── Internal state (confirm mode) ──────────────────────────────────────────
   const [measurementErrors, setMeasurementErrors] = useState<{ [key: string]: string }>({});
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // ── Internal state (edit mode) ─────────────────────────────────────────────
   const [editingMeasurements, setEditingMeasurements] = useState<{ [key: string]: string }>(
@@ -139,6 +146,7 @@ export function MeasurementModal({
 
   async function handleConfirmSave() {
     try {
+      clearAlerts();
       const allMeasurements = { ...measurements };
       const specialReqsData: { [key: string]: string } = {};
       products.forEach((product: any) => {
@@ -156,7 +164,7 @@ export function MeasurementModal({
       toast.success('Measurements saved successfully!');
     } catch (error) {
       console.error('Error saving measurements:', error);
-      toast.error('Error saving measurements');
+      addAlert('Error saving measurements');
     }
   }
 
@@ -165,6 +173,7 @@ export function MeasurementModal({
   async function handleEditSave() {
     if (!selectedProduct) return;
     try {
+      clearAlerts();
       const key = uniqueKey(selectedProduct);
       const updatedMeasurements = { ...measurements, [key]: editingMeasurements };
       const updatedSpecialReqs = { ...specialRequirements, [key]: editingSpecialRequirements };
@@ -183,9 +192,9 @@ export function MeasurementModal({
       console.error('Error saving measurements:', error);
       const msg = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
       if (error.response?.status === 404) {
-        toast.error('Booking not found. Please refresh the page.');
+        addAlert('Booking not found. Please refresh the page.');
       } else {
-        toast.error(`Error saving measurements: ${msg}`);
+        addAlert(`Error saving measurements: ${msg}`);
       }
     }
   }
@@ -196,9 +205,9 @@ export function MeasurementModal({
     const errKey = `${key}-${field}`;
     return (
       <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1">{placeholder}</label>
         <input
           type="text"
-          placeholder={placeholder}
           value={value}
           onChange={e => onChange(e.target.value)}
           maxLength={5}
@@ -213,13 +222,13 @@ export function MeasurementModal({
   }
 
   function renderMeasurementInputs(
-    productName: string,
+    categoryName: string | null | undefined,
     key: string,
     getValue: (field: string) => string,
     onChange: (field: string, value: string) => void,
     disabled = false,
   ) {
-    if (isFemaleClothing(productName)) {
+    if (isFemaleClothing(categoryName)) {
       return (
         <div className="space-y-3">
           <div className="grid grid-cols-4 gap-3">
@@ -237,9 +246,12 @@ export function MeasurementModal({
       );
     }
 
-    if (isMaleClothing(productName)) {
+    if (isMaleClothing(categoryName)) {
       return (
         <div className="space-y-3">
+          <div className="grid grid-cols-4 gap-3">
+            {renderField(key, 'waistSize', 'Waist Size (in inches)', getValue('waistSize'), v => onChange('waistSize', v), disabled)}
+          </div>
           <h4 className="text-md font-medium text-gray-700 mb-1">Tight Fit</h4>
           <div className="grid grid-cols-4 gap-3">
             {renderField(key, 'sideTight', 'Side Tight (in inches)', getValue('sideTight'), v => onChange('sideTight', v), disabled)}
@@ -291,6 +303,9 @@ export function MeasurementModal({
             Confirm your measurements to confirm your order
           </h3>
 
+          {/* Inline alert banner for errors */}
+          <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
+
           {products.map((product: any, index: number) => {
             const key = uniqueKey(product);
             const imageData = product.image || product.imageUrl || product.rawImage;
@@ -330,7 +345,7 @@ export function MeasurementModal({
                 </div>
 
                 {renderMeasurementInputs(
-                  product.name,
+                  product.category_name,
                   key,
                   field => measurements[key]?.[field] || '',
                   (field, value) => handleMeasurementChange(key, field, value),
@@ -438,7 +453,7 @@ export function MeasurementModal({
         {/* Measurement inputs */}
         <div className="space-y-6">
           {renderMeasurementInputs(
-            selectedProduct.name,
+            selectedProduct.category_name,
             key,
             field => editingMeasurements[field] || '',
             (field, value) => handleEditMeasurementChange(field, value),
