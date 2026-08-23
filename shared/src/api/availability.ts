@@ -46,11 +46,26 @@ export interface TightScheduleProduct {
 export interface TightScheduleResponse {
   has_tight_schedule: boolean;
   warnings: string[];
+  conflicts: UrgentConflict[];
+}
+
+export interface UrgentConflict {
+  product_code: string;
+  product_name: string;
+  size: string | null;
+  booked_from: string;
+  booked_to: string;
+  neighbour_booking_id: number;
+  neighbour_from: string;
+  neighbour_to: string;
+  gap_days: number;
+  direction: 'before' | 'after';
 }
 
 export interface UrgentResponse {
   is_urgent: boolean;
   reasons: string[];
+  conflicts: UrgentConflict[];
 }
 
 export interface UrgentBulkResponse {

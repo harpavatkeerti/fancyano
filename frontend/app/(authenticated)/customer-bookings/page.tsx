@@ -6,24 +6,21 @@ import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
+import { isBookingUrgent, getUrgentReason, isPending } from '@/lib/bookingHelpers';
+import { BookingStatusIcon } from '@/components/common/BookingStatusIcon';
 
 export default function CustomerBookingsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [allBookings, setAllBookings] = useState<Booking[]>([]);
   const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[] }>>({});
   const [loading, setLoading] = useState(true);
   
-  // Lookup helpers for urgent booking status (data comes from backend API)
-  function isBookingUrgent(booking: Booking): boolean {
-    return urgentBookingsMap[booking.id]?.is_urgent ?? false;
-  }
 
-  function getUrgentReason(booking: Booking): string {
-    const reasons = urgentBookingsMap[booking.id]?.reasons ?? [];
-    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
-  }
 
   useEffect(() => {
     fetchBookings();
@@ -87,97 +84,13 @@ export default function CustomerBookingsPage() {
       toast.success('Booking deleted successfully');
     } catch (error) {
       console.error('Error deleting booking:', error);
-      toast.error('Failed to delete booking. Please try again.');
+      addAlert('Failed to delete booking. Please try again.');
     }
   }
 
-  function isPending(booking: Booking): boolean {
-    // A booking is pending if its status is 'pending'
-    return booking.status === 'pending';
-  }
 
-  function getStatusIcon(status: string, booking: Booking) {
-    // Use backend-provided status directly - backend calculates based on payments/refunds
-    const displayStatus = booking.status || status;
-    
-    // Cancelled
-    if (displayStatus === 'cancelled') {
-      return (
-        <div className="flex items-center text-red-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Cancelled
-        </div>
-      );
-    }
 
-    // Completed or Partially Completed
-    if (displayStatus === 'completed' || displayStatus === 'partially_completed') {
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          {displayStatus === 'partially_completed' ? 'Partially Completed' : 'Completed'}
-        </div>
-      );
-    }
 
-    // In Progress / Under Process
-    if (displayStatus === 'in_progress') {
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Under Process
-        </div>
-      );
-    }
-
-    // Confirmed
-    if (displayStatus === 'confirmed') {
-      return (
-        <div className="flex items-center text-green-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Order Confirmed
-        </div>
-      );
-    }
-
-    // Pending (default)
-    return (
-      <div className="flex items-center text-gray-600">
-        <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-            clipRule="evenodd"
-          />
-        </svg>
-        Payment Pending
-      </div>
-    );
-  }
 
 
   if (loading) {
@@ -190,6 +103,8 @@ export default function CustomerBookingsPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
+      {/* Inline alert banner */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
       <h1 className="text-3xl font-bold text-gray-900 mb-8">Customer Bookings</h1>
 
       {bookings.length === 0 ? (
@@ -200,9 +115,9 @@ export default function CustomerBookingsPage() {
         <div className="grid grid-cols-1 gap-6">
           {bookings.map((booking) => {
             const products = Array.isArray(booking.products) ? booking.products : [];
-            const isUrgent = isBookingUrgent(booking);
-            const urgentReason = isUrgent ? getUrgentReason(booking) : '';
-            const canDelete = isPending(booking);
+            const isUrgent = isBookingUrgent(booking.id, urgentBookingsMap);
+            const urgentReason = isUrgent ? getUrgentReason(booking.id, urgentBookingsMap) : '';
+            const canDelete = isPending(booking.status);
             
             return (
               <div
@@ -252,7 +167,7 @@ export default function CustomerBookingsPage() {
 
                     {/* Booking Details */}
                     <div className="flex-1">
-                      {getStatusIcon(booking.status, booking)}
+                      <BookingStatusIcon booking={booking} />
                       <p className="text-red-600 font-semibold mt-2">
                         Dates:{' '}
                         {new Date(booking.booked_from).toLocaleDateString('en-GB')} To{' '}

@@ -1,89 +1,35 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
-import { bookingsApi, productsApi, paymentTransactionsApi, creditNotesApi, settingsApi, usersApi, bookingDiscardApi, availabilityApi } from '@/lib/api';
+import { useEffect, useState } from 'react';
+import { bookingsApi, creditNotesApi, bookingDiscardApi, availabilityApi } from '@/lib/api';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
-import { Booking, Product, User } from '@/types';
-import { Button, Input, DateRangePicker, PhoneInput, PaymentMethodInput, FlagIcon } from '@/components/common';
+import { Booking } from '@/types';
+import { Input, DateRangePicker } from '@/components/common';
+import { UrgentDetailsModal } from '@/components/common';
+import RequireRole from '@/components/common/RequireRole';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { useAuth } from '@/lib/authContext';
-import { isValidPhoneNumber, getCountryByCode } from '@/lib/countryCodes';
-import { sortSizes } from '@/lib/productConstants';
-
-import dynamic from 'next/dynamic';
-
-// Dynamically import QRScanner to avoid SSR issues with html5-qrcode
-const QRScanner = dynamic(
-  () => import('@/components/common/QRScanner'),
-  {
-    ssr: false,
-    loading: () => <div className="p-4 text-center">Loading scanner...</div>
-  }
-);
+import { isMaleClothing, isFemaleClothing } from '@/components/common/MeasurementModal';
+import { isBookingUrgent, getUrgentReason } from '@/lib/bookingHelpers';
 
 export default function BookingsPage() {
   const auth = useAuth();
   if (!auth.user) return null;
   const currentUser = auth.user;
+  const isAdmin = currentUser.role === 'admin';
   const [bookings, setBookings] = useState<Booking[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
-  const [productBookings, setProductBookings] = useState<Record<number, any[]>>({});
   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);
-  const [showAddModal, setShowAddModal] = useState(false);
   const [showMeasurements, setShowMeasurements] = useState<{ [key: string]: boolean }>({});
   const [parsedMeasurements, setParsedMeasurements] = useState<{ [key: string]: any }>({});
   const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{ [key: string]: string }>({});
-  const [addFormData, setAddFormData] = useState({
-    // User-linked fields (displayed, editable, used to create/update user)
-    customer_name: '',
-    customer_phone: '',
-    customer_phone_country: 'IN',
-    alternate_phone: '',
-    alternate_phone_country: 'IN',
-    customer_address: '',
-    // Booking fields
-    booking_date: new Date().toISOString().split('T')[0],
-    products: [] as {
-      id: number;
-      name: string;
-      rent: number;
-      code: string;
-      size?: string;
-      booked_from: string;
-      booked_to: string;
-      discountType?: 'percentage' | 'fixed' | null;
-      discountValue?: number;
-    }[],
-    transport_charge: 0,
-    discount_type: null as 'percentage' | 'amount' | null,
-    discount_value: 0,
-  });
-  // Phone search state
-  const [phoneSearchResults, setPhoneSearchResults] = useState<User[]>([]);
-  const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [isSearching, setIsSearching] = useState(false);
-  const [showPhoneDropdown, setShowPhoneDropdown] = useState(false);
-  // User-change confirm dialog
-  const [showUserConfirmDialog, setShowUserConfirmDialog] = useState(false);
-  const [userConfirmDiff, setUserConfirmDiff] = useState<{ field: string; old: string; new: string }[]>([]);
-  const [pendingUserUpdate, setPendingUserUpdate] = useState<{ userId: number; data: Partial<User> } | null>(null);
-  const [pendingBookingAfterConfirm, setPendingBookingAfterConfirm] = useState<any>(null);
-  const phoneSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [lastProductDates, setLastProductDates] = useState<{ from: string; to: string } | null>(null);
-  const [showDateConfirmModal, setShowDateConfirmModal] = useState(false);
-  const [pendingProduct, setPendingProduct] = useState<any>(null);
-  // Size selection for add-product flow (when product has available_sizes)
-  const [showSizeSelectModal, setShowSizeSelectModal] = useState(false);
-  const [sizeSelectProduct, setSizeSelectProduct] = useState<Product | null>(null);
-  const [phoneNumberError, setPhoneNumberError] = useState('');
-  const [showQRScanner, setShowQRScanner] = useState(false);
-  const [productSearchCode, setProductSearchCode] = useState('');
-  const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
-  const [transportationSelected, setTransportationSelected] = useState(false); // Whether 'Yes' is selected
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Credit note modal state
   const [showCreditNoteModal, setShowCreditNoteModal] = useState(false);
@@ -95,83 +41,22 @@ export default function BookingsPage() {
     amount: '',
   });
 
-
-
-  // Payment collection modal state for new booking
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('Cash');
-  const [paymentNotes, setPaymentNotes] = useState('');
-  const [pendingBookingData, setPendingBookingData] = useState<any>(null);
-  const [customTransportationCharge, setCustomTransportationCharge] = useState('0'); // Default to '0'
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
-  const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(-1); // For keyboard navigation
   const [filterDateFrom, setFilterDateFrom] = useState('');
   const [filterDateTo, setFilterDateTo] = useState('');
   const [urgentFilter, setUrgentFilter] = useState<'all' | 'urgent' | 'normal'>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all_except_discarded'); // Default excludes discarded
   const [showDiscardConfirm, setShowDiscardConfirm] = useState<number | null>(null); // Booking ID to discard
   const [delayedBookingsMap, setDelayedBookingsMap] = useState<Map<number, Array<{name: string, code: string, size?: string | null, booked_to: string, days_delayed: number}>>>(new Map());
-  const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[] }>>({});
+  const [urgentBookingsMap, setUrgentBookingsMap] = useState<Record<number, { is_urgent: boolean; reasons: string[]; conflicts: any[] }>>({});
 
-  // Warning modal state
-  const [showWarningModal, setShowWarningModal] = useState(false);
-  const [warningMessage, setWarningMessage] = useState('');
-  const [bookingPreview, setBookingPreview] = useState<any>(null);
-  const [loadingPreview, setLoadingPreview] = useState(false);
+  // Urgent details modal
+  const [urgentModalBookingId, setUrgentModalBookingId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchBookings();
-    fetchProducts();
-    fetchTransportationCharge();
-
     fetchDelayedBookings();
   }, []);
 
-  // Fetch booking preview whenever products, discounts, or transport changes
-  useEffect(() => {
-    async function fetchPreview() {
-      if (addFormData.products.length === 0) {
-        setBookingPreview(null);
-        return;
-      }
-
-      setLoadingPreview(true);
-      try {
-        const response = await bookingsApi.getPreview({
-          products: addFormData.products.map(p => ({
-            id: p.id,
-            discountType: p.discountType || null,
-            discountValue: p.discountValue || 0
-          })),
-          transport_charge: addFormData.transport_charge || 0,
-          booking_discount_type: addFormData.discount_type,
-          booking_discount_value: addFormData.discount_value || 0
-        });
-        setBookingPreview(response.data);
-      } catch (error) {
-        console.error('Error fetching booking preview:', error);
-        setBookingPreview(null);
-      } finally {
-        setLoadingPreview(false);
-      }
-    }
-
-    fetchPreview();
-  }, [addFormData.products, addFormData.transport_charge, addFormData.discount_type, addFormData.discount_value]);
-
-
-
-  async function fetchTransportationCharge() {
-    try {
-      const response = await settingsApi.getByKey('transportation_charge');
-      setTransportationCharge(parseFloat(response.data.setting_value) || 0);
-    } catch (error) {
-      console.error('Error fetching transportation charge:', error);
-      setTransportationCharge(0); // Default to 0
-    }
-  }
 
   async function fetchBookings() {
     try {
@@ -214,33 +99,6 @@ export default function BookingsPage() {
     }
   }
 
-  async function fetchProducts() {
-    try {
-      const response = await productsApi.getAll();
-      setProducts(response.data);
-    } catch (error) {
-      console.error('Error fetching products:', error);
-    }
-  }
-
-  // Fetch bookings for a specific product to check availability
-  async function fetchProductBookings(productId: number, size?: string | null) {
-    try {
-      const response = await bookingsApi.getByProductId(productId, size || undefined);
-      const bookingsData = response.data || [];
-      setProductBookings(prev => ({
-        ...prev,
-        [productId]: bookingsData
-      }));
-      return bookingsData;
-    } catch (error) {
-      console.error('Error fetching product bookings:', error);
-      return [];
-    }
-  }
-
-
-
   async function handleCancelClick(id: number, customerName: string) {
     try {
       // Fetch the booking details
@@ -252,7 +110,7 @@ export default function BookingsPage() {
       setShowCancellationModal(true);
     } catch (error) {
       console.error('Error fetching booking:', error);
-      toast.error('Failed to load booking details');
+      addAlert('Failed to load booking details');
     }
   }
 
@@ -270,7 +128,7 @@ export default function BookingsPage() {
       await fetchBookings();
     } catch (error: any) {
       console.error('Error discarding booking:', error);
-      toast.error(error.response?.data?.error || 'Failed to discard booking');
+      addAlert(error.response?.data?.error || 'Failed to discard booking');
     }
   }
 
@@ -303,7 +161,7 @@ export default function BookingsPage() {
           } catch (error: any) {
             console.error('Error creating credit note:', error);
             const errorMessage = error.response?.data?.details || error.response?.data?.message || error.response?.data?.error || 'Failed to create credit note';
-            toast.error(errorMessage);
+            addAlert(errorMessage);
             // Still show success for cancellation even if credit note creation fails
             toast.success('Booking cancelled successfully');
           }
@@ -321,549 +179,19 @@ export default function BookingsPage() {
       await fetchBookings();
     } catch (error) {
       console.error('Error cancelling booking:', error);
-      toast.error('Failed to cancel booking. Please try again.');
+      addAlert('Failed to cancel booking. Please try again.');
     }
   }
 
-  // Check if phone numbers are the same
-  function checkPhoneNumberDuplicate(phone1: string, country1: string, phone2: string, country2: string) {
-    if (!phone1 || !phone2) {
-      setPhoneNumberError('');
-      return false;
-    }
-
-    const c1 = getCountryByCode(country1);
-    const c2 = getCountryByCode(country2);
-
-    if (!c1 || !c2) {
-      setPhoneNumberError('');
-      return false;
-    }
-
-    const fullPhone1 = `${c1.callingCode}${phone1}`;
-    const fullPhone2 = `${c2.callingCode}${phone2}`;
-
-    if (fullPhone1 === fullPhone2) {
-      setPhoneNumberError('❌ Mobile Number and Alternate Mobile Number cannot be the same. Please enter a different number.');
-      return true;
-    } else {
-      setPhoneNumberError('');
-      return false;
-    }
-  }
-
-  function handleAddBooking() {
-    setAddFormData({
-      customer_name: '',
-      customer_phone: '',
-      customer_phone_country: 'IN',
-      alternate_phone: '',
-      alternate_phone_country: 'IN',
-      customer_address: '',
-      booking_date: new Date().toISOString().split('T')[0],
-      products: [],
-      transport_charge: 0,
-      discount_type: null,
-      discount_value: 0,
-    });
-    setSelectedUser(null);
-    setPhoneSearchResults([]);
-    setShowPhoneDropdown(false);
-    setPhoneNumberError('');
-    setProductSearchCode('');
-    setShowAddModal(true);
-  }
-
-  // Debounced phone search — fires 350ms after last keystroke, min 3 digits
-  function handlePhoneSearch(digits: string) {
-    if (phoneSearchTimerRef.current) clearTimeout(phoneSearchTimerRef.current);
-    if (digits.length < 3) {
-      setPhoneSearchResults([]);
-      setShowPhoneDropdown(false);
-      return;
-    }
-    phoneSearchTimerRef.current = setTimeout(async () => {
-      setIsSearching(true);
-      try {
-        const response = await usersApi.search(digits);
-        setPhoneSearchResults(response.data || []);
-        setShowPhoneDropdown((response.data || []).length > 0);
-      } catch {
-        setPhoneSearchResults([]);
-        setShowPhoneDropdown(false);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 350);
-  }
-
-  // Auto-fill form when user is selected from the dropdown
-  function handleUserSelect(user: User) {
-    setSelectedUser(user);
-    setShowPhoneDropdown(false);
-    setAddFormData(prev => ({
-      ...prev,
-      customer_phone: user.phone,
-      customer_phone_country: user.phone_country,
-      customer_name: user.name,
-      alternate_phone: user.alternate_phone,
-      alternate_phone_country: user.alternate_phone_country,
-      customer_address: user.address || '',
-    }));
-  }
-
-  async function handleAddProduct(product: Product) {
-    // If product has available_sizes, show size selector first
-    if (product.available_sizes && product.available_sizes.length > 0) {
-      setSizeSelectProduct(product);
-      setShowSizeSelectModal(true);
-      return;
-    }
-
-    // Sizeless product — add directly
-    await addProductWithSize(product, null);
-  }
-
-  async function addProductWithSize(product: Product, size: string | null) {
-    // Fetch availability for this product FIRST (pass size so calendar shows only bookings for this size)
-    await fetchProductBookings(product.id, size);
-
-    // Check if we have previous product dates
-    if (lastProductDates && addFormData.products.length > 0) {
-      // Ask if they want to use same dates
-      setPendingProduct({
-        id: product.id,
-        name: product.name,
-        code: product.code,
-        size: size,
-        rent: product.rent,
-      });
-      setShowDateConfirmModal(true);
-    } else {
-      // First product - add with empty dates
-      setAddFormData({
-        ...addFormData,
-        products: [...addFormData.products, {
-          id: product.id,
-          name: product.name,
-          code: product.code,
-          size: size,
-          rent: product.rent,
-          booked_from: '',
-          booked_to: '',
-        }],
-      });
-      // Scroll to products table
-      setTimeout(() => scrollToProducts(), 100);
-    }
-  }
-
-  // Scroll to products table when product is added
-  function scrollToProducts() {
-    const productsTable = document.getElementById('booking-invoice-table');
-    if (productsTable) {
-      productsTable.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }
-
-  function confirmSameDates(useSameDates: boolean) {
-    if (!pendingProduct) return;
-
-    const newProduct = {
-      ...pendingProduct,
-      booked_from: useSameDates ? (lastProductDates?.from ?? '') : '',
-      booked_to: useSameDates ? (lastProductDates?.to ?? '') : '',
-    };
-
-    // Add the new product and also fill any other empty products in one update
-    if (useSameDates && lastProductDates) {
-      const updatedProducts = [...addFormData.products, newProduct].map(p => {
-        // Fill empty dates with the confirmed dates
-        if ((!p.booked_from || p.booked_from === '') && (!p.booked_to || p.booked_to === '')) {
-          return { ...p, booked_from: lastProductDates.from, booked_to: lastProductDates.to };
-        }
-        return p;
-      });
-
-      setAddFormData({
-        ...addFormData,
-        products: updatedProducts,
-      });
-    } else {
-      // Just add the new product without auto-fill
-      setAddFormData({
-        ...addFormData,
-        products: [...addFormData.products, newProduct],
-      });
-    }
-
-    setShowDateConfirmModal(false);
-    setPendingProduct(null);
-
-    // Scroll to products table after modal closes
-    setTimeout(() => scrollToProducts(), 100);
-  }
-
-  // Auto-fill dates for products without dates (only called when user confirms in modal)
-  function autoFillProductDates(fromDate: string, toDate: string) {
-    // Only fill products that have empty dates
-    const updated = addFormData.products.map(p => {
-      if ((!p.booked_from || p.booked_from === '') && (!p.booked_to || p.booked_to === '')) {
-        return { ...p, booked_from: fromDate, booked_to: toDate };
-      }
-      return p;
-    });
-
-    setAddFormData({ ...addFormData, products: updated });
-  }
-
-  // Handle product search input change with autocomplete
-  function handleSearchInputChange(value: string) {
-    setProductSearchCode(value);
-    setSelectedSuggestionIndex(-1); // Reset selection when typing
-
-    if (value.trim().length > 0) {
-      // Filter products by code or name, excluding already added products
-      const filtered = products.filter(p =>
-        (p.code.toLowerCase().includes(value.toLowerCase()) ||
-          p.name.toLowerCase().includes(value.toLowerCase())) &&
-        !addFormData.products.some(ap => ap.id === p.id)
-      ).slice(0, 10); // Limit to 10 suggestions
-
-      setFilteredProducts(filtered);
-      setShowSuggestions(true);
-    } else {
-      setFilteredProducts([]);
-      setShowSuggestions(false);
-    }
-  }
-
-  // Select product from suggestions
-  function handleSelectSuggestion(product: Product) {
-    handleAddProduct(product);
-    setProductSearchCode('');
-    setShowSuggestions(false);
-    setFilteredProducts([]);
-    setSelectedSuggestionIndex(-1); // Reset selection
-    alert(`✅ Product "${product.name}" added successfully!`);
-  }
-
-  // Handle keyboard navigation in product suggestions
-  function handleKeyboardNavigation(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (!showSuggestions || filteredProducts.length === 0) {
-      if (e.key === 'Enter') {
-        handleSearchByCode(productSearchCode);
-      }
-      return;
-    }
-
-    switch (e.key) {
-      case 'ArrowDown':
-        e.preventDefault();
-        setSelectedSuggestionIndex((prev) =>
-          prev < filteredProducts.length - 1 ? prev + 1 : prev
-        );
-        break;
-      case 'ArrowUp':
-        e.preventDefault();
-        setSelectedSuggestionIndex((prev) => (prev > 0 ? prev - 1 : -1));
-        break;
-      case 'Enter':
-        e.preventDefault();
-        if (selectedSuggestionIndex >= 0 && selectedSuggestionIndex < filteredProducts.length) {
-          handleSelectSuggestion(filteredProducts[selectedSuggestionIndex]);
-        } else {
-          handleSearchByCode(productSearchCode);
-        }
-        break;
-      case 'Escape':
-        setShowSuggestions(false);
-        setSelectedSuggestionIndex(-1);
-        break;
-    }
-  }
-
-  // Search product by code (for Enter key or Add button)
-  async function handleSearchByCode(code: string) {
-    if (!code.trim()) return;
-
-    try {
-      const product = products.find(p => p.code.toLowerCase() === code.toLowerCase());
-      if (product) {
-        // Check if product is already added
-        const isAlreadyAdded = addFormData.products.some(ap => ap.id === product.id);
-        if (isAlreadyAdded) {
-          toast.warning(`Product "${product.name}" is already in the booking`);
-          return;
-        }
-
-        handleAddProduct(product);
-        setProductSearchCode('');
-        setShowSuggestions(false);
-        setFilteredProducts([]);
-        toast.success(`Product "${product.name}" added successfully!`);
-      } else {
-        toast.error(`Product with code "${code}" not found`);
-      }
-    } catch (error) {
-      console.error('Error searching product:', error);
-      toast.error('Error searching for product');
-    }
-  }
-
-  // Handle QR code scan
-  function handleQRScan(code: string) {
-    handleSearchByCode(code);
-    setShowQRScanner(false);
-  }
-
-  // Calculate subtotal (uses backend preview if available)
-  // Get subtotal from backend preview
-  function calculateSubtotal() {
-    return bookingPreview?.subtotal || 0;
-  }
-
-  // Get total from backend preview
-  function calculateTotal() {
-    return bookingPreview?.total || 0;
-  }
-
-  // Get discount from backend preview
-  function calculateDiscount() {
-    return bookingPreview?.booking_discount_amount || 0;
-  }
-
-  function handleRemoveProduct(productId: number) {
-    setAddFormData({
-      ...addFormData,
-      products: addFormData.products.filter(p => p.id !== productId),
-    });
-  }
 
 
-  // Lookup helpers for urgent booking status (data comes from backend API)
-  function isBookingUrgent(booking: Booking): boolean {
-    return urgentBookingsMap[booking.id]?.is_urgent ?? false;
-  }
-
-  function getUrgentReason(booking: Booking): string {
-    const reasons = urgentBookingsMap[booking.id]?.reasons ?? [];
-    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
-  }
-
-  // Helper: actually call POST /bookings with user_id
-  async function postBookingWithUserId(userId: number) {
-    const finalTotal = calculateTotal();
-    const discountAmount = calculateDiscount();
-    setPendingBookingData({
-      user_id: userId,
-      booking_date: addFormData.booking_date,
-      products: addFormData.products,
-      finalTotal,
-      transport_charge: addFormData.transport_charge,
-      discount_type: addFormData.discount_type,
-      discount_value: addFormData.discount_value,
-      discount_amount: discountAmount,
-    });
-    setPaymentAmount('');
-    setPaymentMethod('Cash');
-    setPaymentNotes('');
-    setShowPaymentModal(true);
-  }
-
-  async function handleCreateBooking() {
-    // Basic required field validation
-    if (!addFormData.customer_name || !addFormData.customer_phone || !addFormData.alternate_phone || addFormData.products.length === 0) {
-      toast.warning('Please fill in all required fields (name, mobile numbers) and add at least one product');
-      return;
-    }
-
-    // Validate that all products have dates
-    const productsWithoutDates = addFormData.products.filter(p => !p.booked_from || !p.booked_to);
-    if (productsWithoutDates.length > 0) {
-      toast.warning('Please set pickup and return dates for all products');
-      return;
-    }
-
-    // Validate mobile numbers
-    if (!isValidPhoneNumber(addFormData.customer_phone, addFormData.customer_phone_country)) {
-      toast.warning('Please enter a valid Mobile Number');
-      return;
-    }
-    if (!isValidPhoneNumber(addFormData.alternate_phone, addFormData.alternate_phone_country)) {
-      toast.warning('Please enter a valid Alternate Mobile Number');
-      return;
-    }
-
-    // Check both phones are not the same
-    const c1 = getCountryByCode(addFormData.customer_phone_country);
-    const c2 = getCountryByCode(addFormData.alternate_phone_country);
-    if (!c1 || !c2) { toast.error('Invalid country selection'); return; }
-    if (`${c1.callingCode}${addFormData.customer_phone}` === `${c2.callingCode}${addFormData.alternate_phone}`) {
-      toast.warning('Mobile Number and Alternate Mobile Number cannot be the same.');
-      return;
-    }
-    if (phoneNumberError) { toast.error(phoneNumberError); return; }
-
-    // Tight schedule check (via backend API)
-    try {
-      const tightScheduleProducts = addFormData.products
-        .filter(p => p.booked_from && p.booked_to)
-        .map(p => ({
-          product_id: p.id,
-          size: p.size || null,
-          booked_from: p.booked_from,
-          booked_to: p.booked_to,
-        }));
-
-      if (tightScheduleProducts.length > 0) {
-        const tightScheduleCheck = await availabilityApi.checkTightSchedule(tightScheduleProducts);
-        if (tightScheduleCheck.data.has_tight_schedule) {
-          setWarningMessage(tightScheduleCheck.data.warnings.join(' '));
-          setShowWarningModal(true);
-          return;
-        }
-      }
-    } catch (error) {
-      console.error('Error checking tight schedule:', error);
-    }
-
-    // ── Path A: returning user selected from search ──
-    if (selectedUser) {
-      // Fetch fresh user data to detect changes
-      let freshUser: User;
-      try {
-        const res = await usersApi.getById(selectedUser.id);
-        freshUser = res.data;
-      } catch {
-        toast.error('Could not verify customer details. Please try again.');
-        return;
-      }
-
-      // Compute diff between form values and DB values
-      const diff: { field: string; old: string; new: string }[] = [];
-      if (addFormData.customer_name !== freshUser.name)
-        diff.push({ field: 'Name', old: freshUser.name, new: addFormData.customer_name });
-      if (addFormData.alternate_phone !== freshUser.alternate_phone)
-        diff.push({ field: 'Alternate Mobile', old: freshUser.alternate_phone, new: addFormData.alternate_phone });
-      if (addFormData.alternate_phone_country !== freshUser.alternate_phone_country)
-        diff.push({ field: 'Alternate Mobile Country', old: freshUser.alternate_phone_country, new: addFormData.alternate_phone_country });
-      if ((addFormData.customer_address || '') !== (freshUser.address || ''))
-        diff.push({ field: 'Address', old: freshUser.address || '(none)', new: addFormData.customer_address || '(none)' });
-
-      if (diff.length > 0) {
-        // Show confirm dialog — user must accept before we update
-        setUserConfirmDiff(diff);
-        setPendingUserUpdate({
-          userId: freshUser.id,
-          data: {
-            name: addFormData.customer_name,
-            alternate_phone: addFormData.alternate_phone,
-            alternate_phone_country: addFormData.alternate_phone_country,
-            address: addFormData.customer_address || undefined,
-          },
-        });
-        setPendingBookingAfterConfirm({ userId: freshUser.id });
-        setShowUserConfirmDialog(true);
-        return;
-      }
-
-      // No diff — go straight to payment
-      await postBookingWithUserId(freshUser.id);
-      return;
-    }
-
-    // ── Path B: new customer — create user first ──
-    try {
-      const createRes = await usersApi.create({
-        name: addFormData.customer_name,
-        phone: addFormData.customer_phone,
-        phone_country: addFormData.customer_phone_country,
-        alternate_phone: addFormData.alternate_phone,
-        alternate_phone_country: addFormData.alternate_phone_country,
-        email: '',
-        address: addFormData.customer_address,
-        role: 'customer',
-      } as any);
-      await postBookingWithUserId(createRes.data.id);
-    } catch (error: any) {
-      if (error?.response?.status === 409) {
-        toast.error('This phone number is already registered. Search and select the existing customer from the dropdown.');
-      } else {
-        toast.error(error?.response?.data?.error || 'Failed to create customer');
-      }
-    }
-  }
-
-  async function createBookingConfirmed() {
-    if (!pendingBookingData) return;
-
-    try {
-      const response = await bookingsApi.create({
-        user_id: pendingBookingData.user_id,
-        booking_date: pendingBookingData.booking_date,
-        products: pendingBookingData.products.map((p: any) => ({
-          id: p.id,
-          booked_from: p.booked_from,
-          booked_to: p.booked_to,
-          discountType: p.discountType || null,
-          discountValue: p.discountValue || 0
-        })),
-        transport_charge: pendingBookingData.transport_charge || 0,
-        discount_type: pendingBookingData.discount_type,
-        discount_value: pendingBookingData.discount_value,
-        discount_amount: pendingBookingData.discount_amount,
-        status: 'pending',
-      } as any);
-
-      const newBookingId = response.data.id;
-
-      // If payment amount is provided, record it
-      if (paymentAmount && parseFloat(paymentAmount) > 0) {
-        try {
-          await paymentTransactionsApi.create({
-            booking_id: newBookingId,
-            amount: parseFloat(paymentAmount),
-            type: 'payment',
-            method: paymentMethod,
-            notes: paymentNotes || 'Initial payment recorded',
-            recorded_by: 'admin'
-          });
-          await bookingsApi.updateStatus(newBookingId);
-        } catch (paymentError: any) {
-          console.error('Error recording payment:', paymentError);
-          toast.error(paymentError.response?.data?.details || paymentError.response?.data?.error || 'Failed to record payment');
-        }
-      }
-
-      await fetchBookings();
-      setShowAddModal(false);
-      setShowPaymentModal(false);
-      setPendingBookingData(null);
-      setSelectedUser(null);
-      setPaymentAmount('');
-      setPaymentMethod('Cash');
-      setPaymentNotes('');
-      setProductSearchCode('');
-      setTransportationSelected(false);
-      setCustomTransportationCharge('');
-      setTransportationCharge(0);
-
-      if (paymentAmount && parseFloat(paymentAmount) > 0) {
-        toast.success(`Booking created! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. Payment of ₹${paymentAmount} recorded.`);
-      } else {
-        toast.success(`Booking created! Total: ₹${Math.floor(pendingBookingData.finalTotal)}. No payment recorded.`);
-      }
-    } catch (error) {
-      console.error('Error creating booking:', error);
-      toast.error('Error creating booking');
-    }
-  }
 
   const filteredBookings = bookings.filter((b) => {
     // Search filter — use nested user object
-    const matchesSearch = b.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      b.user.phone.includes(searchTerm.replace(/\D/g, ''));
+    const searchDigits = searchTerm.replace(/\D/g, '');
+    const matchesSearch = searchTerm.trim() === '' ||
+      b.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (searchDigits.length > 0 && b.user.phone.includes(searchDigits));
 
     // Status filter
     const matchesStatus = statusFilter === 'all'
@@ -873,7 +201,7 @@ export default function BookingsPage() {
         : b.status === statusFilter;
 
     // Urgent filter
-    const isUrgent = isBookingUrgent(b);
+    const isUrgent = isBookingUrgent(b.id, urgentBookingsMap);
     const matchesUrgentFilter = urgentFilter === 'all' ||
       (urgentFilter === 'urgent' && isUrgent) ||
       (urgentFilter === 'normal' && !isUrgent);
@@ -928,21 +256,26 @@ export default function BookingsPage() {
     <div className="space-y-6">
       <h1 className="text-3xl font-bold text-gray-800">Bookings</h1>
 
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
+
       {/* Delayed Bookings Alert */}
       {(() => {
         const delayedCount = filteredBookings.filter(b => delayedBookingsMap.has(b.id)).length;
         if (delayedCount > 0) {
           return (
-            <div className="bg-red-50 border-2 border-red-500 rounded-lg p-4 animate-pulse">
-              <div className="flex items-center gap-3">
-                <span className="text-3xl">🚨</span>
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-red-800">URGENT: {delayedCount} Delayed Booking{delayedCount > 1 ? 's' : ''}</h3>
-                  <p className="text-sm text-red-700">
+            <div className="bg-red-50 border-l-4 border-red-500 rounded-r-lg px-4 py-2.5 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-red-600 text-lg flex-shrink-0">🚨</span>
+                  <span className="text-sm font-bold text-red-900 flex-shrink-0">
+                    URGENT: {delayedCount} Delayed Booking{delayedCount > 1 ? 's' : ''}
+                  </span>
+                  <span className="text-xs text-red-700 truncate">
                     Product(s) not returned on scheduled date. Follow-up required immediately!
-                  </p>
+                  </span>
                 </div>
-                <span className="px-4 py-2 bg-red-600 text-white text-xl font-bold rounded-full">
+                <span className="px-3 py-1.5 bg-red-600 text-white text-xs font-semibold rounded-lg flex-shrink-0">
                   {delayedCount}
                 </span>
               </div>
@@ -1063,8 +396,8 @@ export default function BookingsPage() {
               const allProducts = Array.isArray(booking.products) ? booking.products : [];
               const activeProducts = allProducts.filter((p: any) => p.status !== 'cancelled' && p.status !== 'exchanged' && p.status !== 'discarded');
               const productCount = activeProducts.length;
-              const isUrgent = isBookingUrgent(booking);
-              const urgentReason = isUrgent ? getUrgentReason(booking) : '';
+              const isUrgent = isBookingUrgent(booking.id, urgentBookingsMap);
+              const urgentReason = isUrgent ? getUrgentReason(booking.id, urgentBookingsMap) : '';
               const isDelayed = delayedBookingsMap.has(booking.id);
               const delayedProducts = isDelayed ? delayedBookingsMap.get(booking.id)! : [];
 
@@ -1083,15 +416,6 @@ export default function BookingsPage() {
                   <td className="px-3 py-3 text-sm font-medium text-gray-900">
                     <div className="flex items-center gap-1 max-w-[200px]">
                       <span className="truncate">{booking.user.name}</span>
-                      {isUrgent && (
-                        <button
-                          onClick={() => toast.info(urgentReason)}
-                          className="flex-shrink-0 px-1.5 py-0.5 bg-red-100 text-red-600 text-xs font-bold rounded hover:bg-red-200 transition-colors"
-                          title={urgentReason}
-                        >
-                          ⚠️
-                        </button>
-                      )}
                       {isDelayed && (
                         <button
                           onClick={() => {
@@ -1173,27 +497,30 @@ export default function BookingsPage() {
 
 
 
-                      {/* Discard Icon Button — admin override */}
-                      {!['cancelled', 'completed', 'discarded'].includes(booking.status) && (
-                        <button
-                          onClick={() => setShowDiscardConfirm(booking.id)}
-                          className="text-gray-600 hover:text-gray-900 transition-colors p-1.5 rounded hover:bg-gray-100"
-                          title="Discard Booking"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      )}
+                      {/* Discard Icon Button — admin only */}
+                      <RequireRole roles={['admin']}>
+                        {!['cancelled', 'completed', 'discarded'].includes(booking.status) && (
+                          <button
+                            onClick={() => setShowDiscardConfirm(booking.id)}
+                            className="text-gray-600 hover:text-gray-900 transition-colors p-1.5 rounded hover:bg-gray-100"
+                            title="Discard Booking"
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </RequireRole>
 
-                      {/* Urgent Badge - At the end */}
+                      {/* Urgent Badge — clickable, opens conflict details modal */}
                       {isUrgent && (
-                        <span
-                          className="px-3 py-1.5 bg-red-600 text-white text-xs font-bold rounded uppercase"
+                        <button
+                          onClick={() => setUrgentModalBookingId(booking.id)}
+                          className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded uppercase cursor-pointer transition-colors"
                           title={urgentReason}
                         >
                           URGENT
-                        </span>
+                        </button>
                       )}
                     </div>
                   </td>
@@ -1203,90 +530,6 @@ export default function BookingsPage() {
           </tbody>
         </table>
       </div>
-
-      {/* Date Confirmation Modal */}
-      {
-        showDateConfirmModal && lastProductDates && pendingProduct && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-            <div className="bg-white rounded-lg p-6 max-w-md mx-4 shadow-xl">
-              <h3 className="text-xl font-bold mb-4 text-gray-900">Use Same Rental Period?</h3>
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
-                <p className="text-sm text-gray-700 mb-2">
-                  Previous product rental period:
-                </p>
-                <p className="text-lg font-bold text-blue-700">
-                  {new Date(lastProductDates.from).toLocaleDateString('en-GB')} to {new Date(lastProductDates.to).toLocaleDateString('en-GB')}
-                </p>
-              </div>
-              <p className="text-gray-700 mb-6">
-                Do you want to use the same rental period for <strong>{pendingProduct.name}</strong>?
-              </p>
-              <div className="flex gap-3">
-                <button
-                  onClick={() => confirmSameDates(true)}
-                  className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-lg transition-colors"
-                >
-                  ✓ Yes, Use Same Dates
-                </button>
-                <button
-                  onClick={() => confirmSameDates(false)}
-                  className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 rounded-lg transition-colors"
-                >
-                  ✗ No, I'll Set Different Dates
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      }
-
-      {/* Size Selection Modal — shown when adding a sized product */}
-      {showSizeSelectModal && sizeSelectProduct && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
-          <div className="bg-white rounded-lg p-6 max-w-md mx-4 shadow-xl">
-            <h3 className="text-xl font-bold mb-2 text-gray-900">Select Size</h3>
-            <p className="text-sm text-gray-600 mb-4">
-              Choose a size for <strong>{sizeSelectProduct.name}</strong> ({sizeSelectProduct.code})
-            </p>
-            <div className="flex flex-wrap gap-2 mb-6">
-              {sortSizes(sizeSelectProduct.available_sizes!).map((sz: string) => (
-                <button
-                  key={sz}
-                  onClick={async () => {
-                    setShowSizeSelectModal(false);
-                    const product = sizeSelectProduct;
-                    setSizeSelectProduct(null);
-                    await addProductWithSize(product, sz);
-                    toast.success(`${product.name} (Size ${sz}) added!`);
-                  }}
-                  className="px-5 py-2.5 rounded-full text-sm font-medium border-2 bg-white text-gray-700 border-gray-300 hover:bg-red-600 hover:text-white hover:border-red-600 transition-all duration-200"
-                >
-                  {sz}
-                </button>
-              ))}
-            </div>
-            <button
-              onClick={() => {
-                setShowSizeSelectModal(false);
-                setSizeSelectProduct(null);
-              }}
-              className="w-full py-2 text-gray-500 hover:text-gray-700 text-sm font-medium"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* QR Scanner Modal */}
-      {
-        showQRScanner && (
-          <QRScanner
-            onScan={handleQRScan}
-            onClose={() => setShowQRScanner(false)}
-          />
-        )
-      }
 
       {/* View Booking Modal */}
       {
@@ -1575,16 +818,7 @@ export default function BookingsPage() {
                       return null;
                     }
 
-                    // Helper functions to determine clothing type
-                    function isFemaleClothing(productName: string): boolean {
-                      const femaleTypes = ['lehenga', 'gown', 'girlish crop top', 'gowns'];
-                      return femaleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
-                    }
 
-                    function isMaleClothing(productName: string): boolean {
-                      const maleTypes = ['sherwani', 'suit', 'kurta pajama', 'indo western'];
-                      return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
-                    }
 
                     return productsWithData.map((product: any, index: number) => {
                       const productId = product.id;
@@ -1599,8 +833,8 @@ export default function BookingsPage() {
                       const productMeasurements = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || {};
                       const hasMeasurements = Object.keys(productMeasurements).length > 0;
                       const isExpanded = showMeasurements[uniqueKey] || showMeasurements[String(productId)] || false;
-                      const isFemale = isFemaleClothing(product.name);
-                      const isMale = isMaleClothing(product.name);
+                      const isFemale = isFemaleClothing(product.category_name);
+                      const isMale = isMaleClothing(product.category_name);
                       // Prioritize unique key first, then fall back to productId for backward compatibility
                       const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || '';
 
@@ -1720,6 +954,14 @@ export default function BookingsPage() {
                                 <div className="space-y-3">
                                   <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Male Measurements (in inches)</h5>
                                   <div className="space-y-3">
+                                    {productMeasurements.waistSize && (
+                                      <div className="grid grid-cols-2 gap-3">
+                                        <div className="bg-white border border-gray-200 rounded-lg p-3">
+                                          <p className="text-xs text-gray-600 mb-1">Waist Size</p>
+                                          <p className="text-base font-semibold text-gray-900">{productMeasurements.waistSize}"</p>
+                                        </div>
+                                      </div>
+                                    )}
                                     <div>
                                       <h6 className="text-xs font-medium text-gray-600 mb-2">Tight Fit</h6>
                                       <div className="grid grid-cols-2 gap-3">
@@ -1846,71 +1088,10 @@ export default function BookingsPage() {
         })()
       }
 
-      {/* Warning Modal */}
-      {
-        showWarningModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-lg max-w-md w-full p-6">
-              <div className="flex items-start gap-4 mb-6">
-                <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
-                  <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                  </svg>
-                </div>
-                <div className="flex-1">
-                  <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
-                  <p className="text-sm text-gray-600">
-                    {warningMessage} Do you still want to proceed?
-                  </p>
-                </div>
-              </div>
-              <div className="flex gap-3 justify-end">
-                <button
-                  onClick={() => setShowWarningModal(false)}
-                  className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={async () => {
-                    setShowWarningModal(false);
-                    // Re-run the booking creation flow (tight schedule was just the blocker)
-                    if (selectedUser) {
-                      await postBookingWithUserId(selectedUser.id);
-                    } else {
-                      // Path B — create user then proceed
-                      try {
-                        const createRes = await usersApi.create({
-                          name: addFormData.customer_name,
-                          phone: addFormData.customer_phone,
-                          phone_country: addFormData.customer_phone_country,
-                          alternate_phone: addFormData.alternate_phone,
-                          alternate_phone_country: addFormData.alternate_phone_country,
-                          email: '',
-                          address: addFormData.customer_address,
-                          role: 'customer',
-                        } as any);
-                        await postBookingWithUserId(createRes.data.id);
-                      } catch (error: any) {
-                        if (error?.response?.status === 409) {
-                          toast.error('This phone number is already registered. Search and select the existing customer from the dropdown.');
-                        } else {
-                          toast.error(error?.response?.data?.error || 'Failed to create customer');
-                        }
-                      }
-                    }
-                  }}
-                  className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
-          </div>
-        )
-      }
 
-      {/* Credit Note Modal */}
+
+      {/* Credit Note Modal — admin only */}
+      <RequireRole roles={['admin']}>
       {
         showCreditNoteModal && bookingToCancel && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1955,9 +1136,18 @@ export default function BookingsPage() {
                     <input
                       type="number"
                       value={creditNoteData.amount}
-                      onChange={(e) => setCreditNoteData({ ...creditNoteData, amount: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (isIntegerInput(val)) {
+                          setCreditNoteData({ ...creditNoteData, amount: val });
+                        }
+                      }}
+                      onKeyDown={integerKeyDown(
+                        () => creditNoteData.amount,
+                        (v) => setCreditNoteData({ ...creditNoteData, amount: v })
+                      )}
                       min="0"
-                      step="0.01"
+                      step="1"
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
                       placeholder="Enter"
                     />
@@ -1991,6 +1181,7 @@ export default function BookingsPage() {
           </div>
         )
       }
+      </RequireRole>
 
       {/* New Cancellation Modal with Policy */}
       {
@@ -1999,51 +1190,61 @@ export default function BookingsPage() {
             bookingId={bookingToCancelWithPolicy.id}
             bookingStatus={bookingToCancelWithPolicy.status}
             onCancellationComplete={handleCancellationComplete}
-            userRole="admin"
-            userName="Admin"
+            userRole={currentUser.role}
+            userName={currentUser.name}
             canCancel={true}
             autoOpen={true}
           />
         )
       }
 
-      {/* Discard Booking Confirmation Modal */}
-      {showDiscardConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg p-6 w-full max-w-md">
-            <div className="flex items-start gap-4 mb-6">
-              <div className="bg-gray-100 rounded-full p-3">
-                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
+      {/* Discard Booking Confirmation Modal — admin only */}
+      <RequireRole roles={['admin']}>
+        {showDiscardConfirm && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white rounded-lg p-6 w-full max-w-md">
+              <div className="flex items-start gap-4 mb-6">
+                <div className="bg-gray-100 rounded-full p-3">
+                  <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <h2 className="text-xl font-bold text-gray-900 mb-2">Discard Booking</h2>
+                  <p className="text-gray-600">
+                    Are you sure you want to discard booking <span className="font-semibold text-gray-900">#{showDiscardConfirm}</span>? This will release all dates for the products involved. This action cannot be undone.
+                  </p>
+                </div>
               </div>
-              <div className="flex-1">
-                <h2 className="text-xl font-bold text-gray-900 mb-2">Discard Booking</h2>
-                <p className="text-gray-600">
-                  Are you sure you want to discard booking <span className="font-semibold text-gray-900">#{showDiscardConfirm}</span>? This will release all dates for the products involved. This action cannot be undone.
-                </p>
-              </div>
-            </div>
 
-            <div className="flex gap-3">
-              <button
-                onClick={() => setShowDiscardConfirm(null)}
-                className="flex-1 px-4 py-2 border-2 border-gray-400 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
-              >
-                Go Back
-              </button>
-              <button
-                onClick={() => handleDiscardBooking(showDiscardConfirm)}
-                className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
-              >
-                🗑️ Discard
-              </button>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDiscardConfirm(null)}
+                  className="flex-1 px-4 py-2 border-2 border-gray-400 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium"
+                >
+                  Go Back
+                </button>
+                <button
+                  onClick={() => handleDiscardBooking(showDiscardConfirm)}
+                  className="flex-1 px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 transition-colors font-medium"
+                >
+                  🗑️ Discard
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
+      </RequireRole>
+
+      {/* Urgent Details Modal */}
+      {urgentModalBookingId && urgentBookingsMap[urgentModalBookingId]?.conflicts && (
+        <UrgentDetailsModal
+          bookingId={urgentModalBookingId}
+          conflicts={urgentBookingsMap[urgentModalBookingId].conflicts}
+          onClose={() => setUrgentModalBookingId(null)}
+        />
       )}
 
     </div >
   );
 }
-

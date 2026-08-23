@@ -6,11 +6,16 @@ import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import Link from 'next/link';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useAuth } from '@/lib/authContext';
+import { isBookingUrgent, getUrgentReason, isPending } from '@/lib/bookingHelpers';
+import { BookingStatusIcon } from '@/components/common/BookingStatusIcon';
 
 export default function MyBookingsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const auth = useAuth();
   if (!auth.user) return null;
   const currentUser = auth.user;
@@ -25,15 +30,7 @@ export default function MyBookingsPage() {
   const [isSearching, setIsSearching] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string>('all'); // Status filter
   
-  // Lookup helpers for urgent booking status (data comes from backend API)
-  function isBookingUrgent(booking: Booking): boolean {
-    return urgentBookingsMap[booking.id]?.is_urgent ?? false;
-  }
 
-  function getUrgentReason(booking: Booking): string {
-    const reasons = urgentBookingsMap[booking.id]?.reasons ?? [];
-    return reasons.length > 0 ? reasons.join(', ') : 'Tight schedule';
-  }
 
   // Handle search across all bookings
   function handleSearch(query: string) {
@@ -141,135 +138,13 @@ export default function MyBookingsPage() {
       toast.success('Booking deleted successfully');
     } catch (error) {
       console.error('Error deleting booking:', error);
-      toast.error('Failed to delete booking. Please try again.');
+      addAlert('Failed to delete booking. Please try again.');
     }
   }
 
-  function isPending(booking: Booking): boolean {
-    // A booking is pending if its status is 'pending'
-    return booking.status === 'pending';
-  }
 
-  function getStatusIcon(status: string, booking: Booking) {
-    // If booking is cancelled, show cancelled status
-    if (status === 'cancelled' || booking.status === 'cancelled') {
-      return (
-        <div className="flex items-center text-red-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Cancelled
-        </div>
-      );
-    }
 
-    // If status is already completed (refund processed), show completed
-    if (status === 'completed') {
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Completed
-        </div>
-      );
-    }
 
-    // Use the booking status from backend - backend updates status based on product states and payments
-    // Simplified logic: trust the backend status
-    let displayStatus = status;
-    
-    // Check if refund exists (completed)
-    if (status === 'completed' || displayStatus === 'completed') {
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Completed
-        </div>
-      );
-    }
-
-    if (status === 'in_progress') {
-      // Check if it's partially completed (multiple products with different dates)
-      const products = Array.isArray(booking.products) ? booking.products : [];
-      if (products.length > 1) {
-        const dates = products.map((p: any) => ({
-          from: p.booked_from || booking.booked_from,
-          to: p.booked_to || booking.booked_to
-        }));
-        const uniqueDates = new Set(dates.map((d: any) => `${d.from}-${d.to}`));
-        if (uniqueDates.size > 1) {
-          return (
-            <div className="flex items-center text-orange-600">
-              <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                <path
-                  fillRule="evenodd"
-                  d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              Partially Completed
-            </div>
-          );
-        }
-      }
-      return (
-        <div className="flex items-center text-blue-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Under Process
-        </div>
-      );
-    }
-
-    if (status === 'confirmed') {
-      return (
-        <div className="flex items-center text-green-600">
-          <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-            <path
-              fillRule="evenodd"
-              d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
-              clipRule="evenodd"
-            />
-          </svg>
-          Order Confirmed
-        </div>
-      );
-    }
-
-    // Pending (no payment recorded)
-    return (
-      <div className="flex items-center text-gray-600">
-        <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-          <path
-            fillRule="evenodd"
-            d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
-            clipRule="evenodd"
-          />
-        </svg>
-        Payment Pending
-      </div>
-    );
-  }
 
   if (loading) {
     return (
@@ -281,6 +156,8 @@ export default function MyBookingsPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
+      {/* Inline alert banner */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
       <h1 className="text-3xl font-bold text-gray-900 mb-8">My Bookings</h1>
 
       {/* Search Bar */}
@@ -372,9 +249,9 @@ export default function MyBookingsPage() {
             ) : (
               <div className="grid grid-cols-1 gap-6">{displayBookings.map((booking) => {
             const products = Array.isArray(booking.products) ? booking.products : [];
-            const canDelete = isPending(booking);
-            const isUrgent = isBookingUrgent(booking);
-            const urgentReason = isUrgent ? getUrgentReason(booking) : '';
+            const canDelete = isPending(booking.status);
+            const isUrgent = isBookingUrgent(booking.id, urgentBookingsMap);
+            const urgentReason = isUrgent ? getUrgentReason(booking.id, urgentBookingsMap) : '';
             
             return (
               <div
@@ -419,7 +296,7 @@ export default function MyBookingsPage() {
 
                     {/* Booking Details */}
                     <div className="flex-1">
-                      {getStatusIcon(booking.status, booking)}
+                      <BookingStatusIcon booking={booking} />
                       <p className="text-red-600 font-semibold mt-2">
                         Dates:{' '}
                         {new Date(booking.booked_from).toLocaleDateString('en-GB')} To{' '}

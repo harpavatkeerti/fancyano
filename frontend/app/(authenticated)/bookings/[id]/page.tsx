@@ -7,9 +7,14 @@ import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { makeShareableUrl } from '@/lib/urlHelper';
 import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon, PhoneInput } from '@/components/common';
+import { getAutoCancelTimeRemaining } from '@/lib/bookingHelpers';
+import { PENDING_BOOKING_TIMEOUT_MINUTES } from '@/lib/timerConstants';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
 import RequireRole from '@/components/common/RequireRole';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useAuth } from '@/lib/authContext';
 
@@ -38,6 +43,10 @@ export default function OrderDetailsPage() {
   const currentUser = auth.user;
   const userName = currentUser.name;
   const [paymentRefreshKey, setPaymentRefreshKey] = useState(0);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
+
+  // Auto-cancel countdown timer for pending bookings (15 min)
+  const [autoCancelTime, setAutoCancelTime] = useState<{ minutes: number; seconds: number } | null>(null);
 
   // Change date form
   const [changeDateFrom, setChangeDateFrom] = useState('');
@@ -116,6 +125,29 @@ export default function OrderDetailsPage() {
       fetchSalesmanPermissions();
     }
   }, [params.id]);
+
+  // Auto-cancel countdown for pending bookings
+  useEffect(() => {
+    if (!booking || booking.status !== 'pending' || PENDING_BOOKING_TIMEOUT_MINUTES < 0) {
+      setAutoCancelTime(null);
+      return;
+    }
+
+    function tick() {
+      const remaining = getAutoCancelTimeRemaining(booking!.created_at);
+      if (remaining.isExpired) {
+        setAutoCancelTime(null);
+        addAlert(`⏱️ This booking has been auto-cancelled due to no payment within ${PENDING_BOOKING_TIMEOUT_MINUTES} minutes.`, 'warning');
+        fetchBooking();
+      } else {
+        setAutoCancelTime({ minutes: remaining.minutes, seconds: remaining.seconds });
+      }
+    }
+
+    tick(); // run immediately
+    const intervalId = setInterval(tick, 1000);
+    return () => clearInterval(intervalId);
+  }, [booking?.id, booking?.status, booking?.created_at]);
 
   async function fetchSalesmanPermissions() {
     try {
@@ -302,7 +334,7 @@ export default function OrderDetailsPage() {
     } catch (error: any) {
       console.error(`Error generating ${type}:`, error);
       const errorMessage = error.response?.data?.details || error.response?.data?.error || error.message || 'Unknown error';
-      toast.error(`Error generating ${type}: ${errorMessage}`);
+      addAlert(`Error generating ${type}: ${errorMessage}`);
     }
   }
 
@@ -347,12 +379,12 @@ export default function OrderDetailsPage() {
 
   function handleShareWhatsApp(phoneType: 'customer' | 'alternate' | 'both' = 'customer') {
     if (!booking) {
-      toast.warning('Booking information not available');
+      addAlert('Booking information not available', 'warning');
       return;
     }
 
     if (!pdfType || !booking.id) {
-      toast.warning('Please generate the document first');
+      addAlert('Please generate the document first', 'warning');
       return;
     }
 
@@ -367,7 +399,7 @@ export default function OrderDetailsPage() {
       // Fallback: construct URL from server base URL
       pdfDownloadLink = makeShareableUrl(`${SERVER_BASE_URL}/uploads/${pdfType}_${booking.id}.pdf`);
       if (/localhost|127\.0\.0\.1/.test(pdfDownloadLink)) {
-        toast.warning('Please configure NEXT_PUBLIC_SERVER_IP for mobile sharing');
+        addAlert('Please configure NEXT_PUBLIC_SERVER_IP for mobile sharing', 'warning');
       }
     }
 
@@ -381,7 +413,7 @@ export default function OrderDetailsPage() {
       if (customerPhone) {
         phoneNumbers.push(customerPhone);
       } else {
-        toast.warning('Customer phone number is invalid');
+        addAlert('Customer phone number is invalid', 'warning');
         if (phoneType === 'customer') return;
       }
     }
@@ -391,13 +423,13 @@ export default function OrderDetailsPage() {
       if (alternatePhone) {
         phoneNumbers.push(alternatePhone);
       } else {
-        toast.warning('Alternate phone number is invalid');
+        addAlert('Alternate phone number is invalid', 'warning');
         if (phoneType === 'alternate') return;
       }
     }
 
     if (phoneNumbers.length === 0) {
-      toast.error('No valid phone numbers available');
+      addAlert('No valid phone numbers available');
       return;
     }
 
@@ -416,17 +448,17 @@ export default function OrderDetailsPage() {
 
   async function handleShareEmail() {
     if (!booking?.user.name) {
-      toast.warning('Customer information not available');
+      addAlert('Customer information not available', 'warning');
       return;
     }
 
     if (!pdfPublicUrl) {
-      toast.warning('PDF not generated yet. Please generate the document first.');
+      addAlert('PDF not generated yet. Please generate the document first.', 'warning');
       return;
     }
 
     if (!pdfType) {
-      toast.warning('No document type selected.');
+      addAlert('No document type selected.', 'warning');
       return;
     }
 
@@ -438,7 +470,7 @@ export default function OrderDetailsPage() {
     if (!customerEmail) {
       const emailInput = prompt(`Enter customer email address for ${booking.user.name}:`);
       if (!emailInput || !emailInput.trim()) {
-        toast.warning('Email address is required to send email');
+        addAlert('Email address is required to send email', 'warning');
         return;
       }
       customerEmail = emailInput.trim();
@@ -478,7 +510,7 @@ export default function OrderDetailsPage() {
         window.location.href = mailtoLink;
         toast.info('Opening email client. The PDF download link is included in the email body. You can download and attach the PDF manually, or configure the email service to send automatically.');
       } else {
-        toast.error(`Failed to send email: ${error.response?.data?.details || error.response?.data?.error || error.message}`);
+        addAlert(`Failed to send email: ${error.response?.data?.details || error.response?.data?.error || error.message}`);
       }
     }
   }
@@ -522,12 +554,12 @@ export default function OrderDetailsPage() {
 
   async function handleSaveDateChange() {
     if (!changeReason.trim()) {
-      toast.warning('Please provide a reason for date change');
+      addAlert('Please provide a reason for date change', 'warning');
       return;
     }
 
     if (!changeDateFrom || !changeDateTo) {
-      toast.warning('Please select both start and end dates');
+      addAlert('Please select both start and end dates', 'warning');
       return;
     }
 
@@ -553,7 +585,7 @@ export default function OrderDetailsPage() {
       // 2. Recalculate booking-level dates
       const bookingId = booking?.id || Number(params.id);
       if (!bookingId || isNaN(bookingId)) {
-        toast.error('Invalid booking ID');
+        addAlert('Invalid booking ID');
         return;
       }
 
@@ -596,7 +628,7 @@ export default function OrderDetailsPage() {
       await fetchProductBookingsForChange(updatedProductId);
     } catch (error) {
       console.error('Error updating booking date:', error);
-      toast.error('Error updating booking date. Please try again.');
+      addAlert('Error updating booking date. Please try again.');
     }
   }
 
@@ -642,74 +674,96 @@ export default function OrderDetailsPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
       {/* Back Button and Title */}
-      <div className="flex items-center mb-8">
-        <button
-          onClick={() => router.back()}
-          className="mr-4 text-gray-600 hover:text-gray-900"
-        >
-          <svg
-            className="w-6 h-6"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex items-center">
+          <button
+            onClick={() => router.back()}
+            className="mr-4 text-gray-600 hover:text-gray-900"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M15 19l-7-7 7-7"
-            />
-          </svg>
-        </button>
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
-          {booking && (
-            <>
-              <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg text-sm font-semibold">
-                Order ID: #{booking.id}
-              </span>
-              {(() => {
-                const status = booking.status;
-                let bgColor = 'bg-gray-100';
-                let textColor = 'text-gray-800';
-                let label = status.charAt(0).toUpperCase() + status.slice(1);
+            <svg
+              className="w-6 h-6"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M15 19l-7-7 7-7"
+              />
+            </svg>
+          </button>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">Order Details</h1>
+            {booking && (
+              <>
+                <span className="px-3 py-1 bg-blue-100 text-blue-800 rounded-lg text-sm font-semibold">
+                  Order ID: #{booking.id}
+                </span>
+                {(() => {
+                  const status = booking.status;
+                  let bgColor = 'bg-gray-100';
+                  let textColor = 'text-gray-800';
+                  let label = status.charAt(0).toUpperCase() + status.slice(1);
 
-                if (status === 'pending') {
-                  bgColor = 'bg-yellow-100';
-                  textColor = 'text-yellow-800';
-                  label = 'Pending';
-                } else if (status === 'confirmed') {
-                  bgColor = 'bg-green-100';
-                  textColor = 'text-green-800';
-                  label = 'Confirmed';
-                } else if (status === 'cancelled') {
-                  bgColor = 'bg-red-100';
-                  textColor = 'text-red-800';
-                  label = 'Cancelled';
-                } else if (status === 'partially_completed') {
-                  bgColor = 'bg-blue-100';
-                  textColor = 'text-blue-800';
-                  label = 'Partially Completed';
-                } else if (status === 'completed') {
-                  bgColor = 'bg-blue-100';
-                  textColor = 'text-blue-800';
-                  label = 'Completed';
-                } else if (status === 'in_progress') {
-                  bgColor = 'bg-purple-100';
-                  textColor = 'text-purple-800';
-                  label = 'In Progress';
-                }
+                  if (status === 'pending') {
+                    bgColor = 'bg-yellow-100';
+                    textColor = 'text-yellow-800';
+                    label = 'Pending';
+                  } else if (status === 'confirmed') {
+                    bgColor = 'bg-green-100';
+                    textColor = 'text-green-800';
+                    label = 'Confirmed';
+                  } else if (status === 'cancelled') {
+                    bgColor = 'bg-red-100';
+                    textColor = 'text-red-800';
+                    label = 'Cancelled';
+                  } else if (status === 'partially_completed') {
+                    bgColor = 'bg-blue-100';
+                    textColor = 'text-blue-800';
+                    label = 'Partially Completed';
+                  } else if (status === 'completed') {
+                    bgColor = 'bg-blue-100';
+                    textColor = 'text-blue-800';
+                    label = 'Completed';
+                  } else if (status === 'in_progress') {
+                    bgColor = 'bg-purple-100';
+                    textColor = 'text-purple-800';
+                    label = 'In Progress';
+                  }
 
-                return (
-                  <span className={`px-3 py-1 rounded-lg text-sm font-semibold ${bgColor} ${textColor}`}>
-                    {label}
-                  </span>
-                );
-              })()}
-            </>
-          )}
+                  return (
+                    <span className={`px-3 py-1 rounded-lg text-sm font-semibold ${bgColor} ${textColor}`}>
+                      {label}
+                    </span>
+                  );
+                })()}
+              </>
+            )}
+          </div>
         </div>
+        {autoCancelTime && booking.status === 'pending' && (
+          <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 ${autoCancelTime.minutes < 2
+            ? 'bg-red-50 border-red-500 text-red-700'
+            : autoCancelTime.minutes < 5
+              ? 'bg-yellow-50 border-yellow-500 text-yellow-700'
+              : 'bg-blue-50 border-blue-500 text-blue-700'
+            }`}>
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <div className="flex items-baseline gap-1">
+              <span className="text-sm font-medium">Payment expires in:</span>
+              <span className="text-xl font-bold tabular-nums">
+                {String(autoCancelTime.minutes).padStart(2, '0')}:{String(autoCancelTime.seconds).padStart(2, '0')}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Quick Actions */}
@@ -1242,7 +1296,7 @@ export default function OrderDetailsPage() {
                   <button
                     onClick={async () => {
                       if (!editCustomerName.trim()) {
-                        toast.warning('Customer name is required');
+                        addAlert('Customer name is required', 'warning');
                         return;
                       }
                       setSavingCustomer(true);
@@ -1259,7 +1313,7 @@ export default function OrderDetailsPage() {
                       } catch (error: any) {
                         console.error('Error updating customer details:', error);
                         const msg = error?.response?.data?.error || error?.message || 'Failed to update customer details';
-                        toast.error(msg);
+                        addAlert(msg);
                       } finally {
                         setSavingCustomer(false);
                       }
@@ -1280,6 +1334,8 @@ export default function OrderDetailsPage() {
               </div>
             )}
           </div>
+
+
 
           {/* Payment management - shared component handles all payment/refund UI */}
           <PaymentManagement
@@ -1644,9 +1700,15 @@ export default function OrderDetailsPage() {
                       <input
                         type="number"
                         min="0"
-                        step="0.01"
+                        step="1"
                         value={dateChangeCharge}
-                        onChange={(e) => setDateChangeCharge(parseFloat(e.target.value) || 0)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (isIntegerInput(val)) {
+                            setDateChangeCharge(parseInt(val) || 0);
+                          }
+                        }}
+                        onKeyDown={integerKeyDown(() => String(dateChangeCharge || 0), (v) => setDateChangeCharge(parseInt(v) || 0))}
                         className="w-32 px-3 py-2 border border-gray-300 rounded-lg text-right focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                         placeholder="0"
                       />

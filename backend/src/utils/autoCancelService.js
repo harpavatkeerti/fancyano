@@ -1,28 +1,35 @@
 // Auto-cancel logic — called directly by autoCancelScheduler (no HTTP round-trip).
 const pool = require('../database/connection');
+const { PENDING_BOOKING_TIMEOUT_MINUTES } = require('../constants/timerConstants');
 
 /**
- * Finds pending bookings older than 5 minutes with no payment and deletes them.
+ * Finds pending bookings older than PENDING_BOOKING_TIMEOUT_MINUTES and deletes them.
+ * - Cart has a separate timer (CART_TIMEOUT_MINUTES, frontend-only).
+ * - Once a booking is created with "pending" status, the user must make a payment
+ *   (which transitions the status to "confirmed") before the timeout expires.
  * @returns {{ cancelled: Array<{id, customer_name, created_at}> }}
- * Note: customer_name is obtained via JOIN with users (b.customer_name column no longer exists).
  */
 async function checkAndCancelExpiredBookings() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    // Find pending bookings older than 5 minutes with no payment
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    // If timer is disabled (-1), skip
+    if (PENDING_BOOKING_TIMEOUT_MINUTES < 0) {
+      return { cancelled: [] };
+    }
 
+    // Find pending bookings older than the configured timeout
+    const cutoff = new Date(Date.now() - PENDING_BOOKING_TIMEOUT_MINUTES * 60 * 1000);
+
+    // Get pending bookings older than the configured timeout
     const result = await client.query(
-      `SELECT b.id, u.name AS customer_name, b.created_at 
+      `SELECT b.id, u.name AS customer_name, b.created_at
        FROM bookings b
        JOIN users u ON b.user_id = u.id
-       LEFT JOIN payment_transactions pt ON pt.booking_id = b.id AND pt.type = 'payment'
-       WHERE b.status = 'pending' 
-       AND pt.id IS NULL
+       WHERE b.status = 'pending'
        AND b.created_at < $1`,
-      [fiveMinutesAgo]
+      [cutoff]
     );
 
     const cancelledBookings = [];
@@ -33,7 +40,7 @@ async function checkAndCancelExpiredBookings() {
       cancelledBookings.push({
         id: booking.id,
         customer_name: booking.customer_name,
-        created_at: booking.created_at
+        created_at: booking.created_at,
       });
     }
 

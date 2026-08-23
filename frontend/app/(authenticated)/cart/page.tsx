@@ -5,8 +5,13 @@ import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
-import { PhoneInput } from '@/components/common';
+import { PhoneInput, TightScheduleWarningModal } from '@/components/common';
+import type { UrgentConflict } from '@rental/shared';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
+import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
+import { CART_TIMEOUT_MINUTES } from '@/lib/timerConstants';
 import { useAuth } from '@/lib/authContext';
 import type { User } from '@/lib/api';
 
@@ -31,6 +36,7 @@ export default function CartPage() {
   const [transportationCharge, setTransportationCharge] = useState(0); // Default to 0
   const [bookingPreview, setBookingPreview] = useState<any>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
   // Customer details
   const [customerName, setCustomerName] = useState('');
@@ -68,7 +74,7 @@ export default function CartPage() {
 
   // Warning modal state
   const [showWarningModal, setShowWarningModal] = useState(false);
-  const [warningMessage, setWarningMessage] = useState('');
+  const [warningConflicts, setWarningConflicts] = useState<UrgentConflict[]>([]);
   const [pendingUserIdForWarning, setPendingUserIdForWarning] = useState<number | null>(null);
 
   // Calculate time remaining before cart expires
@@ -82,7 +88,7 @@ export default function CartPage() {
       const createdAt = parseInt(cartCreatedAt, 10);
       const now = Date.now();
       const elapsedMs = now - createdAt;
-      const totalMs = 5 * 60 * 1000; // 5 minutes in milliseconds
+      const totalMs = CART_TIMEOUT_MINUTES * 60 * 1000;
       const remainingMs = totalMs - elapsedMs;
 
       if (remainingMs <= 0) {
@@ -119,7 +125,7 @@ export default function CartPage() {
         window.dispatchEvent(new Event('cartUpdated'));
 
         // Show notification to user
-        toast.info('Your cart has been cleared because no payment was recorded within 5 minutes of adding the first product.');
+        toast.info(`Your cart has been cleared because no booking was created within ${CART_TIMEOUT_MINUTES} minutes of adding the first product.`);
       }
     } catch (error) {
       console.error('Error checking cart timeout:', error);
@@ -245,73 +251,6 @@ export default function CartPage() {
     return bookingPreview?.booking_discount_amount || 0;
   }
 
-  // Check availability for all cart items before checkout
-  async function validateCartAvailability(): Promise<{ valid: boolean; errors: string[] }> {
-    const errors: string[] = [];
-
-    for (const item of cartItems) {
-      if (!item.product || !item.dateFrom || !item.dateTo) {
-        errors.push(`Invalid cart item: ${item.product?.name || 'Unknown product'}`);
-        continue;
-      }
-
-      try {
-        // Fetch current bookings for this product (filtered by size if applicable)
-        const response = await bookingsApi.getByProductId(item.product.id, item.size || undefined);
-        const bookings = response.data || [];
-
-        const fromDate = new Date(item.dateFrom);
-        const toDate = new Date(item.dateTo);
-        fromDate.setHours(0, 0, 0, 0);
-        toDate.setHours(0, 0, 0, 0);
-
-        // Check against existing bookings
-        for (const booking of bookings) {
-          if (!booking.booked_from || !booking.booked_to) continue;
-
-          const bookingFrom = new Date(booking.booked_from);
-          const bookingTo = new Date(booking.booked_to);
-          bookingFrom.setHours(0, 0, 0, 0);
-          bookingTo.setHours(0, 0, 0, 0);
-
-          // Check if dates overlap
-          if (fromDate <= bookingTo && toDate >= bookingFrom) {
-            errors.push(
-              `${item.product.name} (${item.product.code || 'N/A'}${item.size ? ` / ${item.size}` : ''}): Already booked from ${new Date(booking.booked_from).toLocaleDateString('en-GB')} to ${new Date(booking.booked_to).toLocaleDateString('en-GB')}`
-            );
-          }
-        }
-
-        // Check for duplicate products in cart with overlapping dates (same product+size)
-        for (const otherItem of cartItems) {
-          if (otherItem === item) continue;
-          if (otherItem.product.id !== item.product.id) continue;
-          // Only consider overlap if same size (or both sizeless)
-          if ((otherItem.size || null) !== (item.size || null)) continue;
-          if (!otherItem.dateFrom || !otherItem.dateTo) continue;
-
-          const otherFrom = new Date(otherItem.dateFrom);
-          const otherTo = new Date(otherItem.dateTo);
-          otherFrom.setHours(0, 0, 0, 0);
-          otherTo.setHours(0, 0, 0, 0);
-
-          if (fromDate <= otherTo && toDate >= otherFrom) {
-            errors.push(
-              `${item.product.name} (${item.product.code || 'N/A'}${item.size ? ` / ${item.size}` : ''}): Duplicate in cart with overlapping dates (${new Date(otherItem.dateFrom).toLocaleDateString('en-GB')} to ${new Date(otherItem.dateTo).toLocaleDateString('en-GB')})`
-            );
-          }
-        }
-      } catch (error) {
-        console.error(`Error checking availability for product ${item.product.id}:`, error);
-        errors.push(`Failed to verify availability for ${item.product.name}`);
-      }
-    }
-
-    return {
-      valid: errors.length === 0,
-      errors
-    };
-  }
 
   // Debounced phone search — min 3 digits, fires 350ms after last keystroke
   function handlePhoneSearch(digits: string) {
@@ -351,48 +290,42 @@ export default function CartPage() {
 
   async function handleConfirm() {
     if (!customerName || !customerPhone || !alternatePhone) {
-      toast.warning('Please fill in all customer details');
+      addAlert('Please fill in all customer details', 'warning');
       return;
     }
 
     if (!isValidPhoneNumber(customerPhone, customerPhoneCountry)) {
-      toast.warning('Please enter a valid phone number');
+      addAlert('Please enter a valid phone number', 'warning');
       return;
     }
 
     if (!isValidPhoneNumber(alternatePhone, alternatePhoneCountry)) {
-      toast.warning('Please enter a valid alternate phone number');
+      addAlert('Please enter a valid alternate phone number', 'warning');
       return;
     }
 
     if (cartItems.length === 0) {
-      toast.warning('Your cart is empty');
+      addAlert('Your cart is empty', 'warning');
       return;
     }
 
-    // Validate availability before proceeding
-    const validation = await validateCartAvailability();
-    if (!validation.valid) {
-      toast.error(`Cannot proceed with checkout:\n\n${validation.errors.join('\n')}\n\nPlease remove conflicting items or update dates.`);
-      return;
-    }
 
     // Check real-time availability from database
     const dbCheck = await checkDatabaseAvailability();
     if (!dbCheck.success) {
-      toast.error(dbCheck.message);
+      addAlert(dbCheck.message);
       return;
     }
 
     // Check for tight schedule (bookings within 2 days)
     const tightScheduleCheck = await checkTightSchedule();
     if (tightScheduleCheck.hasTightSchedule) {
-      setWarningMessage(tightScheduleCheck.message);
+      setWarningConflicts(tightScheduleCheck.conflicts);
       // ── Path A: existing user ──
       if (selectedUser) {
         const freshRes = await usersApi.getById(selectedUser.id).catch(() => null);
         const freshUser: User | null = freshRes?.data || null;
-        if (!freshUser) { toast.error('Could not verify customer.'); return; }
+        if (!freshUser) { addAlert('Could not verify customer.'); return; }
         const diff = computeUserDiff(freshUser);
         if (diff.length > 0) {
           setPendingUserId(freshUser.id);
@@ -416,7 +349,7 @@ export default function CartPage() {
     if (selectedUser) {
       const freshRes = await usersApi.getById(selectedUser.id).catch(() => null);
       const freshUser: User | null = freshRes?.data || null;
-      if (!freshUser) { toast.error('Could not verify customer.'); return; }
+      if (!freshUser) { addAlert('Could not verify customer.'); return; }
 
       // If the user was soft-deleted, always reactivate + update details in one call
       if (freshUser.is_deleted) {
@@ -434,7 +367,7 @@ export default function CartPage() {
         setPendingFreshUser(freshUser);
         setPendingUserUpdateData(buildUpdatePayload());
         setUserConfirmDiff(diff);
-        setWarningMessage(''); // clear any stale tight-schedule warning from a previous attempt
+        setWarningConflicts([]); // clear any stale tight-schedule warning from a previous attempt
         setShowUserConfirmDialog(true);
         return;
       }
@@ -458,9 +391,9 @@ export default function CartPage() {
       await createBooking(createRes.data.id);
     } catch (error: any) {
       if (error?.response?.status === 409) {
-        toast.error('This phone number is already registered. Search and select the customer from the dropdown.');
+        addAlert('This phone number is already registered. Search and select the customer from the dropdown.');
       } else {
-        toast.error(error?.response?.data?.error || 'Failed to create customer');
+        addAlert(error?.response?.data?.error || 'Failed to create customer');
       }
     }
   }
@@ -546,14 +479,14 @@ export default function CartPage() {
       if (response.data.has_tight_schedule) {
         return {
           hasTightSchedule: true,
-          message: response.data.warnings.join(' ')
+          conflicts: response.data.conflicts
         };
       }
 
-      return { hasTightSchedule: false, message: '' };
+      return { hasTightSchedule: false, conflicts: [] };
     } catch (error) {
       console.error('Error checking tight schedule:', error);
-      return { hasTightSchedule: false, message: '' };
+      return { hasTightSchedule: false, conflicts: [] };
     }
   }
 
@@ -595,7 +528,7 @@ export default function CartPage() {
       // Redirect to order details page using the booking ID from response
       const bookingId = bookingResponse.data?.id;
       if (!bookingId) {
-        toast.error('Booking created but no ID returned from server.');
+        addAlert('Booking created but no ID returned from server.');
         return;
       }
       router.push(`/bookings/${bookingId}`);
@@ -614,22 +547,10 @@ export default function CartPage() {
         fullErrorMessage += `\n\nHint: ${errorHint}`;
       }
 
-      toast.error(fullErrorMessage);
+      addAlert(fullErrorMessage);
     }
   }
 
-
-  // Determine if product is female clothing (Lehenga, Gown, Girlish Crop Top)
-  function isFemaleClothing(productName: string): boolean {
-    const femaleTypes = ['Lehenga', 'Gown', 'Gowns', 'Girlish Crop Top'];
-    return femaleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
-  }
-
-  // Determine if product is male clothing (Sherwani, Suit, Kurta Pajama, Indo Western)
-  function isMaleClothing(productName: string): boolean {
-    const maleTypes = ['Sherwani', 'Suit', 'Kurta Pajama', 'Indo Western'];
-    return maleTypes.some(type => productName.toLowerCase().includes(type.toLowerCase()));
-  }
 
   if (cartItems.length === 0) {
     return (
@@ -649,6 +570,8 @@ export default function CartPage() {
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
+      {/* Inline alert banner for checkout errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
       <div className="flex items-center justify-between mb-8">
         <h1 className="text-3xl font-bold text-gray-900">Cart</h1>
         {timeRemaining && (
@@ -797,14 +720,34 @@ export default function CartPage() {
                           value={item.discountValue || 0}
                           disabled={!discountAllowed}
                           onChange={(e) => {
-                            const value = parseFloat(e.target.value) || 0;
-                            const updatedItems = [...cartItems];
-                            updatedItems[index] = {
-                              ...updatedItems[index],
-                              discountValue: value
-                            };
-                            setCartItems(updatedItems);
-                            localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                            const val = e.target.value;
+                            if (isIntegerInput(val)) {
+                              const value = parseInt(val) || 0;
+                              const updatedItems = [...cartItems];
+                              updatedItems[index] = {
+                                ...updatedItems[index],
+                                discountValue: value
+                              };
+                              setCartItems(updatedItems);
+                              localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                              e.preventDefault();
+                              return;
+                            }
+                            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              const step = item.discountType === 'percentage' ? 1 : 10;
+                              const maxVal = item.discountType === 'percentage' ? 100 : item.product.rent;
+                              const current = item.discountValue || 0;
+                              const next = e.key === 'ArrowUp' ? Math.min(maxVal, current + step) : Math.max(0, current - step);
+                              const updatedItems = [...cartItems];
+                              updatedItems[index] = { ...updatedItems[index], discountValue: next };
+                              setCartItems(updatedItems);
+                              localStorage.setItem('salesman_cart', JSON.stringify(updatedItems));
+                            }
                           }}
                           placeholder="0"
                           className="w-24 px-2 py-1.5 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
@@ -864,10 +807,21 @@ export default function CartPage() {
                     type="number"
                     value={transportationCharge}
                     onChange={(e) => {
-                      const value = e.target.value;
-                      // Only allow positive numbers
-                      if (value === '' || parseFloat(value) >= 0) {
-                        setTransportationCharge(parseFloat(value) || 0);
+                      const val = e.target.value;
+                      if (isIntegerInput(val)) {
+                        setTransportationCharge(parseInt(val) || 0);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                        e.preventDefault();
+                        return;
+                      }
+                      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        const current = transportationCharge || 0;
+                        const next = e.key === 'ArrowUp' ? current + 1 : Math.max(0, current - 1);
+                        setTransportationCharge(next);
                       }
                     }}
                     placeholder="Enter amount"
@@ -966,22 +920,37 @@ export default function CartPage() {
                           value={discountValue || ''}
                           disabled={!discountAllowed}
                           onChange={(e) => {
-                            const value = parseFloat(e.target.value) || 0;
-                            // Validate percentage (0-100) or amount
-                            if (discountType === 'percentage') {
-                              if (value >= 0 && value <= 100) {
-                                setDiscountValue(value);
+                            const val = e.target.value;
+                            if (isIntegerInput(val)) {
+                              const value = parseInt(val) || 0;
+                              if (discountType === 'percentage') {
+                                if (value >= 0 && value <= 100) {
+                                  setDiscountValue(value);
+                                }
+                              } else {
+                                if (value >= 0) {
+                                  setDiscountValue(value);
+                                }
                               }
-                            } else {
-                              if (value >= 0) {
-                                setDiscountValue(value);
-                              }
+                            }
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === '.' || e.key === 'e' || e.key === 'E') {
+                              e.preventDefault();
+                              return;
+                            }
+                            if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+                              e.preventDefault();
+                              const current = discountValue || 0;
+                              const next = e.key === 'ArrowUp' ? current + 1 : Math.max(0, current - 1);
+                              if (discountType === 'percentage' && next > 100) return;
+                              setDiscountValue(next);
                             }
                           }}
                           placeholder={discountType === 'percentage' ? 'Enter percentage (0-100)' : 'Enter amount'}
                           min="0"
                           max={discountType === 'percentage' ? 100 : undefined}
-                          step={discountType === 'percentage' ? '0.1' : '1'}
+                          step="1"
                           className="w-48 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
                           required
                         />
@@ -1020,7 +989,7 @@ export default function CartPage() {
                       const c1 = getCountryByCode(customerPhoneCountry);
                       const c2 = getCountryByCode(alternatePhoneCountry);
                       if (c1 && c2 && `${c1.callingCode}${value}` === `${c2.callingCode}${alternatePhone}`) {
-                        toast.warning('Phone numbers cannot be the same');
+                        addAlert('Phone numbers cannot be the same', 'warning');
                       }
                     }
                   }}
@@ -1096,7 +1065,7 @@ export default function CartPage() {
                     const c1 = getCountryByCode(customerPhoneCountry);
                     const c2 = getCountryByCode(alternatePhoneCountry);
                     if (c1 && c2 && `${c1.callingCode}${customerPhone}` === `${c2.callingCode}${value}`) {
-                      toast.warning('Phone numbers cannot be the same');
+                      addAlert('Phone numbers cannot be the same', 'warning');
                     }
                   }
                 }}
@@ -1157,61 +1126,35 @@ export default function CartPage() {
       </div>
 
       {/* Tight Schedule Warning Modal */}
-      {showWarningModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg max-w-md w-full p-6">
-            <div className="flex items-start gap-4 mb-6">
-              <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
-                <svg className="w-6 h-6 text-yellow-600" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-bold text-gray-900 mb-2">Warning</h3>
-                <p className="text-sm text-gray-600">
-                  {warningMessage} Do you still want to proceed?
-                </p>
-              </div>
-            </div>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowWarningModal(false)}
-                className="px-6 py-2 border-2 border-red-600 text-red-600 rounded-lg font-medium hover:bg-red-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  setShowWarningModal(false);
-                  if (pendingUserIdForWarning !== null) {
-                    // Path A — user already resolved
-                    await createBooking(pendingUserIdForWarning);
-                  } else {
-                    // Path B — create user then book
-                    try {
-                      const createRes = await usersApi.create({
-                        name: customerName,
-                        phone: customerPhone,
-                        phone_country: customerPhoneCountry,
-                        alternate_phone: alternatePhone,
-                        alternate_phone_country: alternatePhoneCountry,
-                        email: '',
-                        address: customerAddress,
-                        role: 'customer',
-                      } as any);
-                      await createBooking(createRes.data.id);
-                    } catch (error: any) {
-                      toast.error(error?.response?.data?.error || 'Failed to create customer');
-                    }
-                  }
-                }}
-                className="px-6 py-2 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
-              >
-                Continue
-              </button>
-            </div>
-          </div>
-        </div>
+      {showWarningModal && warningConflicts.length > 0 && (
+        <TightScheduleWarningModal
+          conflicts={warningConflicts}
+          onCancel={() => setShowWarningModal(false)}
+          onContinue={async () => {
+            setShowWarningModal(false);
+            if (pendingUserIdForWarning !== null) {
+              // Path A — user already resolved
+              await createBooking(pendingUserIdForWarning);
+            } else {
+              // Path B — create user then book
+              try {
+                const createRes = await usersApi.create({
+                  name: customerName,
+                  phone: customerPhone,
+                  phone_country: customerPhoneCountry,
+                  alternate_phone: alternatePhone,
+                  alternate_phone_country: alternatePhoneCountry,
+                  email: '',
+                  address: customerAddress,
+                  role: 'customer',
+                } as any);
+                await createBooking(createRes.data.id);
+              } catch (error: any) {
+                addAlert(error?.response?.data?.error || 'Failed to create customer');
+              }
+            }
+          }}
+        />
       )}
 
       {/* User Details Change Confirm Dialog */}
@@ -1232,6 +1175,8 @@ export default function CartPage() {
                 </div>
               ))}
             </div>
+            {/* Alert banner inside modal */}
+            <AlertBanner alerts={alerts} onDismiss={removeAlert} className="mb-4" />
             <div className="flex gap-3 justify-end">
               <button
                 onClick={() => {
@@ -1256,10 +1201,10 @@ export default function CartPage() {
                     try {
                       await usersApi.update(pendingUserId, pendingUserUpdateData);
                     } catch {
-                      toast.warning('Could not update customer details, proceeding with booking.');
+                      addAlert('Could not update customer details, proceeding with booking.', 'warning');
                     }
                   }
-                  if (warningMessage) {
+                  if (warningConflicts.length > 0) {
                     // Came from tight schedule path — show tight schedule warning now
                     setShowWarningModal(true);
                   } else {

@@ -24,7 +24,7 @@ const NAV_ITEMS = {
     { name: 'Home',               href: '/home'               },
     { name: 'Products',           href: '/products'           },
     { name: 'Cart',               href: '/cart'               },
-    { name: 'My Bookings',        href: '/my-bookings'        },
+    { name: 'Bookings',            href: '/bookings'           },
     { name: 'Support',            href: '/complaints'         },
   ],
   customer: [

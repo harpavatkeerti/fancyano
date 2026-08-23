@@ -193,6 +193,7 @@ class AvailabilityService {
    */
   async checkTightScheduleForProducts(products) {
     const warnings = [];
+    const conflicts = [];
 
     for (const product of products) {
       const { product_id, size, booked_from, booked_to } = product;
@@ -209,14 +210,29 @@ class AvailabilityService {
         } else {
           warnings.push(`${name} (${code}) is booked ${match.gap_days} day after your selected date.`);
         }
+
+        conflicts.push({
+          product_code: code,
+          product_name: name,
+          size: size || null,
+          booked_from,
+          booked_to,
+          neighbour_booking_id: match.booking_id,
+          neighbour_from: match.booked_from,
+          neighbour_to: match.booked_to,
+          gap_days: match.gap_days,
+          direction: match.direction,
+        });
       }
     }
 
     return {
       has_tight_schedule: warnings.length > 0,
-      warnings
+      warnings,
+      conflicts,
     };
   }
+
 
   /**
    * Check if an existing booking is urgent (has tight schedule with neighbouring bookings).
@@ -226,7 +242,7 @@ class AvailabilityService {
   async checkTightScheduleForBooking(bookingId) {
     // Get the active products in this booking
     const productsResult = await pool.query(
-      `SELECT bp.product_id, bp.size, bp.booked_from, bp.booked_to, p.code AS product_code
+      `SELECT bp.product_id, bp.size, bp.booked_from, bp.booked_to, p.code AS product_code, p.name AS product_name
        FROM booking_products bp
        JOIN products p ON bp.product_id = p.id
        WHERE bp.booking_id = $1
@@ -240,14 +256,15 @@ class AvailabilityService {
       [bookingId]
     );
     if (bookingResult.rows.length === 0) {
-      return { is_urgent: false, reasons: [] };
+      return { is_urgent: false, reasons: [], conflicts: [] };
     }
     const bookingStatus = bookingResult.rows[0].status;
     if (['cancelled', 'completed', 'discarded'].includes(bookingStatus)) {
-      return { is_urgent: false, reasons: [] };
+      return { is_urgent: false, reasons: [], conflicts: [] };
     }
 
     const reasons = [];
+    const conflicts = [];
 
     for (const bp of productsResult.rows) {
       const nearby = await this._findNearbyBookings(
@@ -260,19 +277,33 @@ class AvailabilityService {
         } else {
           reasons.push(`${bp.product_code}: Only ${match.gap_days} day gap after return`);
         }
+
+        conflicts.push({
+          product_code: bp.product_code,
+          product_name: bp.product_name,
+          size: bp.size || null,
+          booked_from: bp.booked_from,
+          booked_to: bp.booked_to,
+          neighbour_booking_id: match.booking_id,
+          neighbour_from: match.booked_from,
+          neighbour_to: match.booked_to,
+          gap_days: match.gap_days,
+          direction: match.direction,
+        });
       }
     }
 
     return {
       is_urgent: reasons.length > 0,
-      reasons
+      reasons,
+      conflicts,
     };
   }
 
   /**
    * Bulk check urgency for multiple bookings (used by the booking list page).
    * @param {number[]} bookingIds - Array of booking IDs
-   * @returns {Promise<Object>} - Map of { [bookingId]: { is_urgent, reasons } }
+   * @returns {Promise<Object>} - Map of { [bookingId]: { is_urgent, reasons, conflicts } }
    */
   async checkTightScheduleBulk(bookingIds) {
     const result = {};
@@ -281,7 +312,7 @@ class AvailabilityService {
       try {
         result[bookingId] = await this.checkTightScheduleForBooking(bookingId);
       } catch (error) {
-        result[bookingId] = { is_urgent: false, reasons: [] };
+        result[bookingId] = { is_urgent: false, reasons: [], conflicts: [] };
       }
     }
 

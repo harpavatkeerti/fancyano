@@ -148,4 +148,98 @@ describe('Availability Routes', () => {
       expect(response.body).toHaveProperty('error');
     });
   });
+
+  describe('GET /availability/urgent/:bookingId', () => {
+    let urgentBookingId;
+    let urgentProductId;
+    let neighbourBookingId;
+
+    beforeAll(async () => {
+      // Create a product for urgency testing
+      const productRes = await pool.query(
+        `INSERT INTO products (code, name, rent, security_deposit, category)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id`,
+        ['TEST-URGENT-001', 'Test Urgent Product', 30000, 10000, 'test']
+      );
+      urgentProductId = productRes.rows[0].id;
+
+      // Create a booking with a product
+      const bookingRes = await pool.query(
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
+         RETURNING id`,
+        ['2024-01-01', '2024-07-10', '2024-07-15', 'confirmed']
+      );
+      urgentBookingId = bookingRes.rows[0].id;
+
+      await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [urgentBookingId, urgentProductId, '2024-07-10', '2024-07-15', 'confirmed', 30000, 10000]
+      );
+
+      // Create a neighbouring booking with only 1 day gap (tight schedule)
+      const neighbourRes = await pool.query(
+        `INSERT INTO bookings (user_id, booking_date, booked_from, booked_to, status)
+         VALUES (1, $1, $2, $3, $4)
+         RETURNING id`,
+        ['2024-01-01', '2024-07-16', '2024-07-20', 'confirmed']
+      );
+      neighbourBookingId = neighbourRes.rows[0].id;
+
+      await pool.query(
+        `INSERT INTO booking_products (booking_id, product_id, booked_from, booked_to, status, rent, security_deposit)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [neighbourBookingId, urgentProductId, '2024-07-16', '2024-07-20', 'confirmed', 30000, 10000]
+      );
+    });
+
+    afterAll(async () => {
+      await pool.query('DELETE FROM booking_products WHERE booking_id IN ($1, $2)', [urgentBookingId, neighbourBookingId]);
+      await pool.query('DELETE FROM bookings WHERE id IN ($1, $2)', [urgentBookingId, neighbourBookingId]);
+      await pool.query('DELETE FROM products WHERE id = $1', [urgentProductId]);
+    });
+
+    it('should return urgency data with conflicts array', async () => {
+      const response = await request(app)
+        .get(`/availability/urgent/${urgentBookingId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body).toHaveProperty('is_urgent');
+      expect(response.body).toHaveProperty('reasons');
+      expect(response.body).toHaveProperty('conflicts');
+      expect(Array.isArray(response.body.conflicts)).toBe(true);
+    });
+
+    it('should return structured conflict data for tight schedules', async () => {
+      const response = await request(app)
+        .get(`/availability/urgent/${urgentBookingId}`);
+
+      expect(response.status).toBe(200);
+      expect(response.body.is_urgent).toBe(true);
+      expect(response.body.conflicts.length).toBeGreaterThanOrEqual(1);
+
+      const conflict = response.body.conflicts[0];
+      expect(conflict).toHaveProperty('product_code', 'TEST-URGENT-001');
+      expect(conflict).toHaveProperty('product_name', 'Test Urgent Product');
+      expect(conflict).toHaveProperty('booked_from');
+      expect(conflict).toHaveProperty('booked_to');
+      expect(conflict).toHaveProperty('neighbour_booking_id');
+      expect(conflict).toHaveProperty('neighbour_from');
+      expect(conflict).toHaveProperty('neighbour_to');
+      expect(conflict).toHaveProperty('gap_days');
+      expect(conflict).toHaveProperty('direction');
+      expect(['before', 'after']).toContain(conflict.direction);
+    });
+
+    it('should return empty conflicts for non-existent booking', async () => {
+      const response = await request(app)
+        .get('/availability/urgent/999999');
+
+      expect(response.status).toBe(200);
+      expect(response.body.is_urgent).toBe(false);
+      expect(response.body.conflicts).toEqual([]);
+    });
+  });
 });

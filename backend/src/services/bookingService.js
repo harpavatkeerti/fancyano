@@ -666,13 +666,15 @@ class BookingService {
             'special_requirements', bp.special_requirements,
             'picked_up_at', bp.picked_up_at,
             'returned_at', bp.returned_at,
-            'size', bp.size
+            'size', bp.size,
+            'category_name', pc.name
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
        FROM bookings b
        JOIN users u ON b.user_id = u.id
        LEFT JOIN booking_products bp ON b.id = bp.booking_id
        LEFT JOIN products p ON bp.product_id = p.id
+       LEFT JOIN product_categories pc ON p.category_id = pc.id
        WHERE b.id = $1
        GROUP BY b.id, u.id`,
       [bookingId]
@@ -747,13 +749,15 @@ class BookingService {
             'status', bp.status,
             'booked_from', bp.booked_from,
             'booked_to', bp.booked_to,
-            'size', bp.size
+            'size', bp.size,
+            'category_name', pc.name
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
       FROM bookings b
       JOIN users u ON b.user_id = u.id
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
       LEFT JOIN products p ON bp.product_id = p.id
+      LEFT JOIN product_categories pc ON p.category_id = pc.id
       WHERE 1=1
     `;
 

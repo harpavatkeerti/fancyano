@@ -226,7 +226,7 @@ describe('AvailabilityService', () => {
 
     it('should detect tight schedule — 1 day gap after return', async () => {
       // Existing booking: Aug 12-15
-      await createBooking(tightProductId, '2025-08-12', '2025-08-15');
+      const neighbourBookingId = await createBooking(tightProductId, '2025-08-12', '2025-08-15');
 
       // New product: Aug 9-11 → 1 day gap before the existing booking picks up on Aug 12
       const result = await availabilityService.checkTightScheduleForProducts([
@@ -236,6 +236,12 @@ describe('AvailabilityService', () => {
       expect(result.has_tight_schedule).toBe(true);
       expect(result.warnings.length).toBeGreaterThan(0);
       expect(result.warnings[0]).toContain('1 day after');
+
+      // Verify conflicts array mirrors warnings
+      expect(result.conflicts.length).toBeGreaterThan(0);
+      expect(result.conflicts[0].gap_days).toBe(1);
+      expect(result.conflicts[0].direction).toBe('after');
+      expect(result.conflicts[0].neighbour_booking_id).toBe(neighbourBookingId);
     });
 
     it('should detect tight schedule — 2 day gap before pickup', async () => {
@@ -250,6 +256,11 @@ describe('AvailabilityService', () => {
       expect(result.has_tight_schedule).toBe(true);
       expect(result.warnings.length).toBeGreaterThan(0);
       expect(result.warnings[0]).toContain('2 day before');
+
+      // Verify conflicts array
+      expect(result.conflicts.length).toBeGreaterThan(0);
+      expect(result.conflicts[0].gap_days).toBe(2);
+      expect(result.conflicts[0].direction).toBe('before');
     });
 
     it('should NOT flag tight schedule — 3 day gap', async () => {
@@ -263,6 +274,7 @@ describe('AvailabilityService', () => {
 
       expect(result.has_tight_schedule).toBe(false);
       expect(result.warnings).toHaveLength(0);
+      expect(result.conflicts).toHaveLength(0);
     });
 
     it('should NOT flag tight schedule for different sizes', async () => {
@@ -275,6 +287,7 @@ describe('AvailabilityService', () => {
       ]);
 
       expect(result.has_tight_schedule).toBe(false);
+      expect(result.conflicts).toHaveLength(0);
     });
 
     it('should NOT flag tight schedule for cancelled product status', async () => {
@@ -287,6 +300,7 @@ describe('AvailabilityService', () => {
       ]);
 
       expect(result.has_tight_schedule).toBe(false);
+      expect(result.conflicts).toHaveLength(0);
     });
 
     it('should NOT flag tight schedule for completed booking status', async () => {
@@ -299,6 +313,32 @@ describe('AvailabilityService', () => {
       ]);
 
       expect(result.has_tight_schedule).toBe(false);
+      expect(result.conflicts).toHaveLength(0);
+    });
+
+    it('should return conflict objects with correct shape', async () => {
+      // Existing booking: Feb 10-15
+      const neighbourId = await createBooking(tightProductId, '2026-02-10', '2026-02-15');
+
+      // New product: Feb 16-20 → 1 day gap after return
+      const result = await availabilityService.checkTightScheduleForProducts([
+        { product_id: tightProductId, size: null, booked_from: '2026-02-16', booked_to: '2026-02-20' }
+      ]);
+
+      expect(result.has_tight_schedule).toBe(true);
+      expect(result.conflicts).toHaveLength(1);
+
+      const conflict = result.conflicts[0];
+      expect(conflict).toHaveProperty('product_code', 'TEST-TIGHT-001');
+      expect(conflict).toHaveProperty('product_name', 'Tight Schedule Product');
+      expect(conflict).toHaveProperty('size', null);
+      expect(conflict).toHaveProperty('booked_from', '2026-02-16');
+      expect(conflict).toHaveProperty('booked_to', '2026-02-20');
+      expect(conflict).toHaveProperty('neighbour_booking_id', neighbourId);
+      expect(conflict).toHaveProperty('gap_days', 1);
+      expect(conflict).toHaveProperty('direction', 'before');
+      expect(conflict).toHaveProperty('neighbour_from');
+      expect(conflict).toHaveProperty('neighbour_to');
     });
 
     it('checkTightScheduleForBooking should detect urgency for existing booking', async () => {
