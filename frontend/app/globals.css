@@ -127,3 +127,18 @@ input::placeholder, textarea::placeholder {
   z-index: 9999;
 }
 
+/* ── Alert Banner animation ────────────────────────────────────────────────── */
+@keyframes alertSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-alertSlideDown {
+  animation: alertSlideDown 0.25s ease-out;
+}
+
