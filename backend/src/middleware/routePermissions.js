@@ -22,7 +22,10 @@ const routePermissions = {
     '/api/credit-notes':     ['admin'],
     '/api/vendors':          ['admin'],
     '/api/booking-discard':  ['admin'],
-    // Add more role-restricted routes as needed — one-line change to modify access
+    '/api/reports':          ['admin'],
+    '/api/bank-accounts':    ['admin'],
+    '/api/purchases':        ['admin'],
+    '/api/notifications':    ['admin'],
   },
 
   // Route → route file name mapping (used by server.js to require() the right file)
@@ -34,6 +37,8 @@ const routePermissions = {
     '/api/policies':            'policies',
     '/api/credit-notes':        'creditNotes',
     '/api/vendors':             'vendors',
+    '/api/booking-discard':     'bookingDiscard',
+    '/api/reports':             'reports',
     // Shared (any authenticated user)
     '/api/products':            'products',
     '/api/bookings':            'bookings',
@@ -45,10 +50,15 @@ const routePermissions = {
     '/api/feedback':            'feedback',
     '/api/product-exchanges':   'productExchanges',
     '/api/booking-cancellation':'bookingCancellation',
-    '/api/booking-discard':     'bookingDiscard',
     '/api/lifecycle':           'productLifecycle',
     '/api/booking-preview':     'bookingPreview',
     '/api/product-categories':  'productCategories',
+    '/api/cash-adjustments':    'cashAdjustments',
+    '/api/expenses':            'expenses',
+    '/api/bank-accounts':       'bankAccounts',
+    '/api/qr-codes':            'qrCodes',
+    '/api/purchases':           'purchases',
+    '/api/notifications':       'notifications',
   }
 };
 

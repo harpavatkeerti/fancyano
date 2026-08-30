@@ -17,10 +17,13 @@ interface DateRangePickerProps {
   label?: string;
   compact?: boolean;
   minDate?: string; // Minimum selectable date (defaults to today)
+  maxDate?: string; // Maximum selectable date (no default)
   bookings?: BookingDateRange[]; // Bookings to check availability
   productName?: string; // Product name for display
   readOnly?: boolean; // When true: dates cannot be selected (availability view only)
   onOpen?: () => void; // Called when the calendar dropdown opens
+  startLabel?: string; // Label for start date (default: 'Pickup Date')
+  endLabel?: string;   // Label for end date (default: 'Return Date')
 }
 
 export default function DateRangePicker({
@@ -31,10 +34,13 @@ export default function DateRangePicker({
   label = 'Select Dates',
   compact = false,
   minDate,
+  maxDate,
   bookings = [],
   productName,
   readOnly = false,
   onOpen,
+  startLabel = 'Pickup Date',
+  endLabel = 'Return Date',
 }: DateRangePickerProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -125,6 +131,10 @@ export default function DateRangePicker({
     if (selecting === 'start') {
       // Setting start date - switch to end selection
       onStartDateChange(dateStr);
+      // If the new start date is on or after the current end date, clear the end
+      if (endDate && dateStr >= endDate) {
+        onEndDateChange('');
+      }
       setSelecting('end');
     } else {
       // Setting end date
@@ -215,7 +225,17 @@ export default function DateRangePicker({
     minDateObj.setHours(0, 0, 0, 0);
     currentDate.setHours(0, 0, 0, 0);
     
-    return currentDate < minDateObj;
+    if (currentDate < minDateObj) return true;
+
+    // Check maxDate if provided
+    if (maxDate) {
+      const [maxYear, maxMonth, maxDay] = maxDate.split('-').map(Number);
+      const maxDateObj = new Date(maxYear, maxMonth - 1, maxDay);
+      maxDateObj.setHours(0, 0, 0, 0);
+      if (currentDate > maxDateObj) return true;
+    }
+
+    return false;
   };
 
   const isBeforeStartDate = (day: number) => {
@@ -396,11 +416,11 @@ export default function DateRangePicker({
             <p className="text-xs text-gray-600">
               {selecting === 'start' ? (
                 <span className="inline-flex items-center gap-1 bg-blue-50 text-blue-700 px-2 py-1 rounded">
-                  <span>📅</span> Select <strong>Pickup Date</strong>
+                  <span>📅</span> Select <strong>{startLabel}</strong>
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 bg-green-50 text-green-700 px-2 py-1 rounded">
-                  <span>📅</span> Select <strong>Return Date</strong>
+                  <span>📅</span> Select <strong>{endLabel}</strong>
                 </span>
               )}
             </p>

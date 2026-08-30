@@ -4,12 +4,14 @@ import { paymentTransactionsApi, bookingsApi, lifecycleApi, type PaymentTransact
 import { useEffect, useState } from 'react';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
+
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from './AlertBanner';
 import { SecurityAllocationSection } from './SecurityAllocationSection';
+import { TransactionReceipt } from './TransactionReceipt';
 import { useSecurityAllocation } from '@/hooks/useSecurityAllocation';
 import { RefundSettlementSection } from './RefundSettlementSection';
 
@@ -50,8 +52,15 @@ export function PaymentManagement({
   const [summary, setSummary] = useState<PaymentSummary | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
   const [bookingStatus, setBookingStatus] = useState<string>('');
+  const [customerName, setCustomerName] = useState<string>('');
+  const [customerPhone, setCustomerPhone] = useState<string>('');
+  const [customerPhoneCountry, setCustomerPhoneCountry] = useState<string>('IN');
+  const [customerAlternatePhone, setCustomerAlternatePhone] = useState<string>('');
+  const [customerAlternatePhoneCountry, setCustomerAlternatePhoneCountry] = useState<string>('IN');
   const [loading, setLoading] = useState(true);
   const [showRecordModal, setShowRecordModal] = useState(false);
+
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [transactionType, setTransactionType] = useState<'payment' | 'refund' | 'adjustment'>('payment');
   const [formData, setFormData] = useState({
     amount: '',
@@ -133,6 +142,14 @@ export function PaymentManagement({
       const response = await bookingsApi.getById(bookingId);
       const booking = response.data;
       setBookingStatus(booking.status || '');
+      // Store customer info for WhatsApp sharing
+      if (booking.user) {
+        setCustomerName(booking.user.name || '');
+        setCustomerPhone(booking.user.phone || '');
+        setCustomerPhoneCountry(booking.user.phone_country || 'IN');
+        setCustomerAlternatePhone(booking.user.alternate_phone || '');
+        setCustomerAlternatePhoneCountry(booking.user.alternate_phone_country || 'IN');
+      }
       // Filter out cancelled, exchanged, confirmed and discarded products — none of these should appear in refund or payment flows
       const productsList = Array.isArray(booking.products)
         ? booking.products.filter((p: any) => !['cancelled', 'exchanged', 'confirmed', 'discarded'].includes(p.status))
@@ -281,6 +298,21 @@ export function PaymentManagement({
         return 'text-gray-600 bg-gray-50';
     }
   }
+
+  function getTransactionTypeLabel(transaction: any): string {
+    switch (transaction.transaction_type) {
+      case 'exchange_upgrade': return 'Exchange Upgrade';
+      case 'exchange_penalty': return 'Exchange Penalty';
+      case 'downgrade_penalty': return 'Downgrade Penalty';
+      case 'exchange_downgrade': return 'Exchange Downgrade';
+      case 'exchange_lapsed': return 'Exchange Lapsed';
+      case 'delayed_charges': return 'Delayed Return Charges';
+      case 'cancellation_penalty': return 'Cancellation Penalty';
+      default: return 'Booking';
+    }
+  }
+
+
 
   // Helper function to check if a product already has its security returned.
   // Status is 'completed' after return; further security return is blocked by the backend.
@@ -540,16 +572,7 @@ export function PaymentManagement({
                               {/* Transaction Type */}
                               <div className="flex items-center gap-4 mb-1">
                                 <span className={`${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-600'}`}>
-                                  <span className="font-medium">Type:</span> {
-                                    transaction.transaction_type === 'exchange_upgrade' ? 'Exchange Upgrade' :
-                                      transaction.transaction_type === 'exchange_penalty' ? 'Exchange Penalty' :
-                                        transaction.transaction_type === 'downgrade_penalty' ? 'Downgrade Penalty' :
-                                          transaction.transaction_type === 'exchange_downgrade' ? 'Exchange Downgrade' :
-                                            transaction.transaction_type === 'exchange_lapsed' ? 'Exchange Lapsed' :
-                                              transaction.transaction_type === 'delayed_charges' ? 'Delayed Return Charges' :
-                                                transaction.transaction_type === 'cancellation_penalty' ? 'Cancellation Penalty' :
-                                                  'Booking'
-                                  }
+                                  <span className="font-medium">Type:</span> {getTransactionTypeLabel(transaction)}
                                 </span>
                                 {transaction.method && (
                                   <span className={`${isAdjustment ? 'text-xs text-gray-400' : 'text-sm text-gray-600'}`}>
@@ -569,6 +592,19 @@ export function PaymentManagement({
                                 Recorded by: {getRecordedByName(transaction.recorded_by)}
                               </p>
                             </div>
+                            {/* Receipt button */}
+                            {!isAdjustment && (
+                              <TransactionReceipt
+                                bookingId={bookingId}
+                                transaction={transaction}
+                                customerName={customerName}
+                                customerPhone={customerPhone}
+                                customerPhoneCountry={customerPhoneCountry}
+                                customerAlternatePhone={customerAlternatePhone}
+                                customerAlternatePhoneCountry={customerAlternatePhoneCountry}
+                                onError={(msg) => addAlert(msg)}
+                              />
+                            )}
                           </div>
                         </div>
                       );
@@ -891,6 +927,8 @@ export function PaymentManagement({
           </div>
         </div>
       ) : null}
+
+
 
     </div>
   );

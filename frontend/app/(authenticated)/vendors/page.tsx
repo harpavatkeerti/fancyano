@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
-import { vendorsApi, Vendor } from '@/lib/api';
-import { Button, Input } from '@/components/common';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { vendorsApi, purchasesApi, Vendor } from '@/lib/api';
+import { Button, Input, VendorAutocomplete } from '@/components/common';
 import PhoneInput from '@/components/common/PhoneInput';
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
@@ -14,8 +14,15 @@ import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
 export default function VendorsPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
   const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
+  const [activeTab, setActiveTab] = useState<'vendors' | 'purchases'>('vendors');
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Purchases state
+  const [purchases, setPurchases] = useState<any[]>([]);
+  const [showPurchaseForm, setShowPurchaseForm] = useState(false);
+  const [purForm, setPurForm] = useState({ vendor_name: '', item_description: '', amount: '', purchase_date: '', notes: '' });
+  const [purchasesLoading, setPurchasesLoading] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingVendor, setEditingVendor] = useState<Vendor | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -281,12 +288,34 @@ export default function VendorsPage() {
       <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       {/* Page Header */}
       <div className="flex justify-between items-center">
-        <h1 className="text-3xl font-bold text-black">Vendor Management:</h1>
+        <h1 className="text-3xl font-bold text-black">Vendor / Purchases</h1>
         <button className="px-4 py-2 border-2 border-red-600 text-red-600 font-semibold rounded-lg hover:bg-red-50 transition-colors">
           Admin Panel
         </button>
       </div>
 
+      {/* Tab Navigation */}
+      <div className="flex gap-1 bg-gray-100 p-1 rounded-xl max-w-xs">
+        <button
+          onClick={() => setActiveTab('vendors')}
+          className={`flex-1 py-2 px-4 text-sm font-medium rounded-lg transition-colors ${
+            activeTab === 'vendors' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Vendors
+        </button>
+        <button
+          onClick={() => { setActiveTab('purchases'); loadPurchases(); }}
+          className={`flex-1 py-2 px-4 text-sm font-medium rounded-lg transition-colors ${
+            activeTab === 'purchases' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+          }`}
+        >
+          Purchases
+        </button>
+      </div>
+
+      {activeTab === 'purchases' ? renderPurchases() : (
+      <>
       {/* Main Content */}
       <div className="bg-white rounded-lg shadow-sm">
         {/* Controls */}
@@ -617,7 +646,130 @@ export default function VendorsPage() {
           </div>
         </div>
       )}
+      </>
+      )}
       {ConfirmDialogComponent}
     </div>
   );
+
+  // ── Purchases Tab Content ─────────────────────────────────────────────
+  function renderPurchases() {
+    const fmt = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+    const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+    const total = purchases.reduce((s: number, p: any) => s + p.amount, 0);
+    const avg = purchases.length > 0 ? Math.round(total / purchases.length) : 0;
+
+    return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <p className="text-sm font-medium text-gray-500 mb-1">Total Purchases</p>
+            <p className="text-2xl font-bold text-red-600">{fmt(total)}</p>
+            <p className="text-xs text-gray-400 mt-1">{purchases.length} entries</p>
+          </div>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <p className="text-sm font-medium text-gray-500 mb-1">Avg/Purchase</p>
+            <p className="text-2xl font-bold text-gray-900">{fmt(avg)}</p>
+            <p className="text-xs text-gray-400 mt-1">Average purchase</p>
+          </div>
+        </div>
+
+        <div className="flex justify-end">
+          <button onClick={() => setShowPurchaseForm(!showPurchaseForm)} className="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition-colors">
+            {showPurchaseForm ? 'Cancel' : '+ Add Purchase'}
+          </button>
+        </div>
+
+        {showPurchaseForm && (
+          <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+            <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+              <VendorAutocomplete
+                value={purForm.vendor_name}
+                onChange={(val: string) => setPurForm(f => ({ ...f, vendor_name: val }))}
+                placeholder="Vendor"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              <input type="text" value={purForm.item_description} onChange={e => setPurForm(f => ({ ...f, item_description: e.target.value }))} className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 sm:col-span-2" placeholder="Item type" />
+              <input type="number" value={purForm.amount} onChange={e => setPurForm(f => ({ ...f, amount: e.target.value }))} className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500" placeholder="Total Amount" />
+              <div className="flex gap-2">
+                <input type="date" value={purForm.purchase_date} onChange={e => setPurForm(f => ({ ...f, purchase_date: e.target.value }))} className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500" />
+                <button onClick={handleCreatePurchase} className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-medium hover:bg-green-700 transition-colors">Save</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Date</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Vendor</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Item Type</th>
+                  <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600">Amount</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Recorded By</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {purchases.length === 0 ? (
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No purchases found</td></tr>
+                ) : purchases.map((p: any) => (
+                  <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-4 py-3 text-sm text-gray-700">{fmtDate(p.purchase_date)}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-gray-900">{p.vendor_name}</td>
+                    <td className="px-4 py-3 text-sm text-gray-700">{p.item_description}</td>
+                    <td className="px-4 py-3 text-sm text-right font-semibold text-red-600">{fmt(p.amount)}</td>
+                    <td className="px-4 py-3 text-sm text-gray-500">{p.recorded_by}</td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => handleDeletePurchase(p.id)} className="text-red-500 hover:text-red-700 text-xs font-medium">Delete</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Purchase Handlers ─────────────────────────────────────────────────
+  async function loadPurchases() {
+    setPurchasesLoading(true);
+    try {
+      const res = await purchasesApi.list();
+      setPurchases(res.data);
+    } catch { toast.error('Failed to load purchases'); }
+    finally { setPurchasesLoading(false); }
+  }
+
+  async function handleCreatePurchase() {
+    if (!purForm.vendor_name || !purForm.item_description || !purForm.amount) {
+      toast.error('Vendor, item type, and amount are required');
+      return;
+    }
+    try {
+      await purchasesApi.create({
+        vendor_name: purForm.vendor_name,
+        item_description: purForm.item_description,
+        amount: parseInt(purForm.amount),
+        purchase_date: purForm.purchase_date || undefined,
+        notes: purForm.notes || undefined
+      });
+      toast.success('Purchase created');
+      setShowPurchaseForm(false);
+      setPurForm({ vendor_name: '', item_description: '', amount: '', purchase_date: '', notes: '' });
+      loadPurchases();
+    } catch { toast.error('Failed to create purchase'); }
+  }
+
+  async function handleDeletePurchase(id: number) {
+    try {
+      await purchasesApi.delete(id);
+      toast.success('Purchase deleted');
+      loadPurchases();
+    } catch { toast.error('Failed to delete purchase'); }
+  }
 }

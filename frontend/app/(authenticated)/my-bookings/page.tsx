@@ -59,7 +59,13 @@ export default function MyBookingsPage() {
         ? booking.user.phone.replace(/\D/g, '').includes(digitsOnly)
         : false;
       
-      return bookingIdMatch || customerNameMatch || phoneMatch;
+      // Search by Product Code
+      const products = Array.isArray(booking.products) ? booking.products : [];
+      const productCodeMatch = searchTerm.length > 0 && products.some((p: any) =>
+        p.code && p.code.toLowerCase().includes(searchTerm)
+      );
+      
+      return bookingIdMatch || customerNameMatch || phoneMatch || productCodeMatch;
     });
     
     setSearchResults(results);
@@ -169,11 +175,11 @@ export default function MyBookingsPage() {
               type="text"
               value={searchQuery}
               onChange={(e) => handleSearch(e.target.value)}
-              placeholder="Search by Booking ID, Customer Name, or Mobile Number..."
+              placeholder="Search by Booking ID, Customer Name, Mobile Number, or Product Code..."
               className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent text-base"
             />
             <p className="text-xs text-gray-500 mt-2">
-              💡 Tip: Type booking ID (e.g., "120"), customer name, or mobile number to search across all bookings
+              💡 Tip: Type booking ID (e.g., "120"), customer name, mobile number, or product code to search across all bookings
             </p>
           </div>
           {searchQuery && (

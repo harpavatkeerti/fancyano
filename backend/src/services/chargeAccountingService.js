@@ -668,6 +668,12 @@ class ChargeAccountingService {
       const breakdown = await this._applyPaymentInternal(bookingId, amount, client, securityProductIds);
       const totalApplied = amount;
 
+      // Build charge_breakdown JSONB from breakdown.applications
+      const chargeBreakdown = {};
+      for (const app of breakdown.applications) {
+        chargeBreakdown[app.category] = (chargeBreakdown[app.category] || 0) + app.amount;
+      }
+
       // Create payment transaction record
       const transactionNotes = transactionType === 'adjustment'
         ? `${notes || 'Charge adjustment'} | Applied: ${totalApplied}`
@@ -675,9 +681,9 @@ class ChargeAccountingService {
 
       await client.query(
         `INSERT INTO payment_transactions 
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date, transaction_type)
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7)`,
-        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy, transactionTypeLabel || null]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, transaction_type, charge_breakdown)
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8)`,
+        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy, transactionTypeLabel || null, JSON.stringify(chargeBreakdown)]
       );
 
       // Log in activity log
@@ -777,11 +783,14 @@ class ChargeAccountingService {
       }
 
       // Record refund transaction (money going OUT to customer)
+      const refundBreakdown = deduction
+        ? { refund: amount, [deduction.type + '_deduction']: deduction.amount }
+        : { refund: amount };
       await client.query(
         `INSERT INTO payment_transactions 
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
-        [bookingId, amount, method, notes || '', recordedBy]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+         VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
+        [bookingId, amount, method, notes || '', recordedBy, JSON.stringify(refundBreakdown)]
       );
 
       // Log activity
@@ -1087,9 +1096,9 @@ class ChargeAccountingService {
     if (paymentAmount > 0) {
       await client.query(
         `INSERT INTO payment_transactions
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-         VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP)`,
-        [bookingId, paymentAmount, method, notes || 'Exchange payment', recordedBy]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+         VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
+        [bookingId, paymentAmount, method, notes || 'Exchange payment', recordedBy, JSON.stringify({ exchange_payment: paymentAmount })]
       );
 
       await client.query(

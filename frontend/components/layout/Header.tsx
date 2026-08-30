@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/authContext';
-import { productsApi } from '@/lib/api';
+import { productsApi, notificationsApi } from '@/lib/api';
 import { LOGO_PATH } from '@/lib/brand';
 import { getHomeRoute } from '@/lib/routePermissions';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -25,6 +25,7 @@ const NAV_ITEMS = {
     { name: 'Products',           href: '/products'           },
     { name: 'Cart',               href: '/cart'               },
     { name: 'Bookings',            href: '/bookings'           },
+    { name: 'Expenses / Cash',    href: '/expenses-cash'      },
     { name: 'Support',            href: '/complaints'         },
   ],
   customer: [
@@ -57,8 +58,64 @@ export default function Header() {
   const searchRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Notification state (admin only)
+  const [notifCount, setNotifCount] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const notifRef = useRef<HTMLDivElement>(null);
+
   const role = auth.user?.role;
+  const isAdmin = auth.isAdmin;
   const navItems = role ? NAV_ITEMS[role] : null;
+
+  // Poll unread notification count for admin
+  useEffect(() => {
+    if (!isAdmin) return;
+    const fetchCount = () => {
+      notificationsApi.getUnreadCount().then(res => {
+        setNotifCount(res.data.count);
+      }).catch(() => {});
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 30000); // every 30s
+    return () => clearInterval(interval);
+  }, [role]);
+
+  // Load notifications when dropdown opens
+  useEffect(() => {
+    if (notifOpen && isAdmin) {
+      notificationsApi.list({ limit: 10 }).then(res => {
+        setNotifications(res.data);
+      }).catch(() => {});
+    }
+  }, [notifOpen, role]);
+
+  // Close notification dropdown on outside click
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(e.target as Node)) {
+        setNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  const handleMarkAllRead = async () => {
+    try {
+      await notificationsApi.markAllAsRead();
+      setNotifCount(0);
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    } catch { }
+  };
+
+  const handleMarkRead = async (id: number) => {
+    try {
+      await notificationsApi.markAsRead(id);
+      setNotifCount(prev => Math.max(0, prev - 1));
+      setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    } catch { }
+  };
 
   // Fetch products once when search opens
   useEffect(() => {
@@ -273,6 +330,63 @@ export default function Header() {
             </button>
           )}
         </div>
+
+        {/* Notification Bell (admin only) */}
+        {isAdmin && (
+          <div ref={notifRef} className="relative flex items-center px-2">
+            <button
+              onClick={() => setNotifOpen(!notifOpen)}
+              className="relative p-2 text-gray-500 hover:text-red-600 transition-colors rounded-full hover:bg-gray-100"
+              title="Notifications"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
+                <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+              </svg>
+              {notifCount > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 bg-red-600 text-white text-[10px] font-bold rounded-full w-5 h-5 flex items-center justify-center animate-pulse">
+                  {notifCount > 9 ? '9+' : notifCount}
+                </span>
+              )}
+            </button>
+
+            {/* Notification Dropdown */}
+            {notifOpen && (
+              <div className="absolute top-full right-0 mt-2 w-80 bg-white border border-gray-200 rounded-xl shadow-xl z-[60] overflow-hidden">
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50">
+                  <h3 className="text-sm font-semibold text-gray-800">Notifications</h3>
+                  {notifCount > 0 && (
+                    <button onClick={handleMarkAllRead} className="text-xs text-red-600 hover:text-red-800 font-medium">
+                      Mark all read
+                    </button>
+                  )}
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-gray-400 text-sm">No notifications</div>
+                  ) : notifications.map(n => (
+                    <div
+                      key={n.id}
+                      className={`px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer ${!n.is_read ? 'bg-red-50' : ''}`}
+                      onClick={() => !n.is_read && handleMarkRead(n.id)}
+                    >
+                      <div className="flex items-start gap-2">
+                        <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${!n.is_read ? 'bg-red-500' : 'bg-transparent'}`} />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{n.title}</p>
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{n.message}</p>
+                          <p className="text-[10px] text-gray-400 mt-1">
+                            {new Date(n.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* User info + logout */}
         {auth.user && (

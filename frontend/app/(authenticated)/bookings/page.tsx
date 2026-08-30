@@ -189,9 +189,18 @@ export default function BookingsPage() {
   const filteredBookings = bookings.filter((b) => {
     // Search filter — use nested user object
     const searchDigits = searchTerm.replace(/\D/g, '');
+    const searchLower = searchTerm.toLowerCase().trim();
+
+    // Check if any product code matches the search term
+    const products = Array.isArray(b.products) ? b.products : [];
+    const productCodeMatch = searchLower.length > 0 && products.some((p: any) =>
+      p.code && p.code.toLowerCase().includes(searchLower)
+    );
+
     const matchesSearch = searchTerm.trim() === '' ||
-      b.user.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (searchDigits.length > 0 && b.user.phone.includes(searchDigits));
+      b.user.name.toLowerCase().includes(searchLower) ||
+      (searchDigits.length > 0 && b.user.phone.includes(searchDigits)) ||
+      productCodeMatch;
 
     // Status filter
     const matchesStatus = statusFilter === 'all'
@@ -289,7 +298,7 @@ export default function BookingsPage() {
       <div className="bg-white p-4 rounded-lg shadow space-y-4">
         <div className="flex items-center space-x-4">
           <Input
-            placeholder="Search by customer name or mobile..."
+            placeholder="Search by customer name, mobile, or product code..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="flex-1"

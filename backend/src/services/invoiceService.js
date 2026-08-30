@@ -15,6 +15,10 @@ class InvoiceService {
   async getBookingForInvoice(bookingId) {
     const bookingResult = await pool.query(`
       SELECT b.*, 
+        u.name AS customer_name,
+        u.phone AS customer_phone,
+        u.alternate_phone AS alternate_phone,
+        u.address AS customer_address,
         json_agg(json_build_object(
           'id', p.id,
           'booking_product_id', bp.id,
@@ -31,10 +35,11 @@ class InvoiceService {
           'size', bp.size
         )) as products
       FROM bookings b
+      LEFT JOIN users u ON b.user_id = u.id
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
       LEFT JOIN products p ON bp.product_id = p.id
       WHERE b.id = $1
-      GROUP BY b.id
+      GROUP BY b.id, u.id
     `, [bookingId]);
 
     if (bookingResult.rows.length === 0) {
@@ -183,6 +188,54 @@ class InvoiceService {
     };
 
     // Add URLs if persistent (for sharing)
+    if (options.persistent && options.protocol && options.host) {
+      result.publicUrl = `/uploads/${fileName}`;
+      result.fullUrl = `${options.protocol}://${options.host}${result.publicUrl}`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Generate a receipt PDF for a single transaction
+   * @param {number} bookingId - Booking ID
+   * @param {number} transactionId - Transaction ID
+   * @param {Object} options - {persistent: boolean, protocol: string, host: string}
+   * @returns {Promise<Object>} - {outputPath, fileName, publicUrl, fullUrl}
+   */
+  async generateReceiptPdf(bookingId, transactionId, options = {}) {
+    // Fetch booking data (includes customer info via JOIN)
+    const { booking } = await this.getBookingForInvoice(bookingId);
+
+    // Fetch the specific transaction
+    const txResult = await pool.query(
+      `SELECT *, transaction_date as created_at FROM payment_transactions WHERE id = $1 AND booking_id = $2`,
+      [transactionId, bookingId]
+    );
+    if (txResult.rows.length === 0) {
+      throw new Error('Transaction not found');
+    }
+    const transaction = txResult.rows[0];
+
+    // Prepare file paths
+    const timestamp = Date.now();
+    const fileName = `Receipt_${bookingId}_${transactionId}_${timestamp}.pdf`;
+
+    const outputDir = options.persistent
+      ? path.join(__dirname, '../../storage/uploads')
+      : path.join(__dirname, '../../uploads');
+
+    this._ensureUploadsDir(outputDir);
+    const outputPath = path.join(outputDir, fileName);
+
+    // Generate receipt PDF
+    await InvoiceGenerator.generateTransactionReceipt(booking, transaction, outputPath);
+
+    const result = {
+      outputPath,
+      fileName: `Receipt_${bookingId}_${transactionId}.pdf`
+    };
+
     if (options.persistent && options.protocol && options.host) {
       result.publicUrl = `/uploads/${fileName}`;
       result.fullUrl = `${options.protocol}://${options.host}${result.publicUrl}`;

@@ -10,7 +10,7 @@ const adminMenuItems = [
   { name: 'Bookings',             href: '/bookings',     icon: '📅' },
   { name: 'Credit Notes',         href: '/credit-notes', icon: '💳' },
   { name: 'User Management',      href: '/users',        icon: '👥' },
-  { name: 'Vendor Management',    href: '/vendors',      icon: '🏭' },
+  { name: 'Vendor / Purchases', href: '/vendors',      icon: '🏭' },
   { name: 'Complaints & Feedback',href: '/complaints',   icon: '💬' },
   { name: 'Reports',              href: '/reports',      icon: '📈' },
   { name: 'Settings & Policies',  href: '/settings',     icon: '⚙️' },

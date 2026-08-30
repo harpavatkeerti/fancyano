@@ -4,10 +4,13 @@ import { useEffect, useState } from 'react';
 import { creditNotesApi, CreditNote } from '@/lib/api';
 import { Button, Input } from '@/components/common';
 import { toast } from '@/lib/toast';
+import { useAlerts } from '@/lib/useAlerts';
+import { AlertBanner } from '@/components/common/AlertBanner';
 import { useConfirm } from '@/hooks/useConfirm';
 
 export default function CreditNotesPage() {
   const { confirm, ConfirmDialog: ConfirmDialogComponent } = useConfirm();
+  const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
   const [creditNotes, setCreditNotes] = useState<CreditNote[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -24,7 +27,7 @@ export default function CreditNotesPage() {
       setCreditNotes(response.data);
     } catch (error) {
       console.error('Error fetching credit notes:', error);
-      toast.error('Failed to load credit notes');
+      addAlert('Failed to load credit notes');
     } finally {
       setLoading(false);
     }
@@ -51,7 +54,7 @@ export default function CreditNotesPage() {
       toast.success('Credit note deleted successfully');
     } catch (error) {
       console.error('Error deleting credit note:', error);
-      toast.error('Error deleting credit note');
+      addAlert('Error deleting credit note');
     }
   }
 
@@ -135,6 +138,8 @@ export default function CreditNotesPage() {
 
   return (
     <div className="space-y-6">
+      {/* Inline alert banner for page-level errors */}
+      <AlertBanner alerts={alerts} onDismiss={removeAlert} />
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-800">Credit Notes</h1>
         <Button onClick={fetchCreditNotes}>

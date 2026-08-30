@@ -14,7 +14,7 @@ import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from '@/components/common/AlertBanner';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { Product } from '@/types';
-import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner, PhoneInput } from '@/components/common';
+import { Button, Input, MultipleImageUpload, ProductTrackingModal, QRScanner, PhoneInput, VendorAutocomplete } from '@/components/common';
 import DateRangePicker from '@/components/common/DateRangePicker';
 import { getImageUrl } from '@/lib/imageHelper';
 import { GST_REGEX, PAN_REGEX } from '@/lib/vendorValidation';
@@ -75,8 +75,6 @@ export default function InventoryPage() {
 
   // Vendor search state
   const [vendorSearchQuery, setVendorSearchQuery] = useState('');
-  const [vendorSearchResults, setVendorSearchResults] = useState<Vendor[]>([]);
-  const [showVendorDropdown, setShowVendorDropdown] = useState(false);
   const [selectedVendor, setSelectedVendor] = useState<Vendor | null>(null);
   const [vendorFormData, setVendorFormData] = useState({
     name: '',
@@ -88,8 +86,6 @@ export default function InventoryPage() {
     notes: '',
   });
   const [vendorFieldErrors, setVendorFieldErrors] = useState<{ gst_number?: string; pan_number?: string }>({});
-  const [isVendorSearching, setIsVendorSearching] = useState(false);
-  const vendorSearchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Vendor update confirm dialog
   const [showVendorConfirmDialog, setShowVendorConfirmDialog] = useState(false);
   const [vendorConfirmDiff, setVendorConfirmDiff] = useState<{ field: string; old: string; new: string }[]>([]);
@@ -152,33 +148,6 @@ export default function InventoryPage() {
     }, 400);
   }, [products]);
 
-  // Debounced vendor search
-  function handleVendorSearch(query: string) {
-    setVendorSearchQuery(query);
-    if (vendorSearchTimerRef.current) clearTimeout(vendorSearchTimerRef.current);
-
-    if (query.trim().length < 2) {
-      setVendorSearchResults([]);
-      setShowVendorDropdown(false);
-      return;
-    }
-
-    setIsVendorSearching(true);
-    vendorSearchTimerRef.current = setTimeout(async () => {
-      try {
-        const res = await vendorsApi.search(query.trim());
-        const vendors = res.data || [];
-        setVendorSearchResults(vendors);
-        setShowVendorDropdown(vendors.length > 0);
-      } catch {
-        setVendorSearchResults([]);
-        setShowVendorDropdown(false);
-      } finally {
-        setIsVendorSearching(false);
-      }
-    }, 350);
-  }
-
   /** Copy shared fields from the first existing same-type product with the given code. */
   function autofillFromExistingCode(code: string, currentFormData: typeof formData) {
     const source = products.find(
@@ -208,20 +177,19 @@ export default function InventoryPage() {
       vendor_id: source.vendor_id ?? prev.vendor_id,
     }));
 
-    // Restore vendor chip if source has a vendor by looking it up in recent search results
+    // Restore vendor chip if source has a vendor
     if (source.vendor_id) {
-      const v = vendorSearchResults.find((vv: Vendor) => vv.id === source.vendor_id);
-      if (v) {
+      vendorsApi.getById(source.vendor_id).then(res => {
+        const v = res.data;
         setSelectedVendor(v);
         setVendorSearchQuery(v.name);
-      }
+      }).catch(() => {});
     }
   }
 
   // Auto-fill vendor fields when selected from dropdown
   function handleVendorSelect(vendor: Vendor) {
     setSelectedVendor(vendor);
-    setShowVendorDropdown(false);
     setVendorSearchQuery(vendor.name);
     setVendorFormData({
       name: vendor.name,
@@ -504,8 +472,6 @@ export default function InventoryPage() {
     // Reset vendor state
     setSelectedVendor(null);
     setVendorSearchQuery('');
-    setVendorSearchResults([]);
-    setShowVendorDropdown(false);
     setVendorFormData({ name: '', phone: '', phone_country: 'IN', address: '', gst_number: '', pan_number: '', notes: '' });
     setVendorFieldErrors({});
     setShowVendorConfirmDialog(false);
@@ -1592,33 +1558,20 @@ export default function InventoryPage() {
                   {/* Vendor Section */}
                   <div className="border-t border-gray-100 pt-4">
                     <h3 className="text-sm font-semibold text-gray-800 mb-3">Vendor Information (Optional)</h3>
-                    <div className="relative mb-3">
-                      <Input
+                    <div className="mb-3">
+                      <VendorAutocomplete
                         label="Vendor Name"
                         value={vendorSearchQuery}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          handleVendorSearch(val);
+                        onChange={(val) => {
+                          setVendorSearchQuery(val);
                           setVendorFormData(prev => ({ ...prev, name: val }));
                           if (selectedVendor && val !== selectedVendor.name) {
                             setSelectedVendor(null);
                             setFormData(prev => ({ ...prev, vendor_id: null }));
                           }
                         }}
-                        placeholder="Search or enter vendor name"
+                        onSelect={handleVendorSelect}
                       />
-                      {showVendorDropdown && vendorSearchResults.length > 0 && (
-                        <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
-                          {vendorSearchResults.map((vendor) => (
-                            <button key={vendor.id} type="button" onClick={() => handleVendorSelect(vendor)}
-                              className="w-full text-left px-4 py-3 hover:bg-red-50 transition-colors border-b last:border-0">
-                              <p className="font-medium text-gray-900">{vendor.name}</p>
-                              <p className="text-sm text-gray-500">{vendor.phone}{vendor.gst_number ? ` · GST: ${vendor.gst_number}` : ''}</p>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      {isVendorSearching && <p className="text-xs text-gray-400 mt-1">Searching vendors...</p>}
                     </div>
                     {selectedVendor && (
                       <div className="flex items-center gap-2 px-3 py-2 border rounded-lg text-sm bg-green-50 border-green-300 mb-3">

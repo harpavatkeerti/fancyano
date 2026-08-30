@@ -212,5 +212,66 @@ router.post('/send-whatsapp', async (req, res) => {
   }
 });
 
+// Generate Transaction Receipt PDF (POST returns blob for preview)
+router.post('/receipt/:bookingId/:transactionId', async (req, res) => {
+  try {
+    const { bookingId, transactionId } = req.params;
+    
+    const { outputPath, fileName } = await invoiceService.generateReceiptPdf(bookingId, transactionId);
+
+    res.download(outputPath, fileName, (err) => {
+      if (err) {
+        console.error('Error sending receipt file:', err);
+      }
+      fs.unlinkSync(outputPath);
+    });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message === 'Transaction not found') {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    console.error('Error generating receipt:', error);
+    res.status(500).json({ error: 'Failed to generate receipt', details: error.message });
+  }
+});
+
+// GET Transaction Receipt public URL (for WhatsApp sharing)
+router.get('/receipt/:bookingId/:transactionId', async (req, res) => {
+  try {
+    const { bookingId, transactionId } = req.params;
+    
+    const { fileName, publicUrl, fullUrl } = await invoiceService.generateReceiptPdf(
+      bookingId,
+      transactionId,
+      {
+        persistent: true,
+        protocol: req.protocol || 'http',
+        host: req.get('host') || 'localhost:3001'
+      }
+    );
+    
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    
+    res.json({ 
+      success: true, 
+      url: publicUrl,
+      fileName,
+      fullUrl
+    });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    if (error.message === 'Transaction not found') {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+    console.error('Error generating receipt URL:', error);
+    res.status(500).json({ error: 'Failed to generate receipt', details: error.message });
+  }
+});
+
 module.exports = router;
 

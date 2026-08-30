@@ -31,6 +31,13 @@ export const productTrackingApi = api.productTracking;
 export const invoicesApi = api.invoices;
 export const vendorsApi = api.vendors;
 export const productCategoriesApi = api.productCategories;
+export const reportsApi = api.reports;
+export const cashAdjustmentsApi = api.cashAdjustments;
+export const expensesApi = api.expenses;
+export const bankAccountsApi = api.bankAccounts;
+export const qrCodesApi = api.qrCodes;
+export const purchasesApi = api.purchases;
+export const notificationsApi = api.notifications;
 
 // ── Re-export types from shared ──
 export type {
@@ -48,6 +55,9 @@ export type {
   BookingCancellationHistory,
   ProductCategory,
   ProductTypeDefinition,
+  Expense,
+  ExpenseSummary,
+  CashAdjustment,
 } from '@rental/shared';
 
 export type { AvailabilityCheckRequest, AvailabilityResponse, AvailabilityConflict } from '@rental/shared';

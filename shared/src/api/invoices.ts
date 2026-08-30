@@ -41,6 +41,22 @@ export function createInvoicesApi(api: AxiosInstance) {
       api.get<InvoiceUrlResponse>(`/invoices/${type}/${bookingId}`),
 
     /**
+     * Generates a transaction receipt PDF and returns the raw blob for in-browser preview.
+     */
+    generateReceipt: (bookingId: number, transactionId: number) =>
+      api.post<Blob>(
+        `/invoices/receipt/${bookingId}/${transactionId}`,
+        {},
+        { responseType: 'blob' }
+      ),
+
+    /**
+     * Returns the public URL for a transaction receipt (for WhatsApp sharing).
+     */
+    getReceiptPublicUrl: (bookingId: number, transactionId: number) =>
+      api.get<InvoiceUrlResponse>(`/invoices/receipt/${bookingId}/${transactionId}`),
+
+    /**
      * Sends the document to the customer via email using the backend mailer.
      * Falls back to mailto: on the client if the backend is not configured.
      */

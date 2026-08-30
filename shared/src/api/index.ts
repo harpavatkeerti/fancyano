@@ -18,6 +18,12 @@ import { createCreditNotesApi } from './creditNotes';
 import { createProductTrackingApi } from './productTracking';
 import { createInvoicesApi } from './invoices';
 import { createProductCategoriesApi } from './productCategories';
+import { createReportsApi } from './reports';
+import { createCashAdjustmentsApi } from './cashAdjustments';
+import { createExpensesApi } from './expenses';
+import { createBankAccountsApi, createQrCodesApi } from './bankAccountsAndQrCodes';
+import { createPurchasesApi } from './purchases';
+import { createNotificationsApi } from './notifications';
 
 export interface Api {
   products: ReturnType<typeof createProductsApi>;
@@ -38,6 +44,13 @@ export interface Api {
   productTracking: ReturnType<typeof createProductTrackingApi>;
   invoices: ReturnType<typeof createInvoicesApi>;
   productCategories: ReturnType<typeof createProductCategoriesApi>;
+  reports: ReturnType<typeof createReportsApi>;
+  cashAdjustments: ReturnType<typeof createCashAdjustmentsApi>;
+  expenses: ReturnType<typeof createExpensesApi>;
+  bankAccounts: ReturnType<typeof createBankAccountsApi>;
+  qrCodes: ReturnType<typeof createQrCodesApi>;
+  purchases: ReturnType<typeof createPurchasesApi>;
+  notifications: ReturnType<typeof createNotificationsApi>;
   client: AxiosInstance;
 }
 
@@ -63,6 +76,13 @@ export function createApi(config: ApiConfig): Api {
     productTracking: createProductTrackingApi(apiClient),
     invoices: createInvoicesApi(apiClient),
     productCategories: createProductCategoriesApi(apiClient),
+    reports: createReportsApi(apiClient),
+    cashAdjustments: createCashAdjustmentsApi(apiClient),
+    expenses: createExpensesApi(apiClient),
+    bankAccounts: createBankAccountsApi(apiClient),
+    qrCodes: createQrCodesApi(apiClient),
+    purchases: createPurchasesApi(apiClient),
+    notifications: createNotificationsApi(apiClient),
     client: apiClient,
   };
 }
@@ -86,3 +106,9 @@ export * from './creditNotes';
 export * from './productTracking';
 export * from './invoices';
 export * from './productCategories';
+export * from './reports';
+export * from './cashAdjustments';
+export * from './expenses';
+export * from './bankAccountsAndQrCodes';
+export * from './purchases';
+export * from './notifications';

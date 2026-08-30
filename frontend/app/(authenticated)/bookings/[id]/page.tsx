@@ -13,6 +13,7 @@ import { BookingCancellation } from '@/components/common/BookingCancellation';
 import RequireRole from '@/components/common/RequireRole';
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
+import { formatPhoneForWhatsApp } from '@/lib/phoneHelper';
 import { AlertBanner } from '@/components/common/AlertBanner';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { useConfirm } from '@/hooks/useConfirm';
@@ -351,31 +352,7 @@ export default function OrderDetailsPage() {
     toast.success('PDF downloaded successfully');
   }
 
-  function formatPhoneNumber(phone: string): string | null {
-    if (!phone) return null;
 
-    // Remove all non-digits
-    let phoneNumber = phone.replace(/\D/g, '');
-
-    // Remove leading zeros
-    phoneNumber = phoneNumber.replace(/^0+/, '');
-
-    if (phoneNumber.length === 0) {
-      return null;
-    }
-
-    // If it's exactly 10 digits and doesn't start with a country code, assume it's Indian
-    if (phoneNumber.length === 10 && !phoneNumber.startsWith('91')) {
-      phoneNumber = '91' + phoneNumber;
-    }
-
-    // Validate: WhatsApp requires phone numbers in E.164 format (7-15 digits, no leading zeros)
-    if (phoneNumber.length < 7 || phoneNumber.length > 15 || phoneNumber[0] === '0') {
-      return null;
-    }
-
-    return phoneNumber;
-  }
 
   function handleShareWhatsApp(phoneType: 'customer' | 'alternate' | 'both' = 'customer') {
     if (!booking) {
@@ -409,7 +386,7 @@ export default function OrderDetailsPage() {
     const phoneNumbers: string[] = [];
 
     if (phoneType === 'customer' || phoneType === 'both') {
-      const customerPhone = formatPhoneNumber(booking.user.phone || '');
+      const customerPhone = formatPhoneForWhatsApp(booking.user.phone || '', booking.user.phone_country || 'IN');
       if (customerPhone) {
         phoneNumbers.push(customerPhone);
       } else {
@@ -419,7 +396,7 @@ export default function OrderDetailsPage() {
     }
 
     if (phoneType === 'alternate' || phoneType === 'both') {
-      const alternatePhone = formatPhoneNumber(booking.user.alternate_phone || '');
+      const alternatePhone = formatPhoneForWhatsApp(booking.user.alternate_phone || '', booking.user.alternate_phone_country || 'IN');
       if (alternatePhone) {
         phoneNumbers.push(alternatePhone);
       } else {

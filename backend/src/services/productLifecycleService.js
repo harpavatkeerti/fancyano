@@ -592,10 +592,10 @@ class ProductLifecycleService {
         // Record a refund transaction — money goes back to customer
         await client.query(
           `INSERT INTO payment_transactions 
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
           [bookingId, amount, paymentMethod || 'Cash',
-            notes || 'Cancellation refund', recordedBy]
+            notes || 'Cancellation refund', recordedBy, JSON.stringify({ cancellation_refund: amount })]
         );
 
         await client.query(
@@ -642,11 +642,11 @@ class ProductLifecycleService {
 
           await client.query(
             `INSERT INTO payment_transactions 
-             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-             VALUES ($1, $2, 'adjustment', 'Adjustment', $3, $4, CURRENT_TIMESTAMP)`,
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+             VALUES ($1, $2, 'adjustment', 'Adjustment', $3, $4, CURRENT_TIMESTAMP, $5)`,
             [bookingId, adjustAmount,
               notes || 'Cancellation refund adjusted against outstanding dues',
-              recordedBy]
+              recordedBy, JSON.stringify({ cancellation_adjustment: adjustAmount })]
           );
 
           await client.query(
@@ -664,11 +664,11 @@ class ProductLifecycleService {
         if (refundRemainder > 0) {
           await client.query(
             `INSERT INTO payment_transactions 
-             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-             VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+             VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
             [bookingId, refundRemainder, paymentMethod || 'Cash',
               `Cancellation refund remainder after adjusting ₹${adjustAmount} against dues`,
-              recordedBy]
+              recordedBy, JSON.stringify({ cancellation_refund: refundRemainder })]
           );
 
           await client.query(
@@ -715,11 +715,11 @@ class ProductLifecycleService {
           await chargeAccountingService._applyPaymentInternal(bookingId, autoAdjust, client, null, excludeProductIds);
           await client.query(
             `INSERT INTO payment_transactions
-             (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-             VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+             (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+             VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
             [bookingId, autoAdjust,
               `Cancellation refund of ₹${autoAdjust} auto-adjusted against outstanding dues`,
-              recordedBy]
+              recordedBy, JSON.stringify({ cancellation_adjustment: autoAdjust })]
           );
           await client.query(
             `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
@@ -750,11 +750,11 @@ class ProductLifecycleService {
             );
             await client.query(
               `INSERT INTO payment_transactions
-               (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-               VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+               (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+               VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
               [bookingId, adjustAmount,
                 notes || `Cancellation refund of ₹${adjustAmount} credited to security of other product(s)`,
-                recordedBy]
+                recordedBy, JSON.stringify({ security_adjustment: adjustAmount })]
             );
             await client.query(
               `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
@@ -766,11 +766,11 @@ class ProductLifecycleService {
           if (refundRemainder > 0) {
             await client.query(
               `INSERT INTO payment_transactions
-               (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-               VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+               (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+               VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
               [bookingId, refundRemainder, paymentMethod || 'Cash',
                 `Cancellation refund remainder (₹${refundRemainder}) after crediting security`,
-                recordedBy]
+                recordedBy, JSON.stringify({ cancellation_refund: refundRemainder })]
             );
           }
         }
@@ -1292,13 +1292,14 @@ class ProductLifecycleService {
         );
         await client.query(
           `INSERT INTO payment_transactions
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
           [
             booking_id,
             late_fee,
             `Late fee of ₹${late_fee} retained from security deposit (product #${bookingProductId})`,
-            recorded_by
+            recorded_by,
+            JSON.stringify({ late_fee: late_fee })
           ]
         );
       }
@@ -1321,13 +1322,14 @@ class ProductLifecycleService {
         );
         await client.query(
           `INSERT INTO payment_transactions
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
           [
             booking_id,
             damage_fee,
             `Damage fee of ₹${damage_fee} retained from security deposit (product #${bookingProductId})`,
-            recorded_by
+            recorded_by,
+            JSON.stringify({ damage_fee: damage_fee })
           ]
         );
       }
@@ -1343,13 +1345,14 @@ class ProductLifecycleService {
         );
         await client.query(
           `INSERT INTO payment_transactions
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
           [
             booking_id,
             adjust_non_security,
             `₹${adjust_non_security} from security deposit auto-adjusted against outstanding dues (product #${bookingProductId})`,
-            recorded_by
+            recorded_by,
+            JSON.stringify({ security_applied_to_dues: adjust_non_security })
           ]
         );
       }
@@ -1365,13 +1368,14 @@ class ProductLifecycleService {
         );
         await client.query(
           `INSERT INTO payment_transactions
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'adjustment', 'N/A', $3, $4, CURRENT_TIMESTAMP, $5)`,
           [
             booking_id,
             adjust_security_amount,
             `₹${adjust_security_amount} from security deposit credited to security of product(s) [${security_product_ids.join(', ')}] (returned product #${bookingProductId})`,
-            recorded_by
+            recorded_by,
+            JSON.stringify({ security_adjustment: adjust_security_amount })
           ]
         );
       }
@@ -1383,17 +1387,21 @@ class ProductLifecycleService {
         if (damage_fee > 0) deductionNotes.push(`damage fee: ₹${damage_fee}`);
         const deductionSuffix = deductionNotes.length > 0 ? ` (${deductionNotes.join(', ')} retained)` : '';
 
+        const refundBreakdown = { security_refund: refund_amount };
+        if (late_fee > 0) refundBreakdown.late_fee_deduction = late_fee;
+        if (damage_fee > 0) refundBreakdown.damage_fee_deduction = damage_fee;
         await client.query(
           `INSERT INTO payment_transactions
-           (booking_id, amount, type, method, notes, recorded_by, transaction_date)
-           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP)`,
+           (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
+           VALUES ($1, $2, 'refund', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
           [
             booking_id,
             refund_amount,
             payment_method,
             `Security deposit refund for product #${bookingProductId}${deductionSuffix}` +
             (notes ? ` | ${notes}` : ''),
-            recorded_by
+            recorded_by,
+            JSON.stringify(refundBreakdown)
           ]
         );
       }
