@@ -8,13 +8,15 @@
 const pool = require('../database/connection');
 const inAppNotificationService = require('./inAppNotificationService');
 
+const VALID_PAYMENT_SOURCES = ['Shop Cash', 'Online', 'Personal'];
+
 class ExpenseService {
   /**
    * Create a new expense entry.
-   * @param {Object} data - { category, amount, description, expense_date, recorded_by }
+   * @param {Object} data - { category, amount, description, expense_date, recorded_by, payment_source }
    * @returns {Promise<Object>} - Created expense row
    */
-  async create({ category, amount, description, expense_date, recorded_by, user_role }) {
+  async create({ category, amount, description, expense_date, recorded_by, user_role, payment_source }) {
     if (!category || !category.trim()) {
       const err = new Error('Category is required');
       err.status = 400;
@@ -35,11 +37,13 @@ class ExpenseService {
     const approvedBy = user_role === 'admin' ? recorded_by : null;
     const approvedAt = user_role === 'admin' ? new Date() : null;
 
+    const source = VALID_PAYMENT_SOURCES.includes(payment_source) ? payment_source : 'Shop Cash';
+
     const result = await pool.query(
-      `INSERT INTO expenses (category, amount, description, expense_date, recorded_by, approval_status, approved_by, approved_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO expenses (category, amount, description, expense_date, recorded_by, approval_status, approved_by, approved_at, payment_source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [category.trim(), amount, description?.trim() || null, expense_date || new Date(), recorded_by, approvalStatus, approvedBy, approvedAt]
+      [category.trim(), amount, description?.trim() || null, expense_date || new Date(), recorded_by, approvalStatus, approvedBy, approvedAt, source]
     );
     const row = result.rows[0];
 
@@ -49,7 +53,7 @@ class ExpenseService {
         await inAppNotificationService.create({
           recipient_role: 'admin',
           title: 'Expense Request',
-          message: `${recorded_by} submitted an expense of \u20b9${amount} in "${category.trim()}"`,
+          message: `${recorded_by} submitted an expense of \u20b9${amount} in "${category.trim()}" (${source})`,
           type: 'action_required',
           reference_type: 'expense',
           reference_id: row.id
@@ -118,18 +122,21 @@ class ExpenseService {
    * @param {Object} data - { category, amount, description, expense_date }
    * @returns {Promise<Object>} - Updated expense row
    */
-  async update(id, { category, amount, description, expense_date }) {
+  async update(id, { category, amount, description, expense_date, payment_source }) {
     await this.getById(id); // throws 404 if not found
+
+    const source = payment_source && VALID_PAYMENT_SOURCES.includes(payment_source) ? payment_source : undefined;
 
     const result = await pool.query(
       `UPDATE expenses 
        SET category = COALESCE($1, category),
            amount = COALESCE($2, amount),
            description = COALESCE($3, description),
-           expense_date = COALESCE($4, expense_date)
-       WHERE id = $5
+           expense_date = COALESCE($4, expense_date),
+           payment_source = COALESCE($5, payment_source)
+       WHERE id = $6
        RETURNING *`,
-      [category, amount, description, expense_date, id]
+      [category, amount, description, expense_date, source, id]
     );
     return result.rows[0];
   }
@@ -171,6 +178,7 @@ class ExpenseService {
        RETURNING *`,
       [approved_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('expense', id).catch(() => {});
     return result.rows[0];
   }
 
@@ -196,6 +204,7 @@ class ExpenseService {
        RETURNING *`,
       [rejected_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('expense', id).catch(() => {});
     return result.rows[0];
   }
 
@@ -448,6 +457,7 @@ class ExpenseService {
        RETURNING *`,
       [approved_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('recurring_expense', id).catch(() => {});
     return updated.rows[0];
   }
 
@@ -476,6 +486,7 @@ class ExpenseService {
        RETURNING *`,
       [rejected_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('recurring_expense', id).catch(() => {});
     return updated.rows[0];
   }
 }

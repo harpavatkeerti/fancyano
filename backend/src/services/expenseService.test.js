@@ -51,6 +51,67 @@ describe('ExpenseService', () => {
     });
   });
 
+  describe('create — payment_source', () => {
+    test('should default to Shop Cash when no payment_source provided', async () => {
+      const result = await expenseService.create({
+        category: 'Electricity', amount: 1000,
+        recorded_by: `${prefix}_ps1`, user_role: 'admin'
+      });
+      expect(result.payment_source).toBe('Shop Cash');
+    });
+
+    test('should accept Online as payment_source', async () => {
+      const result = await expenseService.create({
+        category: 'Internet', amount: 800,
+        recorded_by: `${prefix}_ps2`, user_role: 'admin',
+        payment_source: 'Online'
+      });
+      expect(result.payment_source).toBe('Online');
+    });
+
+    test('should accept Personal as payment_source', async () => {
+      const result = await expenseService.create({
+        category: 'Stationery', amount: 200,
+        recorded_by: `${prefix}_ps3`, user_role: 'admin',
+        payment_source: 'Personal'
+      });
+      expect(result.payment_source).toBe('Personal');
+    });
+
+    test('should fall back to Shop Cash for invalid payment_source', async () => {
+      const result = await expenseService.create({
+        category: 'Misc', amount: 100,
+        recorded_by: `${prefix}_ps4`, user_role: 'admin',
+        payment_source: 'Bitcoin'
+      });
+      expect(result.payment_source).toBe('Shop Cash');
+    });
+  });
+
+  describe('update — payment_source', () => {
+    test('should update payment_source', async () => {
+      const created = await expenseService.create({
+        category: 'Fuel', amount: 500,
+        recorded_by: `${prefix}_ups1`, user_role: 'admin'
+      });
+      expect(created.payment_source).toBe('Shop Cash');
+
+      const updated = await expenseService.update(created.id, { payment_source: 'Online' });
+      expect(updated.payment_source).toBe('Online');
+    });
+
+    test('should not change payment_source for invalid value', async () => {
+      const created = await expenseService.create({
+        category: 'Fuel', amount: 500,
+        recorded_by: `${prefix}_ups2`, user_role: 'admin',
+        payment_source: 'Personal'
+      });
+
+      const updated = await expenseService.update(created.id, { payment_source: 'Crypto' });
+      expect(updated.payment_source).toBe('Personal');
+    });
+  });
+
   describe('list', () => {
     test('should return all expenses', async () => {
       await expenseService.create({ category: 'Rent', amount: 5000, recorded_by: `${prefix}_list1`, user_role: 'admin' });

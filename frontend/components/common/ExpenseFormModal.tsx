@@ -28,6 +28,7 @@ export default function ExpenseFormModal({
     amount: '',
     description: '',
     date: '',
+    payment_source: 'Shop Cash' as string,
   });
   const [submitting, setSubmitting] = useState(false);
 
@@ -49,6 +50,7 @@ export default function ExpenseFormModal({
           amount: parseInt(form.amount),
           description: form.description || undefined,
           expense_date: form.date || undefined,
+          payment_source: form.payment_source,
         });
         toast.success('Expense created');
       } else {
@@ -126,6 +128,25 @@ export default function ExpenseFormModal({
               ))}
             </select>
           </div>
+
+          {/* Payment Source — only for one-time expenses */}
+          {mode === 'one-time' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Paid From</label>
+              <select
+                value={form.payment_source}
+                onChange={e => setForm(f => ({ ...f, payment_source: e.target.value }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 bg-white"
+              >
+                <option value="Shop Cash">🏪 Shop Cash</option>
+                <option value="Online">💳 Online / Bank Transfer</option>
+                <option value="Personal">👤 Personal</option>
+              </select>
+              <p className="text-xs text-gray-400 mt-1">
+                Only &quot;Shop Cash&quot; expenses appear in the Financial Ledger
+              </p>
+            </div>
+          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">

@@ -10,6 +10,7 @@ export interface Expense {
   approval_status: 'pending' | 'approved' | 'rejected';
   approved_by: string | null;
   approved_at: string | null;
+  payment_source: 'Shop Cash' | 'Online' | 'Personal';
   created_at: string;
 }
 
@@ -23,7 +24,7 @@ export function createExpensesApi(api: AxiosInstance) {
   return {
     list: (params?: Record<string, any>) => api.get<Expense[]>('/expenses', { params }),
     getById: (id: number) => api.get<Expense>(`/expenses/${id}`),
-    create: (data: { category: string; amount: number; description?: string; expense_date?: string }) =>
+    create: (data: { category: string; amount: number; description?: string; expense_date?: string; payment_source?: string }) =>
       api.post<Expense>('/expenses', data),
     update: (id: number, data: Partial<Expense>) => api.put<Expense>(`/expenses/${id}`, data),
     delete: (id: number) => api.delete<Expense>(`/expenses/${id}`),

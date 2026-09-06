@@ -182,9 +182,9 @@ router.get('/:id', async (req, res) => {
 // POST /expenses — Create a new expense
 router.post('/', async (req, res) => {
   try {
-    const { category, amount, description, expense_date } = req.body;
+    const { category, amount, description, expense_date, payment_source } = req.body;
     const expense = await expenseService.create({
-      category, amount, description, expense_date,
+      category, amount, description, expense_date, payment_source,
       recorded_by: req.user.name,
       user_role: req.user.role
     });

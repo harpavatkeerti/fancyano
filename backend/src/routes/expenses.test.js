@@ -70,6 +70,50 @@ describe('Expenses Routes', () => {
     });
   });
 
+  describe('POST /expenses — payment_source', () => {
+    test('should accept payment_source in create', async () => {
+      const response = await request(app)
+        .post('/expenses')
+        .send({ category: 'Internet', amount: 1200, payment_source: 'Online' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.payment_source).toBe('Online');
+    });
+
+    test('should default to Shop Cash when payment_source omitted', async () => {
+      const response = await request(app)
+        .post('/expenses')
+        .send({ category: 'Rent', amount: 5000 });
+
+      expect(response.status).toBe(201);
+      expect(response.body.payment_source).toBe('Shop Cash');
+    });
+
+    test('should fall back to Shop Cash for invalid payment_source', async () => {
+      const response = await request(app)
+        .post('/expenses')
+        .send({ category: 'Misc', amount: 100, payment_source: 'Bitcoin' });
+
+      expect(response.status).toBe(201);
+      expect(response.body.payment_source).toBe('Shop Cash');
+    });
+  });
+
+  describe('PUT /expenses/:id — payment_source', () => {
+    test('should update payment_source', async () => {
+      const createRes = await request(app)
+        .post('/expenses')
+        .send({ category: 'Fuel', amount: 500 });
+
+      const response = await request(app)
+        .put(`/expenses/${createRes.body.id}`)
+        .send({ payment_source: 'Personal' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.payment_source).toBe('Personal');
+    });
+  });
+
   describe('GET /expenses', () => {
     test('should list all expenses for admin', async () => {
       await request(app).post('/expenses').send({ category: 'Rent', amount: 5000 });

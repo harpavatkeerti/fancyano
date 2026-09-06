@@ -220,18 +220,28 @@ export default function ExpensesCashPage() {
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Category</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Description</th>
                   <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600">Amount</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Paid From</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredExpenses.length === 0 ? (
-                  <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No expenses found</td></tr>
+                  <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No expenses found</td></tr>
                 ) : filteredExpenses.map(e => (
                   <tr key={e.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 text-sm text-gray-700">{fmtDate(e.expense_date)}</td>
                     <td className="px-4 py-3 text-sm font-medium text-gray-900">{e.category}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{e.description || '—'}</td>
                     <td className="px-4 py-3 text-sm text-right font-semibold text-red-600">{fmt(e.amount)}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
+                        e.payment_source === 'Shop Cash' ? 'bg-blue-100 text-blue-700' :
+                        e.payment_source === 'Online' ? 'bg-purple-100 text-purple-700' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {e.payment_source || 'Shop Cash'}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">{statusBadge(e.approval_status)}</td>
                   </tr>
                 ))}
