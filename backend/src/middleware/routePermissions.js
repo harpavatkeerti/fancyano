@@ -59,6 +59,8 @@ const routePermissions = {
     '/api/qr-codes':            'qrCodes',
     '/api/purchases':           'purchases',
     '/api/notifications':       'notifications',
+    '/api/measurement-templates':'measurementTemplates',
+    '/api/transporters':         'transporters',
   }
 };
 

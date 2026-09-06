@@ -34,4 +34,6 @@ export { default as CashAdjustmentFormModal } from './CashAdjustmentFormModal';
 export { default as ExpenseFormModal } from './ExpenseFormModal';
 export type { Toast, ToastType } from './Toast';
 export type { ConfirmDialogOptions } from './ConfirmDialog';
+export { TransportDetailsModal } from './TransportDetailsModal';
+export type { TransportFormData, TransportProduct } from './TransportDetailsModal';
 

@@ -6,7 +6,8 @@ import { bookingsApi, paymentTransactionsApi, settingsApi, PaymentSummary, invoi
 import { Booking } from '@/types';
 import { getImageUrl } from '@/lib/imageHelper';
 import { makeShareableUrl } from '@/lib/urlHelper';
-import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon, PhoneInput } from '@/components/common';
+import { DateRangePicker, ComplaintForm, FeedbackForm, ProductExchange, PaymentManagement, securityPaidByProductFromSummary, MeasurementModal, ProductStatusBadge, MarkPickedUpButton, FlagIcon, PhoneInput, TransportDetailsModal } from '@/components/common';
+import type { TransportFormData } from '@/components/common';
 import { getAutoCancelTimeRemaining } from '@/lib/bookingHelpers';
 import { PENDING_BOOKING_TIMEOUT_MINUTES } from '@/lib/timerConstants';
 import { BookingCancellation } from '@/components/common/BookingCancellation';
@@ -93,6 +94,21 @@ export default function OrderDetailsPage() {
   const [editAlternatePhoneCountry, setEditAlternatePhoneCountry] = useState('IN');
   const [editCustomerAddress, setEditCustomerAddress] = useState('');
   const [savingCustomer, setSavingCustomer] = useState(false);
+
+  // Transport details modal state — stores the booking_product being edited
+  const [transportEditProduct, setTransportEditProduct] = useState<any | null>(null);
+
+  async function handleSaveTransport(data: Record<string | number, TransportFormData>) {
+    if (!transportEditProduct || !booking) return;
+    const transportDetails: Record<number, TransportFormData> = {};
+    for (const [key, val] of Object.entries(data)) {
+      transportDetails[Number(key)] = val;
+    }
+    await bookingsApi.update(booking.id, { transport_details: transportDetails });
+    toast.success('Transport details updated');
+    setTransportEditProduct(null);
+    await fetchBooking();
+  }
 
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
@@ -959,6 +975,43 @@ export default function OrderDetailsPage() {
                       </button>
                     )}
                   </div>
+                  {/* Transport details for this product */}
+                  <div className="mt-3">
+                    {product.transport_details ? (
+                      <div className="bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-xs font-semibold text-teal-800">📍 Transport Details</p>
+                          <button onClick={() => setTransportEditProduct(product)} className="text-xs text-teal-600 hover:text-teal-800 underline">Edit</button>
+                        </div>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-teal-700">
+                          {product.transport_details.transporter_name && (
+                            <p><span className="text-gray-500">Transport:</span> {product.transport_details.transporter_name}</p>
+                          )}
+                          {product.transport_details.phone && (
+                            <p><span className="text-gray-500">Driver:</span> {product.transport_details.phone}</p>
+                          )}
+                          {product.transport_details.bus_no && (
+                            <p><span className="text-gray-500">Bus No:</span> {product.transport_details.bus_no}</p>
+                          )}
+                          {product.transport_details.destination && (
+                            <p><span className="text-gray-500">Destination:</span> {product.transport_details.destination}</p>
+                          )}
+                          {product.transport_details.source_address && (
+                            <p className="col-span-2"><span className="text-gray-500">Source Office:</span> {product.transport_details.source_address}</p>
+                          )}
+                          {product.transport_details.destination_address && (
+                            <p className="col-span-2"><span className="text-gray-500">Dest. Office:</span> {product.transport_details.destination_address}</p>
+                          )}
+                          {product.transport_details.destination_phone && (
+                            <p><span className="text-gray-500">Dest. Mobile:</span> {product.transport_details.destination_phone}</p>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <button onClick={() => setTransportEditProduct(product)}
+                        className="text-xs text-teal-600 hover:text-teal-800 underline">+ Add Transport Details</button>
+                    )}
+                  </div>
                   <div className="mt-4">
                     {hasProductRefund(product.id) ? (
                       <button
@@ -1755,6 +1808,25 @@ export default function OrderDetailsPage() {
             setSelectedProductForMeasurements(null);
           }}
           onSaved={fetchBooking}
+        />
+      )}
+      {/* Transport Details Edit Modal */}
+      {transportEditProduct && booking && (
+        <TransportDetailsModal
+          products={booking.products.map((p: any) => ({
+            id: p.id,
+            name: p.name || 'Product',
+            code: p.code,
+            size: p.size,
+          }))}
+          initialValues={booking.products.reduce((acc: any, p: any) => {
+            acc[p.id] = p.transport_details || {};
+            return acc;
+          }, {})}
+          selectedProductId={transportEditProduct.id}
+          onSave={handleSaveTransport}
+          onClose={() => setTransportEditProduct(null)}
+          title={`📍 Transport Details`}
         />
       )}
       {ConfirmDialogComponent}

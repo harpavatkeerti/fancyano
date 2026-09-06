@@ -135,7 +135,8 @@ router.post('/', async (req, res) => {
         measurements: p.measurements,
         specialRequirements: p.special_requirements,
         discountType: p.discountType || null,
-        discountValue: p.discountValue || 0
+        discountValue: p.discountValue || 0,
+        transportDetails: p.transport_details || null
       };
     });
 

@@ -67,4 +67,26 @@ function validatePhoneLength(phone, country) {
   return null;
 }
 
-module.exports = { validatePhoneLength, PHONE_LENGTH_MAP, PHONE_LENGTH_FALLBACK };
+/**
+ * Validate Indian vehicle registration number format.
+ * Accepts formats like: RJ27CD6709, GJ05AB1234, MH12A1234
+ *   - 2 uppercase letters (state code)
+ *   - 2 digits (district code)
+ *   - 1–3 uppercase letters (series)
+ *   - 4 digits (number)
+ * Spaces and dashes are stripped before validation.
+ *
+ * @param {string} busNo - vehicle registration number
+ * @returns {string|null} error message string, or null if valid
+ */
+function validateBusNumber(busNo) {
+  if (!busNo) return null; // optional field — presence checked separately
+  const cleaned = busNo.replace(/[\s\-]/g, '').toUpperCase();
+  const BUS_REGEX = /^[A-Z]{2}\d{2}[A-Z]{1,3}\d{4}$/;
+  if (!BUS_REGEX.test(cleaned)) {
+    return `Invalid vehicle number "${busNo}". Expected format: RJ27CD6709 (StateCode + District + Series + Number).`;
+  }
+  return null;
+}
+
+module.exports = { validatePhoneLength, validateBusNumber, PHONE_LENGTH_MAP, PHONE_LENGTH_FALLBACK };

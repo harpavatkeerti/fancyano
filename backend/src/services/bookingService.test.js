@@ -3,7 +3,7 @@ const bookingService = require('./bookingService');
 const chargeAccountingService = require('./chargeAccountingService');
 
 describe('BookingService', () => {
-  let testCustomerId, testProductId1, testProductId2;
+  let testCustomerId, testProductId1, testProductId2, testTransporterId;
 
   beforeAll(async () => {
     // Create test products
@@ -20,11 +20,18 @@ describe('BookingService', () => {
        RETURNING id`
     );
     testProductId2 = product2.rows[0].id;
+
+    // Create test transporter for FK references
+    const transporter = await pool.query(
+      `INSERT INTO transporters (name, phone, bus_no) VALUES ('TEST-BOOKING-TRANS', '9876543210', 'GJ05AB1234') RETURNING id`
+    );
+    testTransporterId = transporter.rows[0].id;
   });
 
   afterAll(async () => {
     // Cleanup test products (pool.end() handled by global teardown)
     await pool.query('DELETE FROM products WHERE code LIKE \'BOOK%\'');
+    await pool.query(`DELETE FROM transporters WHERE name = 'TEST-BOOKING-TRANS'`);
   });
 
   beforeEach(async () => {
@@ -955,6 +962,34 @@ describe('BookingService', () => {
       expect(bp.rows[0].measurements).toEqual({ chest: 40, waist: 32 });
     });
 
+    test('should save text and mixed measurement values (not just numbers)', async () => {
+      const measurementsKey = `${testBP1}_2024-06-01_2024-06-10`;
+      const mixedMeasurements = {
+        chest: '40',
+        waist: '32.5',
+        notes: 'slightly loose fit',
+        sleeve: '18 inches tight',
+        height: '5 feet 10 inches',
+        special: 'needs 2-inch extension on left side',
+      };
+      const result = await bookingService.updateBooking(testBookingId, {
+        measurements: {
+          [measurementsKey]: mixedMeasurements
+        }
+      });
+
+      expect(result.id).toBe(testBookingId);
+
+      const bp = await pool.query(
+        'SELECT measurements FROM booking_products WHERE id = $1',
+        [testBP1]
+      );
+      expect(bp.rows[0].measurements).toEqual(mixedMeasurements);
+      expect(bp.rows[0].measurements.notes).toBe('slightly loose fit');
+      expect(bp.rows[0].measurements.sleeve).toBe('18 inches tight');
+      expect(bp.rows[0].measurements.special).toBe('needs 2-inch extension on left side');
+    });
+
     test('should update special requirements for a booking product', async () => {
       const key = `${testBP1}_2024-06-01_2024-06-10`;
       const result = await bookingService.updateBooking(testBookingId, {
@@ -1414,6 +1449,401 @@ describe('BookingService', () => {
       expect(match.delayed_products).toHaveLength(2);
       const codes = match.delayed_products.map(p => p.code).sort();
       expect(codes).toEqual(['BOOK001', 'BOOK002']);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Transport details — createBooking, getBookingById, updateBooking
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('transport_details', () => {
+    test('createBooking should store transporter_id as FK and per-shipment fields in JSONB', async () => {
+      const transportDetails = {
+        transporter_id: testTransporterId,
+        transporter_name: 'TEST-BOOKING-TRANS',
+        phone: '9876543210',
+        bus_no: 'GJ05AB1234',
+        destination: 'Rajkot',
+      };
+
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-06-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-06-10'),
+          bookedTo: new Date('2025-06-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails,
+        }],
+        transportCharge: 200,
+        createdBy: 'test-user',
+      });
+
+      expect(result.booking_id).toBeDefined();
+
+      // Verify: transporter_id stored as FK column, per-shipment in JSONB
+      const bp = await pool.query(
+        'SELECT transporter_id, transport_details FROM booking_products WHERE booking_id = $1',
+        [result.booking_id]
+      );
+      expect(bp.rows[0].transporter_id).toBe(testTransporterId);
+      expect(bp.rows[0].transport_details.destination).toBe('Rajkot');
+      // Master fields (transporter_name, bus_no) should NOT be in JSONB
+      expect(bp.rows[0].transport_details.transporter_name).toBeUndefined();
+      expect(bp.rows[0].transport_details.bus_no).toBeUndefined();
+    });
+
+    test('createBooking should store NULL when transport_details is not provided', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-07-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-07-10'),
+          bookedTo: new Date('2025-07-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      const bp = await pool.query(
+        'SELECT transport_details FROM booking_products WHERE booking_id = $1',
+        [result.booking_id]
+      );
+      expect(bp.rows[0].transport_details).toBeNull();
+    });
+
+    test('getBookingById should include transport_details merged from FK JOIN', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-08-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-08-10'),
+          bookedTo: new Date('2025-08-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: { transporter_id: testTransporterId, transporter_name: 'TEST-BOOKING-TRANS', destination: 'Surat' },
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      const booking = await bookingService.getBookingById(result.booking_id);
+      const product = booking.products.find(p => p.product_id === testProductId1);
+      expect(product.transport_details).toBeDefined();
+      // Master fields come from JOIN
+      expect(product.transport_details.transporter_name).toBe('TEST-BOOKING-TRANS');
+      expect(product.transport_details.transporter_id).toBe(testTransporterId);
+      // Per-shipment from JSONB
+      expect(product.transport_details.destination).toBe('Surat');
+    });
+
+    test('getBookingsList should include transport_details merged from FK JOIN', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-09-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-09-10'),
+          bookedTo: new Date('2025-09-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: { transporter_id: testTransporterId, transporter_name: 'TEST-BOOKING-TRANS', destination: 'Jamnagar' },
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      const list = await bookingService.getBookingsList({});
+      const booking = list.find(b => b.id === result.booking_id);
+      expect(booking).toBeDefined();
+      const product = booking.products.find(p => p.product_id === testProductId1);
+      expect(product.transport_details).toBeDefined();
+      // Master fields from JOIN
+      expect(product.transport_details.transporter_name).toBe('TEST-BOOKING-TRANS');
+      // Per-shipment from JSONB
+      expect(product.transport_details.destination).toBe('Jamnagar');
+    });
+
+    test('updateBooking should update transport_details for a product', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-10-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-10-10'),
+          bookedTo: new Date('2025-10-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      const bpId = result.booking_product_ids[0];
+
+      // Update transport details via updateBooking
+      await bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          [bpId]: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-BOOKING-TRANS',
+            phone: '9876543210',
+            bus_no: 'GJ05AB1234',
+            destination: 'Ahmedabad',
+          }
+        }
+      }, 'test-user');
+
+      // Verify: transporter_id as FK, per-shipment in JSONB
+      const bp = await pool.query(
+        'SELECT transporter_id, transport_details FROM booking_products WHERE id = $1',
+        [bpId]
+      );
+      expect(bp.rows[0].transporter_id).toBe(testTransporterId);
+      expect(bp.rows[0].transport_details.destination).toBe('Ahmedabad');
+      // Master fields NOT in JSONB
+      expect(bp.rows[0].transport_details.transporter_name).toBeUndefined();
+    });
+
+    test('updateBooking transport_details should ignore invalid booking_product_ids', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-11-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-11-10'),
+          bookedTo: new Date('2025-11-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      // Update with an invalid bpId — should NOT throw, just skip
+      await bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          '999999': { transporter_name: 'Ghost', destination: 'Nowhere' }
+        }
+      }, 'test-user');
+
+      // Verify the real product wasn't affected
+      const bp = await pool.query(
+        'SELECT transport_details FROM booking_products WHERE booking_id = $1',
+        [result.booking_id]
+      );
+      expect(bp.rows[0].transport_details).toBeNull();
+    });
+
+    test('updateBooking transport_details should log activity', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2025-12-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2025-12-10'),
+          bookedTo: new Date('2025-12-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      const bpId = result.booking_product_ids[0];
+      await bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          [bpId]: { transporter_name: 'ActivityLog Test', destination: 'Baroda' }
+        },
+        performed_by: 'test-user',
+      });
+
+      const log = await pool.query(
+        'SELECT * FROM booking_activity_log WHERE booking_id = $1 AND event_type = $2',
+        [result.booking_id, 'transport_details_updated']
+      );
+      expect(log.rows.length).toBe(1);
+      expect(log.rows[0].performed_by).toBe('test-user');
+    });
+
+    test('createBooking with per-product transport_details — different destinations', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-01-01'),
+        products: [
+          {
+            productId: testProductId1,
+            size: 'M',
+            bookedFrom: new Date('2026-01-10'),
+            bookedTo: new Date('2026-01-15'),
+            rent: 500,
+            securityDeposit: 1000,
+            quantity: 1,
+            transportDetails: { transporter_id: testTransporterId, transporter_name: 'TEST-BOOKING-TRANS', destination: 'Rajkot' },
+          },
+          {
+            productId: testProductId2,
+            size: 'L',
+            bookedFrom: new Date('2026-01-10'),
+            bookedTo: new Date('2026-01-15'),
+            rent: 800,
+            securityDeposit: 1500,
+            quantity: 1,
+            transportDetails: { transporter_id: testTransporterId, transporter_name: 'TEST-BOOKING-TRANS', destination: 'Junagadh' },
+          },
+        ],
+        transportCharge: 300,
+        createdBy: 'test-user',
+      });
+
+      expect(result.booking_product_ids).toHaveLength(2);
+
+      // Verify per-shipment destinations differ, same transporter FK
+      const bps = await pool.query(
+        'SELECT transporter_id, transport_details FROM booking_products WHERE booking_id = $1 ORDER BY id',
+        [result.booking_id]
+      );
+      expect(bps.rows[0].transporter_id).toBe(testTransporterId);
+      expect(bps.rows[0].transport_details.destination).toBe('Rajkot');
+      expect(bps.rows[1].transporter_id).toBe(testTransporterId);
+      expect(bps.rows[1].transport_details.destination).toBe('Junagadh');
+    });
+
+    test('createBooking should reject invalid phone in transport_details', async () => {
+      await expect(bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-02-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-02-10'),
+          bookedTo: new Date('2026-02-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: { transporter_name: 'Test', phone: '123' }, // too short
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      })).rejects.toThrow('Phone number');
+    });
+
+    test('createBooking should reject invalid destination_phone in transport_details', async () => {
+      await expect(bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-02-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-02-10'),
+          bookedTo: new Date('2026-02-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: { transporter_name: 'Test', phone: '9876543210', destination_phone: '12345' },
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      })).rejects.toThrow('Destination phone');
+    });
+
+    test('createBooking should reject invalid bus_no in transport_details', async () => {
+      await expect(bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-02-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-02-10'),
+          bookedTo: new Date('2026-02-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: { transporter_name: 'Test', phone: '9876543210', bus_no: 'INVALID' },
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      })).rejects.toThrow('Invalid vehicle number');
+    });
+
+    test('createBooking should accept valid bus_no format (RJ27CD6709)', async () => {
+      // Update the test transporter to have this bus_no
+      await pool.query('UPDATE transporters SET bus_no = $1 WHERE id = $2', ['RJ27CD6709', testTransporterId]);
+
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-03-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-03-10'),
+          bookedTo: new Date('2026-03-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+          transportDetails: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-BOOKING-TRANS',
+            phone: '9876543210',
+            bus_no: 'RJ27CD6709',
+            destination: 'Jodhpur',
+          },
+        }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      // bus_no comes from JOIN, not JSONB
+      const booking = await bookingService.getBookingById(result.booking_id);
+      const product = booking.products.find(p => p.product_id === testProductId1);
+      expect(product.transport_details.bus_no).toBe('RJ27CD6709');
+
+      // Restore original bus_no
+      await pool.query('UPDATE transporters SET bus_no = $1 WHERE id = $2', ['GJ05AB1234', testTransporterId]);
+    });
+
+    test('updateBooking should reject invalid bus_no in transport_details', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-04-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-04-10'),
+          bookedTo: new Date('2026-04-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      const bpId = result.booking_product_ids[0];
+      await expect(bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          [bpId]: { transporter_name: 'Test', phone: '9876543210', bus_no: 'BAD' }
+        }
+      })).rejects.toThrow('Invalid vehicle number');
     });
   });
 });

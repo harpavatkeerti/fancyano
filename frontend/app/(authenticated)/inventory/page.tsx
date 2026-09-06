@@ -1066,7 +1066,7 @@ export default function InventoryPage() {
                 </h2>
                 {!editingProduct && (
                   <p className="text-sm text-gray-500 mt-0.5">
-                    Step {addStep} of 2 — {addStep === 1 ? 'Product type & code' : 'Product details'}
+                    Step {addStep} of 3 — {addStep === 1 ? 'Select category' : addStep === 2 ? 'Product type & code' : 'Product details'}
                   </p>
                 )}
               </div>

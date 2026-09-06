@@ -38,6 +38,8 @@ export const bankAccountsApi = api.bankAccounts;
 export const qrCodesApi = api.qrCodes;
 export const purchasesApi = api.purchases;
 export const notificationsApi = api.notifications;
+export const measurementTemplatesApi = api.measurementTemplates;
+export const transportersApi = api.transporters;
 
 // ── Re-export types from shared ──
 export type {
@@ -55,9 +57,13 @@ export type {
   BookingCancellationHistory,
   ProductCategory,
   ProductTypeDefinition,
+  MeasurementTemplate,
+  MeasurementTemplateField,
   Expense,
   ExpenseSummary,
   CashAdjustment,
+  Transporter,
+  TransportDetails,
 } from '@rental/shared';
 
 export type { AvailabilityCheckRequest, AvailabilityResponse, AvailabilityConflict } from '@rental/shared';

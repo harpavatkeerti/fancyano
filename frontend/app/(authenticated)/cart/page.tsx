@@ -1,12 +1,14 @@
 'use client';
 
-import { bookingsApi, settingsApi, usersApi, availabilityApi } from '@/lib/api';
+import { bookingsApi, settingsApi, usersApi, availabilityApi, transportersApi } from '@/lib/api';
 import { useEffect, useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getImageUrl } from '@/lib/imageHelper';
 import { getCountryByCode, isValidPhoneNumber } from '@/lib/countryCodes';
-import { PhoneInput, TightScheduleWarningModal } from '@/components/common';
+import { PhoneInput, TightScheduleWarningModal, TransportDetailsModal } from '@/components/common';
+import type { TransportFormData } from '@/components/common';
 import type { UrgentConflict } from '@rental/shared';
+
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from '@/components/common/AlertBanner';
@@ -37,6 +39,21 @@ export default function CartPage() {
   const [bookingPreview, setBookingPreview] = useState<any>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
+
+  // Per-product transport details state
+  const [productTransportDetails, setProductTransportDetails] = useState<Record<number, {
+    transporter_id?: number;
+    transporter_name: string;
+    phone: string;
+    bus_no: string;
+    source_address: string;
+    destination: string;
+    destination_address: string;
+    destination_phone: string;
+  }>>({});
+
+  const [creatingTransporter, setCreatingTransporter] = useState<number | null>(null);
+  const [transportModalIndex, setTransportModalIndex] = useState<number | null>(null);
 
   // Customer details
   const [customerName, setCustomerName] = useState('');
@@ -276,6 +293,37 @@ export default function CartPage() {
     }, 350);
   }
 
+
+
+  // Create a new transporter inline and select it
+  async function handleCreateTransporter(productIndex: number) {
+    const details = productTransportDetails[productIndex];
+    if (!details?.transporter_name || !details?.phone) {
+      addAlert('Please fill transporter name and phone before saving.', 'warning');
+      return;
+    }
+    setCreatingTransporter(productIndex);
+    try {
+      const res = await transportersApi.create({
+        name: details.transporter_name,
+        phone: details.phone,
+        phone_country: 'IN',
+        bus_no: details.bus_no || undefined,
+      } as any);
+      setProductTransportDetails(prev => ({
+        ...prev,
+        [productIndex]: { ...prev[productIndex], transporter_id: res.data.id }
+      }));
+
+      toast.success('Transporter saved!');
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to save transporter');
+    } finally {
+      setCreatingTransporter(null);
+    }
+  }
+
+
   // Auto-fill form when a user is selected from dropdown
   function handleUserSelect(user: User) {
     setSelectedUser(user);
@@ -309,6 +357,26 @@ export default function CartPage() {
       return;
     }
 
+    // Validate transport details (phone numbers and bus_no) before proceeding
+    if (transportationRequired === 'yes') {
+      const BUS_REGEX = /^[A-Z]{2}\d{2}[A-Z]{1,3}\d{4}$/;
+      for (let i = 0; i < cartItems.length; i++) {
+        const td = productTransportDetails[i];
+        if (!td) continue;
+        if (td.phone && !isValidPhoneNumber(td.phone, 'IN')) {
+          addAlert(`Transport: Invalid driver mobile for ${cartItems[i].product.name}. Must be 10 digits.`, 'warning');
+          return;
+        }
+        if (td.destination_phone && !isValidPhoneNumber(td.destination_phone, 'IN')) {
+          addAlert(`Transport: Invalid destination mobile for ${cartItems[i].product.name}. Must be 10 digits.`, 'warning');
+          return;
+        }
+        if (td.bus_no && !BUS_REGEX.test(td.bus_no.replace(/[\s\-]/g, '').toUpperCase())) {
+          addAlert(`Transport: Invalid bus no for ${cartItems[i].product.name}. Format: RJ27CD6709`, 'warning');
+          return;
+        }
+      }
+    }
 
     // Check real-time availability from database
     const dbCheck = await checkDatabaseAvailability();
@@ -502,13 +570,16 @@ export default function CartPage() {
       const bookingResponse = await bookingsApi.create({
         user_id: userId,
         booking_date: new Date().toISOString().split('T')[0],
-        products: cartItems.map(item => ({
+        products: cartItems.map((item, index) => ({
           id: item.product.id,
           booked_from: item.dateFrom,
           booked_to: item.dateTo,
           size: item.size || null,
           discountType: item.discountType || null,
-          discountValue: item.discountValue || 0
+          discountValue: item.discountValue || 0,
+          transport_details: transportationRequired === 'yes' && productTransportDetails[index]
+            ? productTransportDetails[index]
+            : null,
         })),
         // Backend calculates total_rent and total_security from products
         transport_charge: transportationRequired === 'yes' ? transportationCharge : 0,
@@ -834,6 +905,53 @@ export default function CartPage() {
               </div>
             )}
           </div>
+
+          {/* Transport Details — shown when transport is opted */}
+          {transportationRequired === 'yes' && cartItems.length > 0 && (
+            <div className="mt-4 bg-teal-50 border border-teal-200 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold text-teal-800">📦 Transport Details</h3>
+                <button
+                  onClick={() => setTransportModalIndex(0)}
+                  className="text-sm bg-teal-600 text-white px-4 py-1.5 rounded-lg hover:bg-teal-700 transition-colors font-medium"
+                >
+                  {Object.values(productTransportDetails).some(d => d?.transporter_name || d?.destination) ? '✏️ Edit Transport Details' : '📍 Set Transport Details'}
+                </button>
+              </div>
+              {/* Compact summary of filled transport per product */}
+              {cartItems.map((item, index) => {
+                const d = productTransportDetails[index];
+                if (!d || (!d.transporter_name && !d.destination)) return null;
+                return (
+                  <div key={index} className="flex items-center gap-2 text-xs text-teal-700 py-1 border-t border-teal-100 first:border-t-0">
+                    <span className="font-medium text-gray-800">{item.product.name}</span>
+                    {d.transporter_name && <span>• {d.transporter_name}</span>}
+                    {d.destination && <span>→ {d.destination}</span>}
+                    {d.transporter_id && <span className="text-teal-600">✅</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Transport Details Modal */}
+          {transportModalIndex !== null && (
+            <TransportDetailsModal
+              products={cartItems.map((item, i) => ({
+                id: i,
+                name: item.product.name,
+                code: item.product.code,
+                size: item.size,
+              }))}
+              initialValues={productTransportDetails}
+              onSave={async (data) => {
+                setProductTransportDetails(data as any);
+                setTransportModalIndex(null);
+              }}
+              onClose={() => setTransportModalIndex(null)}
+              title="📍 Transport Details"
+            />
+          )}
 
           {/* Collapsible Additional Settings */}
           <div className="mt-6 border border-gray-300 rounded-lg overflow-hidden">

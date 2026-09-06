@@ -2,6 +2,7 @@ const pool = require('../database/connection');
 const chargeAccountingService = require('./chargeAccountingService');
 const DiscountCalculator = require('../utils/discountCalculator');
 const { recalcBookingDateRange, checkProductAvailability } = require('../utils/bookingDateUtils');
+const { validatePhoneLength, validateBusNumber } = require('../utils/phoneUtils');
 
 class BookingService {
   /**
@@ -94,8 +95,9 @@ class BookingService {
           quantity = 1,
           measurements,
           specialRequirements,
-          discountType,    // NEW: 'percentage' or 'fixed'
-          discountValue    // NEW: discount value
+          discountType,    // 'percentage' or 'fixed'
+          discountValue,   // discount value
+          transportDetails // per-product transport snapshot (JSONB)
         } = product;
 
         if (!productId || !bookedFrom || !bookedTo || rent === undefined || securityDeposit === undefined) {
@@ -132,14 +134,39 @@ class BookingService {
         // Guard: reject if the product is already booked over this date range (for this size)
         await checkProductAvailability(productId, bookedFrom, bookedTo, { client, size: size || null });
 
-        // Create booking_product entry with discount information
+        // Guard: validate transport_details phone numbers and bus_no
+        if (transportDetails) {
+          if (transportDetails.phone) {
+            const phoneErr = validatePhoneLength(transportDetails.phone, 'IN');
+            if (phoneErr) throw Object.assign(new Error(phoneErr), { status: 400 });
+          }
+          if (transportDetails.destination_phone) {
+            const destPhoneErr = validatePhoneLength(transportDetails.destination_phone, 'IN');
+            if (destPhoneErr) throw Object.assign(new Error(`Destination phone: ${destPhoneErr}`), { status: 400 });
+          }
+          if (transportDetails.bus_no) {
+            const busErr = validateBusNumber(transportDetails.bus_no);
+            if (busErr) throw Object.assign(new Error(busErr), { status: 400 });
+          }
+        }
+
+        // Split transport: transporter_id as FK column, per-shipment fields in JSONB
+        const transporterId = transportDetails?.transporter_id || null;
+        const perShipmentDetails = transportDetails
+          ? (() => {
+              const { transporter_id, transporter_name, phone, bus_no, ...shipment } = transportDetails;
+              return Object.keys(shipment).length > 0 ? shipment : null;
+            })()
+          : null;
+
+        // Create booking_product entry with discount information and transport details
         const bpResult = await client.query(
           `INSERT INTO booking_products (
             booking_id, product_id, quantity, booked_from, booked_to,
             status, rent, security_deposit, effective_rent,
             discount_amount, discount_type,
-            measurements, special_requirements, size
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            measurements, special_requirements, size, transporter_id, transport_details
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
           RETURNING id`,
           [
             bookingId,
@@ -155,7 +182,9 @@ class BookingService {
             discountType || null, // Store discount type (null if no discount)
             measurements ? JSON.stringify(measurements) : null,
             specialRequirements || null,
-            size || null
+            size || null,
+            transporterId,
+            perShipmentDetails ? JSON.stringify(perShipmentDetails) : null
           ]
         );
 
@@ -419,6 +448,58 @@ class BookingService {
                   booked_to: p.booked_to,
                 }))
             }),
+            performed_by || 'system'
+          ]
+        );
+      }
+
+      // ── Transport details update ────────────────────────────────────────────
+      // Accepts: transport_details: { [booking_product_id]: { transporter_id?, transporter_name?, phone?, bus_no?, destination? } }
+      if (data.transport_details && typeof data.transport_details === 'object') {
+        // Fetch valid booking_product IDs for this booking
+        const bpTransportResult = await client.query(
+          'SELECT id FROM booking_products WHERE booking_id = $1',
+          [bookingId]
+        );
+        const validTransportBpIds = new Set(bpTransportResult.rows.map(r => r.id));
+
+        for (const [bpIdStr, details] of Object.entries(data.transport_details)) {
+          const bpId = parseInt(bpIdStr);
+          if (isNaN(bpId) || !validTransportBpIds.has(bpId)) continue;
+
+          // Validate phone numbers and bus_no
+          if (details.phone) {
+            const phoneErr = validatePhoneLength(details.phone, 'IN');
+            if (phoneErr) throw Object.assign(new Error(phoneErr), { status: 400 });
+          }
+          if (details.destination_phone) {
+            const destPhoneErr = validatePhoneLength(details.destination_phone, 'IN');
+            if (destPhoneErr) throw Object.assign(new Error(`Destination phone: ${destPhoneErr}`), { status: 400 });
+          }
+          if (details.bus_no) {
+            const busErr = validateBusNumber(details.bus_no);
+            if (busErr) throw Object.assign(new Error(busErr), { status: 400 });
+          }
+
+          // Split: transporter_id as FK column, per-shipment fields in JSONB
+          const updTransporterId = details.transporter_id || null;
+          const { transporter_id: _tid, transporter_name: _tn, phone: _ph, bus_no: _bn, ...updShipment } = details;
+          const updPerShipment = Object.keys(updShipment).length > 0 ? updShipment : null;
+
+          await client.query(
+            'UPDATE booking_products SET transporter_id = $1, transport_details = $2 WHERE id = $3 AND booking_id = $4',
+            [updTransporterId, updPerShipment ? JSON.stringify(updPerShipment) : null, bpId, bookingId]
+          );
+        }
+
+        // Activity log
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            bookingId,
+            'transport_details_updated',
+            JSON.stringify({ updated_products: Object.keys(data.transport_details) }),
             performed_by || 'system'
           ]
         );
@@ -715,8 +796,15 @@ class BookingService {
             'category_name', pc.name,
             'measurement_template_id', COALESCE(bp.measurement_template_id, pt.measurement_template_id),
             'measurement_template_fields', mt.fields,
-            'transport_details', bp.transport_details
-          )
+            'transport_details', CASE WHEN bp.transporter_id IS NOT NULL THEN
+              jsonb_build_object(
+                'transporter_id', bp.transporter_id,
+                'transporter_name', tr.name,
+                'phone', tr.phone,
+                'bus_no', tr.bus_no
+              ) || COALESCE(bp.transport_details, '{}'::jsonb)
+            ELSE bp.transport_details END
+          ) ORDER BY bp.booked_from ASC, bp.id ASC
         ) FILTER (WHERE p.id IS NOT NULL) AS products
        FROM bookings b
        JOIN users u ON b.user_id = u.id
@@ -726,6 +814,7 @@ class BookingService {
        LEFT JOIN product_types pt ON pt.name = p.name AND pt.is_active = true
          AND (pt.category_id = p.category_id OR (pt.category_id IS NULL AND p.category_id IS NULL))
        LEFT JOIN measurement_templates mt ON mt.id = COALESCE(bp.measurement_template_id, pt.measurement_template_id)
+       LEFT JOIN transporters tr ON bp.transporter_id = tr.id
        WHERE b.id = $1
        GROUP BY b.id, u.id`,
       [bookingId]
@@ -801,7 +890,15 @@ class BookingService {
             'booked_from', bp.booked_from,
             'booked_to', bp.booked_to,
             'size', bp.size,
-            'category_name', pc.name
+            'category_name', pc.name,
+            'transport_details', CASE WHEN bp.transporter_id IS NOT NULL THEN
+              jsonb_build_object(
+                'transporter_id', bp.transporter_id,
+                'transporter_name', tr.name,
+                'phone', tr.phone,
+                'bus_no', tr.bus_no
+              ) || COALESCE(bp.transport_details, '{}'::jsonb)
+            ELSE bp.transport_details END
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
       FROM bookings b
@@ -809,6 +906,7 @@ class BookingService {
       LEFT JOIN booking_products bp ON b.id = bp.booking_id
       LEFT JOIN products p ON bp.product_id = p.id
       LEFT JOIN product_categories pc ON p.category_id = pc.id
+      LEFT JOIN transporters tr ON bp.transporter_id = tr.id
       WHERE 1=1
     `;
 

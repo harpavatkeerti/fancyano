@@ -57,6 +57,8 @@ export interface BookingProduct {
   special_requirements?: string;
   /** Size of the booked product (null for sizeless products) */
   size?: string | null;
+  /** Per-product transport snapshot (null if transport not opted for this product) */
+  transport_details?: TransportDetails | null;
   created_at: string;
   updated_at: string;
 }
@@ -143,6 +145,31 @@ export interface Vendor {
   notes?: string;
   created_at: string;
   updated_at: string;
+}
+
+// Transporter (master record for transport providers)
+export interface Transporter {
+  id: number;
+  name: string;
+  phone: string;
+  phone_country: string;   // ISO-2 e.g. 'IN'
+  bus_no?: string;
+  notes?: string;
+  is_deleted?: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// Transport details (master fields from FK JOIN, per-shipment fields stored as JSONB)
+export interface TransportDetails {
+  transporter_id?: number;        // FK → transporters.id (column on booking_products)
+  transporter_name?: string;      // From JOIN with transporters table
+  phone?: string;                 // From JOIN with transporters table
+  bus_no?: string;                // From JOIN with transporters table
+  source_address?: string;        // Per-shipment (JSONB)
+  destination?: string;           // Per-shipment (JSONB)
+  destination_address?: string;   // Per-shipment (JSONB)
+  destination_phone?: string;     // Per-shipment (JSONB)
 }
 
 // Payment Transaction matching new backend schema
