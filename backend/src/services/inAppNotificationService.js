@@ -111,6 +111,21 @@ class InAppNotificationService {
     }
     return result.rows[0];
   }
+  /**
+   * Mark notifications as resolved for a given reference (e.g., when expense is approved/rejected).
+   * Changes type from 'action_required' to 'resolved' and marks as read.
+   * @param {string} reference_type - e.g. 'expense', 'recurring_expense', 'cash_adjustment'
+   * @param {number} reference_id
+   * @returns {Promise<number>} - Number of updated rows
+   */
+  async markResolvedByReference(reference_type, reference_id) {
+    const result = await pool.query(
+      `UPDATE notifications SET type = 'resolved', is_read = TRUE
+       WHERE reference_type = $1 AND reference_id = $2 AND type = 'action_required'`,
+      [reference_type, reference_id]
+    );
+    return result.rowCount;
+  }
 }
 
 module.exports = new InAppNotificationService();

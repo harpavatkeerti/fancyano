@@ -150,6 +150,7 @@ class CashAdjustmentService {
        RETURNING *`,
       [approved_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('cash_adjustment', id).catch(() => {});
     return result.rows[0];
   }
 
@@ -175,6 +176,7 @@ class CashAdjustmentService {
        RETURNING *`,
       [rejected_by, id]
     );
+    await inAppNotificationService.markResolvedByReference('cash_adjustment', id).catch(() => {});
     return result.rows[0];
   }
 

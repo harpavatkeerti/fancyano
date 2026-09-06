@@ -122,4 +122,98 @@ describe('InAppNotificationService', () => {
         .rejects.toThrow('Notification not found');
     });
   });
+
+  describe('markResolvedByReference', () => {
+    test('should resolve action_required notifications matching reference', async () => {
+      const notif = await inAppNotificationService.create({
+        title: `${prefix}_resolve1`,
+        message: 'Expense pending',
+        type: 'action_required',
+        recipient_role: 'admin',
+        reference_type: 'expense',
+        reference_id: 99901
+      });
+      expect(notif.type).toBe('action_required');
+      expect(notif.is_read).toBe(false);
+
+      const count = await inAppNotificationService.markResolvedByReference('expense', 99901);
+      expect(count).toBeGreaterThanOrEqual(1);
+
+      // Verify the notification is now resolved and read
+      const all = await inAppNotificationService.list({ recipient_role: 'admin' });
+      const resolved = all.find(n => n.id === notif.id);
+      expect(resolved.type).toBe('resolved');
+      expect(resolved.is_read).toBe(true);
+    });
+
+    test('should not touch notifications with different type', async () => {
+      const notif = await inAppNotificationService.create({
+        title: `${prefix}_resolve2`,
+        message: 'Info notification',
+        type: 'info',
+        recipient_role: 'admin',
+        reference_type: 'expense',
+        reference_id: 99902
+      });
+
+      const count = await inAppNotificationService.markResolvedByReference('expense', 99902);
+      expect(count).toBe(0);
+
+      // Verify info notification unchanged
+      const all = await inAppNotificationService.list({ recipient_role: 'admin' });
+      const unchanged = all.find(n => n.id === notif.id);
+      expect(unchanged.type).toBe('info');
+    });
+
+    test('should return 0 for non-existent reference', async () => {
+      const count = await inAppNotificationService.markResolvedByReference('expense', 999999);
+      expect(count).toBe(0);
+    });
+
+    test('should not affect notifications for different reference_type', async () => {
+      await inAppNotificationService.create({
+        title: `${prefix}_resolve3`,
+        message: 'Cash adjustment pending',
+        type: 'action_required',
+        recipient_role: 'admin',
+        reference_type: 'cash_adjustment',
+        reference_id: 99903
+      });
+
+      // Resolve for 'expense' with same reference_id — should NOT match
+      const count = await inAppNotificationService.markResolvedByReference('expense', 99903);
+      expect(count).toBe(0);
+    });
+
+    test('expense approve should auto-resolve its notification (integration)', async () => {
+      const expenseService = require('./expenseService');
+
+      // Create a pending expense as salesman (triggers notification)
+      const expense = await expenseService.create({
+        category: 'Integration Test',
+        amount: 100,
+        recorded_by: `${prefix}_integration`,
+        user_role: 'salesman'
+      });
+
+      // Verify notification was created
+      const before = await inAppNotificationService.list({ recipient_role: 'admin' });
+      const actionNotif = before.find(n =>
+        n.reference_type === 'expense' && n.reference_id === expense.id && n.type === 'action_required'
+      );
+      expect(actionNotif).toBeDefined();
+
+      // Admin approves the expense
+      await expenseService.approve(expense.id, `${prefix}_admin`);
+
+      // Verify notification is now resolved
+      const after = await inAppNotificationService.list({ recipient_role: 'admin' });
+      const resolvedNotif = after.find(n => n.id === actionNotif.id);
+      expect(resolvedNotif.type).toBe('resolved');
+      expect(resolvedNotif.is_read).toBe(true);
+
+      // Cleanup
+      await pool.query("DELETE FROM expenses WHERE recorded_by = $1", [`${prefix}_integration`]);
+    });
+  });
 });

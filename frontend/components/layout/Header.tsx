@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { usePathname, useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/authContext';
-import { productsApi, notificationsApi } from '@/lib/api';
+import { productsApi, notificationsApi, expensesApi, cashAdjustmentsApi } from '@/lib/api';
 import { LOGO_PATH } from '@/lib/brand';
 import { getHomeRoute } from '@/lib/routePermissions';
 import { getImageUrl } from '@/lib/imageHelper';
@@ -114,6 +114,51 @@ export default function Header() {
       await notificationsApi.markAsRead(id);
       setNotifCount(prev => Math.max(0, prev - 1));
       setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: true } : n));
+    } catch { }
+  };
+
+  // Navigate to the appropriate page when clicking a notification
+  const handleNotificationClick = (n: any) => {
+    if (!n.is_read) handleMarkRead(n.id);
+    const routeMap: Record<string, string> = {
+      expense: '/reports?module=expenses',
+      cash_adjustment: '/reports?module=ledger',
+      recurring_expense: '/reports?module=expenses',
+    };
+    const route = routeMap[n.reference_type];
+    if (route) {
+      router.push(route + '&t=' + Date.now());
+      setNotifOpen(false);
+    }
+  };
+
+  // Approve/Reject directly from notification — works for expense + cash_adjustment
+  const getApproveRejectApi = (type: string) => {
+    if (type === 'expense') return { approve: expensesApi.approve, reject: expensesApi.reject };
+    if (type === 'recurring_expense') return { approve: expensesApi.approveRecurring, reject: expensesApi.rejectRecurring };
+    if (type === 'cash_adjustment') return { approve: cashAdjustmentsApi.approve, reject: cashAdjustmentsApi.reject };
+    return null;
+  };
+
+  const handleApproveNotif = async (e: React.MouseEvent, notif: any) => {
+    e.stopPropagation();
+    const api = getApproveRejectApi(notif.reference_type);
+    if (!api || !notif.reference_id) return;
+    try {
+      await api.approve(notif.reference_id);
+      if (!notif.is_read) setNotifCount(prev => Math.max(0, prev - 1));
+      setNotifications(prev => prev.filter(n => n.id !== notif.id));
+    } catch { }
+  };
+
+  const handleRejectNotif = async (e: React.MouseEvent, notif: any) => {
+    e.stopPropagation();
+    const api = getApproveRejectApi(notif.reference_type);
+    if (!api || !notif.reference_id) return;
+    try {
+      await api.reject(notif.reference_id);
+      if (!notif.is_read) setNotifCount(prev => Math.max(0, prev - 1));
+      setNotifications(prev => prev.filter(n => n.id !== notif.id));
     } catch { }
   };
 
@@ -368,16 +413,42 @@ export default function Header() {
                     <div
                       key={n.id}
                       className={`px-4 py-3 border-b border-gray-50 hover:bg-gray-50 transition-colors cursor-pointer ${!n.is_read ? 'bg-red-50' : ''}`}
-                      onClick={() => !n.is_read && handleMarkRead(n.id)}
+                      onClick={() => handleNotificationClick(n)}
                     >
                       <div className="flex items-start gap-2">
                         <span className={`mt-1 w-2 h-2 rounded-full shrink-0 ${!n.is_read ? 'bg-red-500' : 'bg-transparent'}`} />
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium text-gray-900 truncate">{n.title}</p>
                           <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{n.message}</p>
-                          <p className="text-[10px] text-gray-400 mt-1">
-                            {new Date(n.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
-                          </p>
+                          <div className="flex items-center justify-between mt-1">
+                            <p className="text-[10px] text-gray-400">
+                              {new Date(n.created_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                            </p>
+                            {/* Quick approve/reject for actionable notifications */}
+                            {n.type === 'action_required' && (n.reference_type === 'expense' || n.reference_type === 'recurring_expense' || n.reference_type === 'cash_adjustment') && n.reference_id && (
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  onClick={(e) => handleApproveNotif(e, n)}
+                                  className="w-6 h-6 flex items-center justify-center rounded-full bg-green-100 text-green-600 hover:bg-green-500 hover:text-white transition-colors"
+                                  title="Approve"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                </button>
+                                <button
+                                  onClick={(e) => handleRejectNotif(e, n)}
+                                  className="w-6 h-6 flex items-center justify-center rounded-full bg-red-100 text-red-600 hover:bg-red-500 hover:text-white transition-colors"
+                                  title="Reject"
+                                >
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                  </svg>
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
