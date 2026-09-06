@@ -13,7 +13,7 @@ import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from '@/components/common/AlertBanner';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import { useAuth } from '@/lib/authContext';
-import { isMaleClothing, isFemaleClothing } from '@/components/common/MeasurementModal';
+
 import { isBookingUrgent, getUrgentReason } from '@/lib/bookingHelpers';
 
 export default function BookingsPage() {
@@ -26,8 +26,7 @@ export default function BookingsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
   const [viewingBooking, setViewingBooking] = useState<Booking | null>(null);
-  const [showMeasurements, setShowMeasurements] = useState<{ [key: string]: boolean }>({});
-  const [parsedMeasurements, setParsedMeasurements] = useState<{ [key: string]: any }>({});
+
   const [parsedSpecialRequirements, setParsedSpecialRequirements] = useState<{ [key: string]: string }>({});
   const { alerts, addAlert, removeAlert, clearAlerts } = useAlerts();
 
@@ -543,34 +542,6 @@ export default function BookingsPage() {
       {/* View Booking Modal */}
       {
         viewingBooking && (() => {
-          // Parse measurements and special requirements when modal opens
-          let parsedMeas: { [key: number]: any } = {};
-          let parsedSpecReqs: { [key: number]: string } = {};
-
-          if (viewingBooking.measurements) {
-            try {
-              const measurementsData = typeof viewingBooking.measurements === 'string'
-                ? JSON.parse(viewingBooking.measurements)
-                : viewingBooking.measurements;
-              parsedMeas = measurementsData || {};
-            } catch (error) {
-              console.error('Error parsing measurements:', error);
-            }
-          }
-
-          if (viewingBooking.special_requirements) {
-            try {
-              const specialReqsData = typeof viewingBooking.special_requirements === 'string'
-                ? JSON.parse(viewingBooking.special_requirements)
-                : viewingBooking.special_requirements;
-              if (typeof specialReqsData === 'object' && specialReqsData !== null) {
-                parsedSpecReqs = specialReqsData;
-              }
-            } catch (error) {
-              console.error('Error parsing special requirements:', error);
-            }
-          }
-
           return (
             <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 animate-fadeIn">
               <div className="bg-white rounded-lg shadow-2xl p-8 w-full max-w-3xl max-h-[90vh] overflow-y-auto animate-slideIn">
@@ -580,10 +551,7 @@ export default function BookingsPage() {
                     📋 Booking Details
                   </h2>
                   <button
-                    onClick={() => {
-                      setViewingBooking(null);
-                      setShowMeasurements({});
-                    }}
+                    onClick={() => setViewingBooking(null)}
                     className="text-gray-500 hover:text-gray-700 text-3xl font-bold transition-colors"
                   >
                     ×
@@ -757,335 +725,44 @@ export default function BookingsPage() {
 
                   {/* Transportation indicator */}
                   {((viewingBooking as any).transport_charge || 0) > 0 && (
-                    <div className="bg-teal-50 rounded-lg p-3 border-l-4 border-teal-500 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="text-teal-600">🚚</span>
-                        <p className="text-sm font-medium text-teal-800">Local Transportation Opted</p>
+                    <div className="bg-teal-50 rounded-lg p-3 border-l-4 border-teal-500">
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-teal-600">🚚</span>
+                          <p className="text-sm font-medium text-teal-800">Local Transportation Opted</p>
+                        </div>
+                        <p className="text-lg font-bold text-teal-700">
+                          ₹{Math.floor((viewingBooking as any).transport_charge || 0).toLocaleString('en-IN')}
+                        </p>
                       </div>
-                      <p className="text-lg font-bold text-teal-700">
-                        ₹{Math.floor((viewingBooking as any).transport_charge || 0).toLocaleString('en-IN')}
-                      </p>
+                      {/* Per-product transport details */}
+                      {Array.isArray(viewingBooking.products) && viewingBooking.products.some((p: any) => p.transport_details) && (
+                        <div className="mt-2 space-y-1">
+                          {viewingBooking.products.filter((p: any) => p.transport_details).map((p: any, idx: number) => (
+                            <div key={idx} className="text-xs text-teal-700 flex items-start gap-1">
+                              <span>📦</span>
+                              <span>
+                                {p.name}
+                                {p.transport_details.destination && <span> → {p.transport_details.destination}</span>}
+                                {p.transport_details.transporter_name && <span> via {p.transport_details.transporter_name}</span>}
+                                {p.transport_details.bus_no && <span> (Bus: {p.transport_details.bus_no})</span>}
+                                {p.transport_details.destination_phone && <span> 📞 {p.transport_details.destination_phone}</span>}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
 
-                  {/* Products with Measurements */}
-                  {(() => {
-                    const products = Array.isArray(viewingBooking.products) ? viewingBooking.products : [];
-
-                    // Parse measurements and special requirements
-                    // Use string keys to support both old format (productId) and new format (uniqueKey)
-                    let parsedMeas: { [key: string]: any } = {};
-                    let parsedSpecReqs: { [key: string]: string } = {};
-
-                    if (viewingBooking.measurements) {
-                      try {
-                        const measurementsData = typeof viewingBooking.measurements === 'string'
-                          ? JSON.parse(viewingBooking.measurements)
-                          : viewingBooking.measurements;
-                        if (typeof measurementsData === 'object' && measurementsData !== null) {
-                          // Preserve all keys (both numeric productId and uniqueKey format)
-                          parsedMeas = { ...measurementsData };
-                        }
-                      } catch (error) {
-                        console.error('Error parsing measurements:', error);
-                      }
-                    }
-
-                    if (viewingBooking.special_requirements) {
-                      try {
-                        const specialReqsData = typeof viewingBooking.special_requirements === 'string'
-                          ? JSON.parse(viewingBooking.special_requirements)
-                          : viewingBooking.special_requirements;
-                        if (typeof specialReqsData === 'object' && specialReqsData !== null) {
-                          // Preserve all keys (both numeric productId and uniqueKey format)
-                          parsedSpecReqs = { ...specialReqsData };
-                        }
-                      } catch (error) {
-                        console.error('Error parsing special requirements:', error);
-                      }
-                    }
-
-                    // Show products that have either measurements or special requirements
-                    const productsWithData = products.filter((product: any) => {
-                      const productId = product.id;
-                      const bookedFrom = product.booked_from || viewingBooking.booked_from;
-                      const bookedTo = product.booked_to || viewingBooking.booked_to;
-                      const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-
-                      // Prioritize unique key, then fall back to productId for backward compatibility
-                      const measData = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || parsedMeas[productId];
-                      const hasMeasurements = measData && Object.keys(measData).length > 0;
-
-                      // Prioritize unique key, then fall back to productId for backward compatibility
-                      const specReqData = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || parsedSpecReqs[productId];
-                      const hasSpecialReqs = specReqData && typeof specReqData === 'string' && specReqData.trim().length > 0;
-                      return hasMeasurements || hasSpecialReqs;
-                    });
-
-                    if (productsWithData.length === 0) {
-                      return null;
-                    }
-
-
-
-                    return productsWithData.map((product: any, index: number) => {
-                      const productId = product.id;
-                      const productIdStr = String(productId);
-
-                      // Create unique key for this product instance (product.id + dates)
-                      const bookedFrom = product.booked_from || viewingBooking.booked_from;
-                      const bookedTo = product.booked_to || viewingBooking.booked_to;
-                      const uniqueKey = `${productId}_${bookedFrom}_${bookedTo}`;
-
-                      // Prioritize unique key first, then fall back to productId for backward compatibility
-                      const productMeasurements = parsedMeas[uniqueKey] || parsedMeas[String(productId)] || {};
-                      const hasMeasurements = Object.keys(productMeasurements).length > 0;
-                      const isExpanded = showMeasurements[uniqueKey] || showMeasurements[String(productId)] || false;
-                      const isFemale = isFemaleClothing(product.category_name);
-                      const isMale = isMaleClothing(product.category_name);
-                      // Prioritize unique key first, then fall back to productId for backward compatibility
-                      const productSpecialReqs = parsedSpecReqs[uniqueKey] || parsedSpecReqs[String(productId)] || '';
-
-                      // Get product image URL
-                      const hasProductImage = product.image && product.image !== null && product.image !== '';
-                      const productImageUrl = hasProductImage ? getImageUrl(product.image) : null;
-
-                      return (
-                        <div key={`${uniqueKey}_${index}`} className="bg-gradient-to-r from-pink-50 to-rose-50 rounded-lg p-5 border-l-4 border-pink-500">
-                          <button
-                            onClick={() => setShowMeasurements({
-                              ...showMeasurements,
-                              [uniqueKey]: !isExpanded
-                            })}
-                            className="w-full flex items-center justify-between hover:opacity-80 transition-opacity"
-                          >
-                            <div className="flex items-center">
-                              {/* Product Image */}
-                              <div className="w-14 h-14 rounded-lg overflow-hidden border-2 border-pink-200 mr-3 flex-shrink-0 bg-white">
-                                {productImageUrl ? (
-                                  <img
-                                    src={productImageUrl}
-                                    alt={product.name}
-                                    className="w-full h-full object-cover"
-                                    onError={(e) => {
-                                      (e.target as HTMLImageElement).src = '/placeholder-product.png';
-                                    }}
-                                  />
-                                ) : (
-                                  <div className="w-full h-full flex items-center justify-center bg-gray-100">
-                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-gray-400">
-                                      <path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M3.75 19.5h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5z" />
-                                    </svg>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Product Info & Title */}
-                              <div className="flex flex-col items-start">
-                                {/* Product Code Badge */}
-                                <span className="text-xs font-bold text-pink-700 bg-pink-100 px-2 py-0.5 rounded mb-1">
-                                  {product.code}{product.size ? ` · ${product.size}` : ''}
-                                </span>
-                                <h3 className="text-lg font-semibold text-gray-800 flex items-center">
-                                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 mr-1 text-pink-600">
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 7.5A2.25 2.25 0 017.5 5.25h9a2.25 2.25 0 012.25 2.25v9a2.25 2.25 0 01-2.25 2.25h-9a2.25 2.25 0 01-2.25-2.25v-9z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 8.25h6M9 12h6m-6 3.75h6" />
-                                  </svg>
-                                  {hasMeasurements ? 'Measurements' : 'Special Requirements'} - {product.name}
-                                </h3>
-                                <span className="text-xs text-pink-600">(Click to {isExpanded ? 'hide' : 'view'})</span>
-                              </div>
-                            </div>
-                            <svg
-                              xmlns="http://www.w3.org/2000/svg"
-                              fill="none"
-                              viewBox="0 0 24 24"
-                              strokeWidth={2}
-                              stroke="currentColor"
-                              className={`w-6 h-6 text-pink-600 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}
-                            >
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                            </svg>
-                          </button>
-
-                          {isExpanded && (
-                            <div className="mt-4 space-y-4">
-                              {hasMeasurements && isFemale ? (
-                                <div className="space-y-3">
-                                  <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Female Measurements (in inches)</h5>
-                                  <div className="grid grid-cols-2 gap-3">
-                                    {productMeasurements.waist && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Waist</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.waist}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.bust && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Bust</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.bust}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.shoulder && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Shoulder</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.shoulder}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.sleevesUp && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Sleeves Up</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesUp}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.sleevesE && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Sleeves E</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesE}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.sleevesB && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Sleeves B</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesB}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.lehengaLength && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Lehenga Length</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.lehengaLength}"</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              ) : hasMeasurements && isMale ? (
-                                <div className="space-y-3">
-                                  <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Male Measurements (in inches)</h5>
-                                  <div className="space-y-3">
-                                    {productMeasurements.waistSize && (
-                                      <div className="grid grid-cols-2 gap-3">
-                                        <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                          <p className="text-xs text-gray-600 mb-1">Waist Size</p>
-                                          <p className="text-base font-semibold text-gray-900">{productMeasurements.waistSize}"</p>
-                                        </div>
-                                      </div>
-                                    )}
-                                    <div>
-                                      <h6 className="text-xs font-medium text-gray-600 mb-2">Tight Fit</h6>
-                                      <div className="grid grid-cols-2 gap-3">
-                                        {productMeasurements.sideTight && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Side Tight</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sideTight}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.sleevesTight && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Sleeves Tight</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesTight}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.sleevesLength && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Sleeves Length</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLength}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.pantLength && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Pant Length</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.pantLength}"</p>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <div>
-                                      <h6 className="text-xs font-medium text-gray-600 mb-2">Loose Fit</h6>
-                                      <div className="grid grid-cols-2 gap-3">
-                                        {productMeasurements.sideLoose && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Side Loose</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sideLoose}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.sleevesLoose && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Sleeves Loose</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLoose}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.sleevesLengthLoose && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Sleeves Length</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.sleevesLengthLoose}"</p>
-                                          </div>
-                                        )}
-                                        {productMeasurements.pantLengthLoose && (
-                                          <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                            <p className="text-xs text-gray-600 mb-1">Pant Length</p>
-                                            <p className="text-base font-semibold text-gray-900">{productMeasurements.pantLengthLoose}"</p>
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              ) : hasMeasurements ? (
-                                <div className="space-y-3">
-                                  <h5 className="text-sm font-semibold text-gray-700 border-b pb-2">Measurements (in inches)</h5>
-                                  <div className="grid grid-cols-2 gap-3">
-                                    {productMeasurements.waist && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Waist</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.waist}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.bust && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Bust</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.bust}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.chest && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Chest</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.chest}"</p>
-                                      </div>
-                                    )}
-                                    {productMeasurements.shoulder && (
-                                      <div className="bg-white border border-gray-200 rounded-lg p-3">
-                                        <p className="text-xs text-gray-600 mb-1">Shoulder</p>
-                                        <p className="text-base font-semibold text-gray-900">{productMeasurements.shoulder}"</p>
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              ) : null}
-
-                              {productSpecialReqs && productSpecialReqs.trim().length > 0 && (
-                                <div className={`${hasMeasurements ? 'mt-4 pt-4 border-t border-gray-200' : ''}`}>
-                                  <h5 className="text-sm font-semibold text-gray-700 mb-2">Special Requirements</h5>
-                                  <div className="bg-white rounded-lg p-3 border border-gray-200">
-                                    <p className="text-sm text-gray-700 whitespace-pre-wrap">{productSpecialReqs}</p>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    });
-                  })()}
                 </div>
 
                 {/* Close Button */}
+
                 <div className="mt-8 flex justify-end">
                   <button
-                    onClick={() => {
-                      setViewingBooking(null);
-                      setShowMeasurements({});
-                    }}
+                    onClick={() => setViewingBooking(null)}
                     className="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold rounded-lg transition-colors shadow-sm"
                   >
                     Close

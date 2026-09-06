@@ -68,8 +68,8 @@ router.delete('/:id', async (req, res) => {
 router.post('/:id/types', async (req, res) => {
   try {
     const categoryId = parseInt(req.params.id);
-    const { name, size_type, display_order } = req.body;
-    const productType = await productCategoriesService.addType(categoryId, { name, size_type, display_order });
+    const { name, size_type, display_order, measurement_template_id } = req.body;
+    const productType = await productCategoriesService.addType(categoryId, { name, size_type, display_order, measurement_template_id });
     res.status(201).json(productType);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
@@ -83,8 +83,8 @@ router.post('/:id/types', async (req, res) => {
 // Add a neutral product type (shown for all categories)
 router.post('/neutral-types', async (req, res) => {
   try {
-    const { name, size_type, display_order } = req.body;
-    const productType = await productCategoriesService.addNeutralType({ name, size_type, display_order });
+    const { name, size_type, display_order, measurement_template_id } = req.body;
+    const productType = await productCategoriesService.addNeutralType({ name, size_type, display_order, measurement_template_id });
     res.status(201).json(productType);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });
@@ -99,8 +99,8 @@ router.post('/neutral-types', async (req, res) => {
 router.put('/types/:typeId', async (req, res) => {
   try {
     const { typeId } = req.params;
-    const { name, size_type, display_order } = req.body;
-    const productType = await productCategoriesService.updateType(typeId, { name, size_type, display_order });
+    const { name, size_type, display_order, measurement_template_id } = req.body;
+    const productType = await productCategoriesService.updateType(typeId, { name, size_type, display_order, measurement_template_id });
     res.json(productType);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ error: error.message });

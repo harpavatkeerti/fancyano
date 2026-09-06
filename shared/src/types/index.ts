@@ -260,6 +260,24 @@ export interface ProductTypeDefinition {
   name: string;
   category_id: number | null;  // null = neutral type shown for all categories
   size_type: 'numeric' | 'standard' | 'fancy' | 'none';
+  measurement_template_id: number | null;
+  display_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+// Measurement Template — defines structured fields for a product type's measurement form
+export interface MeasurementTemplateField {
+  key: string;       // e.g. "waist"
+  label: string;     // e.g. "Waist (in inches)"
+  group?: string;    // optional grouping header (e.g. "Tight Fit", "Loose Fit")
+}
+
+export interface MeasurementTemplate {
+  id: number;
+  name: string;
+  fields: MeasurementTemplateField[];
   display_order: number;
   is_active: boolean;
   created_at: string;

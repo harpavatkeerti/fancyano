@@ -290,12 +290,37 @@ class BookingService {
       if (measurements || special_requirements) {
         const specialReqs = special_requirements ? JSON.parse(special_requirements) : {};
 
-        // Get valid booking product IDs for this booking
+        // Get valid booking product IDs for this booking with their product info
         const bpResult = await client.query(
-          'SELECT id FROM booking_products WHERE booking_id = $1',
+          `SELECT bp.id, bp.product_id, p.name AS product_name
+           FROM booking_products bp
+           JOIN products p ON bp.product_id = p.id
+           WHERE bp.booking_id = $1`,
           [bookingId]
         );
         const validBpIds = new Set(bpResult.rows.map(r => r.id));
+
+        // Build a map of bpId → measurement_template (fields + id)
+        // by looking up product_name → product_types → measurement_templates
+        const bpTemplateMap = new Map();
+        for (const bp of bpResult.rows) {
+          const templateResult = await client.query(
+            `SELECT mt.id AS template_id, mt.fields
+             FROM product_types pt
+             JOIN measurement_templates mt ON pt.measurement_template_id = mt.id
+             WHERE pt.name = $1 AND pt.is_active = true
+             LIMIT 1`,
+            [bp.product_name]
+          );
+          if (templateResult.rows.length > 0) {
+            const row = templateResult.rows[0];
+            const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
+            bpTemplateMap.set(bp.id, {
+              templateId: row.template_id,
+              allowedKeys: new Set(fields.map(f => f.key)),
+            });
+          }
+        }
 
         // Extract booking_product_id from keys (format: "bpId_bookedFrom_bookedTo")
         // and update each product's measurements/special_requirements
@@ -308,18 +333,38 @@ class BookingService {
           const bpId = parseInt(key.split('_')[0]);
           if (isNaN(bpId) || !validBpIds.has(bpId)) continue;
 
-          const productMeasurements = measurements ? measurements[key] : undefined;
+          let productMeasurements = measurements ? measurements[key] : undefined;
           const productSpecialReqs = specialReqs[key];
+
+          // Template validation: if a template exists for this product,
+          // strip any fields not defined in the template
+          const templateInfo = bpTemplateMap.get(bpId);
+          let templateId = null;
+
+          if (templateInfo && productMeasurements && typeof productMeasurements === 'object') {
+            templateId = templateInfo.templateId;
+            const filtered = {};
+            for (const [fieldKey, fieldValue] of Object.entries(productMeasurements)) {
+              if (templateInfo.allowedKeys.has(fieldKey)) {
+                filtered[fieldKey] = fieldValue;
+              }
+            }
+            productMeasurements = filtered;
+          } else if (templateInfo) {
+            templateId = templateInfo.templateId;
+          }
 
           if (productMeasurements !== undefined || productSpecialReqs !== undefined) {
             await client.query(
               `UPDATE booking_products
                SET measurements = COALESCE($1, measurements),
-                   special_requirements = COALESCE($2, special_requirements)
-               WHERE id = $3 AND booking_id = $4`,
+                   special_requirements = COALESCE($2, special_requirements),
+                   measurement_template_id = COALESCE($3, measurement_template_id)
+               WHERE id = $4 AND booking_id = $5`,
               [
                 productMeasurements ? JSON.stringify(productMeasurements) : null,
                 productSpecialReqs !== undefined ? productSpecialReqs : null,
+                templateId,
                 bpId,
                 bookingId
               ]
@@ -667,7 +712,10 @@ class BookingService {
             'picked_up_at', bp.picked_up_at,
             'returned_at', bp.returned_at,
             'size', bp.size,
-            'category_name', pc.name
+            'category_name', pc.name,
+            'measurement_template_id', COALESCE(bp.measurement_template_id, pt.measurement_template_id),
+            'measurement_template_fields', mt.fields,
+            'transport_details', bp.transport_details
           )
         ) FILTER (WHERE p.id IS NOT NULL) AS products
        FROM bookings b
@@ -675,6 +723,9 @@ class BookingService {
        LEFT JOIN booking_products bp ON b.id = bp.booking_id
        LEFT JOIN products p ON bp.product_id = p.id
        LEFT JOIN product_categories pc ON p.category_id = pc.id
+       LEFT JOIN product_types pt ON pt.name = p.name AND pt.is_active = true
+         AND (pt.category_id = p.category_id OR (pt.category_id IS NULL AND p.category_id IS NULL))
+       LEFT JOIN measurement_templates mt ON mt.id = COALESCE(bp.measurement_template_id, pt.measurement_template_id)
        WHERE b.id = $1
        GROUP BY b.id, u.id`,
       [bookingId]

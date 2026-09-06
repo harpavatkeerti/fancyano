@@ -172,13 +172,25 @@ export default function SettingsPage() {
     try {
       const response = await productCategoriesApi.getAll();
       setProductCategories(response.data.categories || []);
-    } catch (error) {
-      console.error('Error fetching categories:', error);
+    } catch (e: any) {
+      console.error('Failed to load product categories:', e);
+    }
+  }
+
+  async function fetchMeasurementTemplates() {
+    try {
+      const response = await measurementTemplatesApi.getAll();
+      setMeasurementTemplates(response.data || []);
+    } catch (e: any) {
+      console.error('Failed to load measurement templates:', e);
     }
   }
 
   // Fetch categories on mount
-  useEffect(() => { fetchCategories(); }, []);
+  useEffect(() => { 
+    fetchCategories(); 
+    fetchMeasurementTemplates();
+  }, []);
 
   async function handleAddCategory() {
     if (!newCategoryName.trim()) return;
@@ -221,10 +233,12 @@ export default function SettingsPage() {
       await productCategoriesApi.addType(categoryId, {
         name: newTypeName.trim(),
         size_type: newTypeSizeType,
+        measurement_template_id: newTypeMeasurementTemplateId,
       });
       toast.success(`Product type "${newTypeName.trim()}" added`);
       setNewTypeName('');
       setNewTypeSizeType('standard');
+      setNewTypeMeasurementTemplateId(null);
       setShowAddTypeForm(null);
       fetchCategories();
     } catch (error: any) {
@@ -238,6 +252,7 @@ export default function SettingsPage() {
       await productCategoriesApi.updateType(typeId, {
         name: editingType.name.trim(),
         size_type: editingType.size_type,
+        measurement_template_id: editingType.measurement_template_id,
       });
       toast.success('Product type updated');
       setEditingType(null);
@@ -607,6 +622,16 @@ export default function SettingsPage() {
                                   <option value="fancy">Age-Based</option>
                                   <option value="none">No Sizes</option>
                                 </select>
+                                <select
+                                  value={editingType.measurement_template_id ?? ''}
+                                  onChange={(e) => setEditingType({ ...editingType, measurement_template_id: e.target.value ? parseInt(e.target.value) : null })}
+                                  className="px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                                >
+                                  <option value="">No Template</option>
+                                  {measurementTemplates.map(t => (
+                                    <option key={t.id} value={t.id}>{t.name}</option>
+                                  ))}
+                                </select>
                                 <button onClick={() => handleUpdateType(type.id)} className="text-green-600 hover:text-green-700 text-sm font-medium">Save</button>
                                 <button onClick={() => setEditingType(null)} className="text-gray-500 hover:text-gray-700 text-sm">Cancel</button>
                               </div>
@@ -615,10 +640,15 @@ export default function SettingsPage() {
                                 <div className="flex items-center gap-3">
                                   <span className="text-sm font-medium text-gray-800">{type.name}</span>
                                   <span className="text-xs text-gray-500 bg-blue-50 px-2 py-0.5 rounded">{getSizeTypeLabel(type.size_type)}</span>
+                                  {type.measurement_template_id && (
+                                    <span className="text-xs text-purple-600 bg-purple-50 px-2 py-0.5 rounded">
+                                      📏 {measurementTemplates.find(t => t.id === type.measurement_template_id)?.name || 'Template'}
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="flex items-center gap-2">
                                   <button
-                                    onClick={() => setEditingType({ id: type.id, name: type.name, size_type: type.size_type })}
+                                    onClick={() => setEditingType({ id: type.id, name: type.name, size_type: type.size_type, measurement_template_id: type.measurement_template_id ?? null })}
                                     className="text-blue-600 hover:text-blue-700 text-xs"
                                   >
                                     Edit
@@ -673,6 +703,16 @@ export default function SettingsPage() {
                               <option value="fancy">Age-Based</option>
                               <option value="none">No Sizes</option>
                             </select>
+                            <select
+                              value={newTypeMeasurementTemplateId ?? ''}
+                              onChange={(e) => setNewTypeMeasurementTemplateId(e.target.value ? parseInt(e.target.value) : null)}
+                              className="px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                            >
+                              <option value="">No Measurement Template</option>
+                              {measurementTemplates.map(t => (
+                                <option key={t.id} value={t.id}>{t.name}</option>
+                              ))}
+                            </select>
                             <button
                               onClick={() => handleAddType(cat.id)}
                               disabled={!newTypeName.trim()}
@@ -681,7 +721,7 @@ export default function SettingsPage() {
                               Add
                             </button>
                             <button
-                              onClick={() => { setShowAddTypeForm(null); setNewTypeName(''); }}
+                              onClick={() => { setShowAddTypeForm(null); setNewTypeName(''); setNewTypeMeasurementTemplateId(null); }}
                               className="px-3 py-1.5 bg-white border border-gray-300 text-gray-700 text-sm rounded hover:bg-gray-50 transition-colors"
                             >
                               Cancel
@@ -701,6 +741,303 @@ export default function SettingsPage() {
                 </div>
               );
             })}
+          </div>
+        )}
+      </div>
+
+      {/* ═══ Measurement Templates ═══ */}
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+        <button
+          onClick={() => setIsMeasurementSectionOpen(!isMeasurementSectionOpen)}
+          className="w-full flex justify-between items-center p-6 text-left hover:bg-gray-50 transition-colors rounded-lg"
+        >
+          <div className="flex items-center gap-3">
+            <svg
+              className={`w-5 h-5 text-gray-500 transition-transform duration-200 ${isMeasurementSectionOpen ? 'rotate-90' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <div>
+              <h2 className="text-xl font-semibold text-gray-800">Measurement Templates</h2>
+              <p className="text-sm text-gray-500 mt-1">Define measurement forms for product types (e.g. Sherwani needs waist, chest, sleeves)</p>
+            </div>
+          </div>
+          <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">
+            {measurementTemplates.length} template{measurementTemplates.length !== 1 ? 's' : ''}
+          </span>
+        </button>
+
+        {isMeasurementSectionOpen && (
+        <div className="px-6 pb-6">
+        <div className="flex justify-end mb-4">
+          <button
+            onClick={() => { setShowAddTemplateForm(true); setNewTemplateName(''); setNewTemplateFields([{ key: '', label: '', group: '' }]); }}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded transition-colors"
+          >
+            + Add Template
+          </button>
+        </div>
+
+        {/* Add template form */}
+        {showAddTemplateForm && (
+          <div className="mb-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <div className="mb-3">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Template Name</label>
+              <input
+                type="text"
+                value={newTemplateName}
+                onChange={(e) => setNewTemplateName(e.target.value)}
+                placeholder="e.g. Sherwani Measurements"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                autoFocus
+              />
+            </div>
+
+            <label className="block text-sm font-medium text-gray-700 mb-2">Fields</label>
+            <div className="space-y-2 mb-3">
+              {newTemplateFields.map((field, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={field.key}
+                    onChange={(e) => {
+                      const updated = [...newTemplateFields];
+                      updated[idx] = { ...updated[idx], key: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') };
+                      setNewTemplateFields(updated);
+                    }}
+                    placeholder="key (e.g. waist)"
+                    className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <input
+                    type="text"
+                    value={field.label}
+                    onChange={(e) => {
+                      const updated = [...newTemplateFields];
+                      updated[idx] = { ...updated[idx], label: e.target.value };
+                      setNewTemplateFields(updated);
+                    }}
+                    placeholder="Label (e.g. Waist)"
+                    className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  <input
+                    type="text"
+                    value={field.group}
+                    onChange={(e) => {
+                      const updated = [...newTemplateFields];
+                      updated[idx] = { ...updated[idx], group: e.target.value };
+                      setNewTemplateFields(updated);
+                    }}
+                    placeholder="Group (optional)"
+                    className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                  />
+                  {newTemplateFields.length > 1 && (
+                    <button
+                      onClick={() => setNewTemplateFields(newTemplateFields.filter((_, i) => i !== idx))}
+                      className="text-red-500 hover:text-red-700 text-sm px-1"
+                      title="Remove field"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <button
+              onClick={() => setNewTemplateFields([...newTemplateFields, { key: '', label: '', group: '' }])}
+              className="text-sm text-blue-600 hover:text-blue-700 font-medium mb-3"
+            >
+              + Add Field
+            </button>
+
+            <div className="flex items-center gap-3 mt-3">
+              <button
+                onClick={handleAddTemplate}
+                disabled={!newTemplateName.trim() || newTemplateFields.filter(f => f.key.trim() && f.label.trim()).length === 0}
+                className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+              >
+                Create Template
+              </button>
+              <button
+                onClick={() => setShowAddTemplateForm(false)}
+                className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Template list */}
+        {measurementTemplates.length === 0 && !showAddTemplateForm ? (
+          <p className="text-gray-400 text-sm italic">No measurement templates yet. Click "+ Add Template" to create one.</p>
+        ) : (
+          <div className="space-y-2">
+            {measurementTemplates.map((template) => {
+              const isExpTpl = expandedTemplate === template.id;
+              const isEditing = editingTemplate?.id === template.id;
+
+              return (
+                <div key={template.id} className="border border-gray-200 rounded-lg overflow-hidden">
+                  {/* Template header */}
+                  <div className="flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 transition-colors">
+                    <button
+                      onClick={() => setExpandedTemplate(isExpTpl ? null : template.id)}
+                      className="flex items-center gap-3 flex-1 text-left"
+                    >
+                      <svg
+                        className={`w-4 h-4 text-gray-500 transition-transform duration-200 ${isExpTpl ? 'rotate-90' : ''}`}
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                      <span className="text-sm font-medium text-gray-800">📏 {template.name}</span>
+                      <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">
+                        {template.fields.length} field{template.fields.length !== 1 ? 's' : ''}
+                      </span>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setEditingTemplate({
+                            id: template.id,
+                            name: template.name,
+                            fields: template.fields.map(f => ({ key: f.key, label: f.label, group: f.group || '' })),
+                          });
+                          setExpandedTemplate(template.id);
+                        }}
+                        className="text-blue-600 hover:text-blue-700 text-xs"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => handleDeleteTemplate(template.id, template.name)}
+                        className="text-red-600 hover:text-red-700 text-xs"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Template details (expanded) */}
+                  {isExpTpl && (
+                    <div className="px-4 py-3 border-t border-gray-200">
+                      {isEditing ? (
+                        /* Edit mode */
+                        <div>
+                          <div className="mb-3">
+                            <label className="block text-xs font-medium text-gray-600 mb-1">Template Name</label>
+                            <input
+                              type="text"
+                              value={editingTemplate.name}
+                              onChange={(e) => setEditingTemplate({ ...editingTemplate, name: e.target.value })}
+                              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                            />
+                          </div>
+
+                          <label className="block text-xs font-medium text-gray-600 mb-2">Fields</label>
+                          <div className="space-y-2 mb-3">
+                            {editingTemplate.fields.map((field, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={field.key}
+                                  onChange={(e) => {
+                                    const updated = [...editingTemplate.fields];
+                                    updated[idx] = { ...updated[idx], key: e.target.value.replace(/[^a-zA-Z0-9_]/g, '') };
+                                    setEditingTemplate({ ...editingTemplate, fields: updated });
+                                  }}
+                                  placeholder="key"
+                                  className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm font-mono focus:outline-none focus:ring-2 focus:ring-red-500"
+                                />
+                                <input
+                                  type="text"
+                                  value={field.label}
+                                  onChange={(e) => {
+                                    const updated = [...editingTemplate.fields];
+                                    updated[idx] = { ...updated[idx], label: e.target.value };
+                                    setEditingTemplate({ ...editingTemplate, fields: updated });
+                                  }}
+                                  placeholder="Label"
+                                  className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                                />
+                                <input
+                                  type="text"
+                                  value={field.group}
+                                  onChange={(e) => {
+                                    const updated = [...editingTemplate.fields];
+                                    updated[idx] = { ...updated[idx], group: e.target.value };
+                                    setEditingTemplate({ ...editingTemplate, fields: updated });
+                                  }}
+                                  placeholder="Group (optional)"
+                                  className="flex-1 px-2 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+                                />
+                                {editingTemplate.fields.length > 1 && (
+                                  <button
+                                    onClick={() => setEditingTemplate({ ...editingTemplate, fields: editingTemplate.fields.filter((_, i) => i !== idx) })}
+                                    className="text-red-500 hover:text-red-700 text-sm px-1"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+
+                          <button
+                            onClick={() => setEditingTemplate({ ...editingTemplate, fields: [...editingTemplate.fields, { key: '', label: '', group: '' }] })}
+                            className="text-sm text-blue-600 hover:text-blue-700 font-medium mb-3"
+                          >
+                            + Add Field
+                          </button>
+
+                          <div className="flex items-center gap-3 mt-2">
+                            <button
+                              onClick={() => handleUpdateTemplate()}
+                              disabled={!editingTemplate.name.trim() || editingTemplate.fields.filter(f => f.key.trim() && f.label.trim()).length === 0}
+                              className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded hover:bg-green-700 disabled:opacity-50 transition-colors"
+                            >
+                              Save Changes
+                            </button>
+                            <button
+                              onClick={() => setEditingTemplate(null)}
+                              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 text-sm rounded hover:bg-gray-50 transition-colors"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Read-only view */
+                        <div>
+                          <table className="w-full text-sm">
+                            <thead>
+                              <tr className="text-left text-xs text-gray-500 border-b">
+                                <th className="pb-2 font-medium">Key</th>
+                                <th className="pb-2 font-medium">Label</th>
+                                <th className="pb-2 font-medium">Group</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {template.fields.map((field, idx) => (
+                                <tr key={idx} className="border-b border-gray-100 last:border-0">
+                                  <td className="py-1.5 font-mono text-xs text-gray-700">{field.key}</td>
+                                  <td className="py-1.5 text-gray-800">{field.label}</td>
+                                  <td className="py-1.5 text-gray-500">{field.group || '—'}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
           </div>
         )}
       </div>

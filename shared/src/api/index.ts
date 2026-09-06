@@ -24,6 +24,8 @@ import { createExpensesApi } from './expenses';
 import { createBankAccountsApi, createQrCodesApi } from './bankAccountsAndQrCodes';
 import { createPurchasesApi } from './purchases';
 import { createNotificationsApi } from './notifications';
+import { createMeasurementTemplatesApi } from './measurementTemplates';
+import { createTransportersApi } from './transporters';
 
 export interface Api {
   products: ReturnType<typeof createProductsApi>;
@@ -51,6 +53,8 @@ export interface Api {
   qrCodes: ReturnType<typeof createQrCodesApi>;
   purchases: ReturnType<typeof createPurchasesApi>;
   notifications: ReturnType<typeof createNotificationsApi>;
+  measurementTemplates: ReturnType<typeof createMeasurementTemplatesApi>;
+  transporters: ReturnType<typeof createTransportersApi>;
   client: AxiosInstance;
 }
 
@@ -83,6 +87,8 @@ export function createApi(config: ApiConfig): Api {
     qrCodes: createQrCodesApi(apiClient),
     purchases: createPurchasesApi(apiClient),
     notifications: createNotificationsApi(apiClient),
+    measurementTemplates: createMeasurementTemplatesApi(apiClient),
+    transporters: createTransportersApi(apiClient),
     client: apiClient,
   };
 }
@@ -112,3 +118,5 @@ export * from './expenses';
 export * from './bankAccountsAndQrCodes';
 export * from './purchases';
 export * from './notifications';
+export * from './measurementTemplates';
+export * from './transporters';

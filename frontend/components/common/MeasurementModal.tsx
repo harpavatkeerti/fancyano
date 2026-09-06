@@ -2,39 +2,25 @@
 
 import { useState } from 'react';
 import { bookingsApi } from '@/lib/api';
+import type { MeasurementTemplateField } from '@/lib/api';
 import { getImageUrl } from '@/lib/imageHelper';
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from './AlertBanner';
 
 /**
- * Determines if a product belongs to the "Women" category (for measurement form selection).
- * Uses the product's category_name from the DB instead of hardcoded product name matching.
+ * Resolve the measurement template fields for a product.
+ * The backend now returns `measurement_template_fields` on each booking product,
+ * which is the JSONB array of { key, label, group? } from the measurement_templates table.
  */
-export function isFemaleClothing(categoryName: string | null | undefined): boolean {
-  return categoryName?.toLowerCase() === 'women';
-}
-
-/**
- * Determines if a product belongs to the "Men" category (for measurement form selection).
- * Uses the product's category_name from the DB instead of hardcoded product name matching.
- */
-export function isMaleClothing(categoryName: string | null | undefined): boolean {
-  return categoryName?.toLowerCase() === 'men';
-}
-
-/**
- * Sanitizes a measurement input value: strips non-numeric characters (except `.`),
- * collapses multiple decimal points, and validates the format (up to 2 digits
- * before the decimal and up to 2 after, e.g. 39.75).
- * Returns `{ valid: true, value }` on success or `{ valid: false }` on failure.
- */
-export function sanitizeMeasurement(raw: string): { valid: true; value: string } | { valid: false } {
-  const sanitized = raw.replace(/[^\d.]/g, '');
-  const parts = sanitized.split('.');
-  const cleanValue = parts.length > 2 ? parts[0] + '.' + parts.slice(1).join('') : sanitized;
-  if (!/^\d{0,2}(\.\d{0,2})?$/.test(cleanValue)) return { valid: false };
-  return { valid: true, value: cleanValue };
+export function getTemplateFields(product: any): MeasurementTemplateField[] | null {
+  const fields = product?.measurement_template_fields;
+  if (!fields) return null;
+  if (typeof fields === 'string') {
+    try { return JSON.parse(fields); } catch { return null; }
+  }
+  if (Array.isArray(fields)) return fields;
+  return null;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -118,28 +104,18 @@ export function MeasurementModal({
     return `${product.id}_${from}_${to}`;
   }
 
-  // Confirm mode: validates a single input field (supports decimals like 39.75)
+  // Confirm mode: accepts any text input for measurement fields
   function handleMeasurementChange(key: string, field: string, value: string) {
-    const result = sanitizeMeasurement(value);
-    if (!result.valid) {
-      setMeasurementErrors(prev => ({
-        ...prev,
-        [`${key}-${field}`]: 'Please enter a valid measurement (e.g. 39 or 39.75)',
-      }));
-      return;
-    }
     setMeasurementErrors(prev => ({ ...prev, [`${key}-${field}`]: '' }));
     onMeasurementsChange({
       ...measurements,
-      [key]: { ...(measurements[key] || {}), [field]: result.value },
+      [key]: { ...(measurements[key] || {}), [field]: value },
     });
   }
 
-  // Edit mode: validates a single input field and updates local draft only (not parent)
+  // Edit mode: accepts any text input and updates local draft only (not parent)
   function handleEditMeasurementChange(field: string, value: string) {
-    const result = sanitizeMeasurement(value);
-    if (!result.valid) return;
-    setEditingMeasurements(prev => ({ ...prev, [field]: result.value }));
+    setEditingMeasurements(prev => ({ ...prev, [field]: value }));
   }
 
   // ── Confirm mode: save all products ───────────────────────────────────────
@@ -204,13 +180,12 @@ export function MeasurementModal({
   function renderField(key: string, field: string, placeholder: string, value: string, onChange: (v: string) => void, disabled = false) {
     const errKey = `${key}-${field}`;
     return (
-      <div>
+      <div key={field}>
         <label className="block text-xs font-medium text-gray-600 mb-1">{placeholder}</label>
         <input
           type="text"
           value={value}
           onChange={e => onChange(e.target.value)}
-          maxLength={5}
           disabled={disabled}
           className={`px-3 py-2 border rounded w-full ${measurementErrors[errKey] ? 'border-red-500' : 'border-gray-300'}`}
         />
@@ -221,62 +196,55 @@ export function MeasurementModal({
     );
   }
 
-  function renderMeasurementInputs(
-    categoryName: string | null | undefined,
+  /**
+   * Template-driven measurement field renderer.
+   * Groups fields by the optional `group` property and renders each group
+   * with a heading + grid of input fields.
+   * Returns null if the product has no measurement template (special_requirements only).
+   */
+  function renderTemplateFields(
+    product: any,
     key: string,
     getValue: (field: string) => string,
     onChange: (field: string, value: string) => void,
     disabled = false,
   ) {
-    if (isFemaleClothing(categoryName)) {
-      return (
-        <div className="space-y-3">
-          <div className="grid grid-cols-4 gap-3">
-            {renderField(key, 'waist', 'Waist (in inches)', getValue('waist'), v => onChange('waist', v), disabled)}
-            {renderField(key, 'bust', 'Bust (in inches)', getValue('bust'), v => onChange('bust', v), disabled)}
-            {renderField(key, 'shoulder', 'Shoulder (in inches)', getValue('shoulder'), v => onChange('shoulder', v), disabled)}
-            {renderField(key, 'sleevesUp', 'Sleeves Up (in inches)', getValue('sleevesUp'), v => onChange('sleevesUp', v), disabled)}
-          </div>
-          <div className="grid grid-cols-3 gap-3">
-            {renderField(key, 'sleevesE', 'Sleeves E (in inches)', getValue('sleevesE'), v => onChange('sleevesE', v), disabled)}
-            {renderField(key, 'sleevesB', 'Sleeves B (in inches)', getValue('sleevesB'), v => onChange('sleevesB', v), disabled)}
-            {renderField(key, 'lehengaLength', 'Lehenga Length (in inches)', getValue('lehengaLength'), v => onChange('lehengaLength', v), disabled)}
-          </div>
-        </div>
-      );
+    const templateFields = getTemplateFields(product);
+    if (!templateFields || templateFields.length === 0) return null;
+
+    // Group fields by their optional group name (empty string = ungrouped)
+    const groupOrder: string[] = [];
+    const groups: Record<string, MeasurementTemplateField[]> = {};
+    for (const field of templateFields) {
+      const groupName = field.group || '';
+      if (!groups[groupName]) {
+        groups[groupName] = [];
+        groupOrder.push(groupName);
+      }
+      groups[groupName].push(field);
     }
 
-    if (isMaleClothing(categoryName)) {
-      return (
-        <div className="space-y-3">
-          <div className="grid grid-cols-4 gap-3">
-            {renderField(key, 'waistSize', 'Waist Size (in inches)', getValue('waistSize'), v => onChange('waistSize', v), disabled)}
-          </div>
-          <h4 className="text-md font-medium text-gray-700 mb-1">Tight Fit</h4>
-          <div className="grid grid-cols-4 gap-3">
-            {renderField(key, 'sideTight', 'Side Tight (in inches)', getValue('sideTight'), v => onChange('sideTight', v), disabled)}
-            {renderField(key, 'sleevesTight', 'Sleeves Tight (in inches)', getValue('sleevesTight'), v => onChange('sleevesTight', v), disabled)}
-            {renderField(key, 'sleevesLength', 'Sleeves Length (in inches)', getValue('sleevesLength'), v => onChange('sleevesLength', v), disabled)}
-            {renderField(key, 'pantLength', 'Pant Length (in inches)', getValue('pantLength'), v => onChange('pantLength', v), disabled)}
-          </div>
-          <h4 className="text-md font-medium text-gray-700 mt-3 mb-1">Loose Fit</h4>
-          <div className="grid grid-cols-4 gap-3">
-            {renderField(key, 'sideLoose', 'Side Loose (in inches)', getValue('sideLoose'), v => onChange('sideLoose', v), disabled)}
-            {renderField(key, 'sleevesLoose', 'Sleeves Loose (in inches)', getValue('sleevesLoose'), v => onChange('sleevesLoose', v), disabled)}
-            {renderField(key, 'sleevesLengthLoose', 'Sleeves Length (in inches)', getValue('sleevesLengthLoose'), v => onChange('sleevesLengthLoose', v), disabled)}
-            {renderField(key, 'pantLengthLoose', 'Pant Length (in inches)', getValue('pantLengthLoose'), v => onChange('pantLengthLoose', v), disabled)}
-          </div>
-        </div>
-      );
-    }
+    // Strip "(in inches)" from individual labels — it goes on the group heading instead
+    const cleanLabel = (label: string) => label.replace(/\s*\(in inches\)\s*/gi, '').trim();
 
-    // Default
     return (
-      <div className="grid grid-cols-4 gap-3">
-        {renderField(key, 'waist', 'Waist (in inches)', getValue('waist'), v => onChange('waist', v), disabled)}
-        {renderField(key, 'bust', 'Bust (in inches)', getValue('bust'), v => onChange('bust', v), disabled)}
-        {renderField(key, 'chest', 'Chest (in inches)', getValue('chest'), v => onChange('chest', v), disabled)}
-        {renderField(key, 'shoulder', 'Shoulder (in inches)', getValue('shoulder'), v => onChange('shoulder', v), disabled)}
+      <div className="space-y-3">
+        {groupOrder.map((groupName) => (
+          <div key={groupName || '__ungrouped'}>
+            {groupName ? (
+              <h4 className="text-md font-medium text-gray-700 mb-1 mt-3">
+                {groupName} <span className="text-xs font-normal text-gray-400">(in inches)</span>
+              </h4>
+            ) : (
+              <h4 className="text-xs font-normal text-gray-400 mb-1 mt-3">All measurements in inches</h4>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              {groups[groupName].map((f) =>
+                renderField(key, f.key, cleanLabel(f.label), getValue(f.key), v => onChange(f.key, v), disabled)
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     );
   }
@@ -312,6 +280,7 @@ export function MeasurementModal({
             const imageUrl = imageData ? getImageUrl(imageData) : null;
             const bookedFrom = product.booked_from || booking?.booked_from;
             const bookedTo = product.booked_to || booking?.booked_to;
+            const hasTemplate = !!getTemplateFields(product);
 
             return (
               <div key={index} className="bg-gray-50 rounded-lg p-4 mb-4">
@@ -344,14 +313,14 @@ export function MeasurementModal({
                   </div>
                 </div>
 
-                {renderMeasurementInputs(
-                  product.category_name,
+                {renderTemplateFields(
+                  product,
                   key,
                   field => measurements[key]?.[field] || '',
                   (field, value) => handleMeasurementChange(key, field, value),
                 )}
 
-                <div className="mt-4">
+                <div className={hasTemplate ? 'mt-4' : ''}>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Special Requirements (if any):
                   </label>
@@ -397,6 +366,7 @@ export function MeasurementModal({
 
   const refundLocked = isProductRefunded ? isProductRefunded(selectedProduct.id) : false;
   const inputsDisabled = refundLocked;
+  const hasTemplate = !!getTemplateFields(selectedProduct);
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -452,14 +422,14 @@ export function MeasurementModal({
 
         {/* Measurement inputs */}
         <div className="space-y-6">
-          {renderMeasurementInputs(
-            selectedProduct.category_name,
+          {renderTemplateFields(
+            selectedProduct,
             key,
             field => editingMeasurements[field] || '',
             (field, value) => handleEditMeasurementChange(field, value),
             inputsDisabled,
           )}
-          <div className="mt-4">
+          <div className={hasTemplate ? 'mt-4' : ''}>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Special Requirements (if any):
             </label>

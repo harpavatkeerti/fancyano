@@ -26,7 +26,7 @@ class ProductCategoriesService {
 
     // 2. Fetch all active product types (including neutral ones)
     const typeResult = await pool.query(
-      `SELECT id, name, category_id, size_type, display_order, is_active, created_at, updated_at
+      `SELECT id, name, category_id, size_type, measurement_template_id, display_order, is_active, created_at, updated_at
        FROM product_types
        WHERE is_active = true
        ORDER BY display_order, name`
@@ -190,7 +190,7 @@ class ProductCategoriesService {
    * @returns {Object} - Created product type row
    */
   async addType(categoryId, fields) {
-    const { name, size_type, display_order } = fields;
+    const { name, size_type, display_order, measurement_template_id } = fields;
 
     if (!name || !name.trim()) {
       const err = new Error('Product type name is required');
@@ -223,10 +223,10 @@ class ProductCategoriesService {
     }
 
     const result = await pool.query(
-      `INSERT INTO product_types (name, category_id, size_type, display_order)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO product_types (name, category_id, size_type, display_order, measurement_template_id)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [name.trim(), categoryId, size_type, order]
+      [name.trim(), categoryId, size_type, order, measurement_template_id || null]
     );
 
     return result.rows[0];
@@ -238,7 +238,7 @@ class ProductCategoriesService {
    * @returns {Object} - Created product type row
    */
   async addNeutralType(fields) {
-    const { name, size_type, display_order } = fields;
+    const { name, size_type, display_order, measurement_template_id } = fields;
 
     if (!name || !name.trim()) {
       const err = new Error('Product type name is required');
@@ -255,10 +255,10 @@ class ProductCategoriesService {
     const order = display_order ?? 90;
 
     const result = await pool.query(
-      `INSERT INTO product_types (name, category_id, size_type, display_order)
-       VALUES ($1, NULL, $2, $3)
+      `INSERT INTO product_types (name, category_id, size_type, display_order, measurement_template_id)
+       VALUES ($1, NULL, $2, $3, $4)
        RETURNING *`,
-      [name.trim(), size_type, order]
+      [name.trim(), size_type, order, measurement_template_id || null]
     );
 
     return result.rows[0];
@@ -271,7 +271,7 @@ class ProductCategoriesService {
    * @returns {Object} - Updated product type row
    */
   async updateType(typeId, fields) {
-    const { name, size_type, display_order } = fields;
+    const { name, size_type, display_order, measurement_template_id } = fields;
 
     const setClauses = [];
     const params = [];
@@ -297,6 +297,11 @@ class ProductCategoriesService {
       paramIdx++;
       setClauses.push(`display_order = $${paramIdx}`);
       params.push(display_order);
+    }
+    if (measurement_template_id !== undefined) {
+      paramIdx++;
+      setClauses.push(`measurement_template_id = $${paramIdx}`);
+      params.push(measurement_template_id);
     }
 
     if (setClauses.length === 0) {

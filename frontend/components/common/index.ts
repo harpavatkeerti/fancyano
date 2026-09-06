@@ -10,7 +10,7 @@ export { default as QRScanner } from './QRScanner';
 export { ProductTrackingModal } from './ProductTrackingModal';
 export { PaymentManagement } from './PaymentManagement';
 export { TransactionReceipt } from './TransactionReceipt';
-export { MeasurementModal, isFemaleClothing, isMaleClothing } from './MeasurementModal';
+export { MeasurementModal, getTemplateFields } from './MeasurementModal';
 export { PaymentMethodInput } from './PaymentMethodInput';
 export { ToastContainer, showToast } from './ToastContainer';
 export { ConfirmDialog } from './ConfirmDialog';

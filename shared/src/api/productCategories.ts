@@ -20,15 +20,15 @@ export function createProductCategoriesApi(api: AxiosInstance) {
       api.delete(`/product-categories/${id}`),
 
     /** Add a product type under a specific category */
-    addType: (categoryId: number, data: { name: string; size_type: string; display_order?: number }) =>
+    addType: (categoryId: number, data: { name: string; size_type: string; display_order?: number; measurement_template_id?: number | null }) =>
       api.post<ProductTypeDefinition>(`/product-categories/${categoryId}/types`, data),
 
     /** Add a neutral product type (shown for all categories) */
-    addNeutralType: (data: { name: string; size_type: string; display_order?: number }) =>
+    addNeutralType: (data: { name: string; size_type: string; display_order?: number; measurement_template_id?: number | null }) =>
       api.post<ProductTypeDefinition>('/product-categories/neutral-types', data),
 
     /** Update a product type */
-    updateType: (typeId: number, data: { name?: string; size_type?: string; display_order?: number }) =>
+    updateType: (typeId: number, data: { name?: string; size_type?: string; display_order?: number; measurement_template_id?: number | null }) =>
       api.put<ProductTypeDefinition>(`/product-categories/types/${typeId}`, data),
 
     /** Soft-delete a product type (blocked if products use it) */
