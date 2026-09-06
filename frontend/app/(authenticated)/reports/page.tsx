@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { reportsApi, cashAdjustmentsApi, expensesApi, Expense, ExpenseSummary, CashAdjustment } from '@/lib/api';
 import { toast } from '@/lib/toast';
 import { DateRangePicker, CashAdjustmentFormModal, ExpenseFormModal } from '@/components/common';
@@ -27,6 +28,8 @@ interface LedgerEntry {
 interface LedgerSummary {
   total_credits: number;
   total_debits: number;
+  total_expenses: number;
+  total_adjustments: number;
   net_balance: number;
   method_breakdown: Array<{ method: string; credits: number; debits: number }>;
 }
@@ -131,8 +134,19 @@ const chargeLabel = (t: string) => t.replace(/_/g, ' ').replace(/\b\w/g, c => c.
 // ── Component ────────────────────────────────────────────────────────────
 
 export default function ReportsPage() {
-  const [activeReport, setActiveReport] = useState('ledger');
+  const searchParams = useSearchParams();
+  const moduleParam = searchParams.get('module');
+  const validModules = reportModules.map(m => m.key);
+  const initialReport = moduleParam && validModules.includes(moduleParam) ? moduleParam : 'ledger';
+  const [activeReport, setActiveReport] = useState(initialReport);
   const [loading, setLoading] = useState(false);
+
+  // Sync activeReport when ?module= query param changes (e.g. from notification click)
+  useEffect(() => {
+    if (moduleParam && validModules.includes(moduleParam)) {
+      setActiveReport(moduleParam);
+    }
+  }, [moduleParam]);
 
   // --- Ledger state ---
   const [ledgerEntries, setLedgerEntries] = useState<LedgerEntry[]>([]);
@@ -596,10 +610,12 @@ export default function ReportsPage() {
     <div className="space-y-6">
       {/* Summary Cards */}
       {ledgerSummary && (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-5 gap-4">
           {renderSummaryCard('Total Credits', fmt(ledgerSummary.total_credits), 'Money In', 'text-green-600')}
           {renderSummaryCard('Total Debits', fmt(ledgerSummary.total_debits), 'Refunds', 'text-red-600')}
-          {renderSummaryCard('Net Balance', fmt(ledgerSummary.net_balance), 'Credits - Debits', 'text-blue-600')}
+          {renderSummaryCard('Shop Cash Expenses', fmt(ledgerSummary.total_expenses || 0), 'Cash outflows', 'text-orange-600')}
+          {renderSummaryCard('Cash Adjustments', fmt(ledgerSummary.total_adjustments || 0), ledgerSummary.total_adjustments >= 0 ? 'Surplus' : 'Shortage', ledgerSummary.total_adjustments >= 0 ? 'text-emerald-600' : 'text-amber-600')}
+          {renderSummaryCard('Net Balance', fmt(ledgerSummary.net_balance), 'Actual cash position', 'text-blue-600')}
         </div>
       )}
 
@@ -745,29 +761,40 @@ export default function ReportsPage() {
                 ) : ledgerEntries.map(entry => (
                   <tr key={entry.id} className="hover:bg-gray-50 transition-colors">
                     <td className="px-4 py-3 text-sm text-gray-700">{fmtDate(entry.transaction_date)}</td>
-                    <td className="px-4 py-3 text-sm font-medium text-blue-600">#{entry.booking_id}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{entry.customer_name || '—'}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-blue-600">
+                      {entry.type === 'expense' || entry.type === 'adjustment' ? <span className="text-gray-400 italic">—</span> : `#${entry.booking_id}`}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-gray-700">
+                      {entry.type === 'expense' || entry.type === 'adjustment' ? (entry.notes || '—') : (entry.customer_name || '—')}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${
-                        entry.type === 'payment' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                        entry.type === 'payment' ? 'bg-green-100 text-green-700' :
+                        entry.type === 'expense' ? 'bg-orange-100 text-orange-700' :
+                        entry.type === 'adjustment' ? 'bg-blue-100 text-blue-700' :
+                        'bg-red-100 text-red-700'
                       }`}>
-                        {entry.type === 'payment' ? 'Credit' : 'Debit'}
+                        {entry.type === 'payment' ? 'Credit' : entry.type === 'expense' ? 'Expense' : entry.type === 'adjustment' ? 'Adjustment' : 'Debit'}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-700">{entry.method}</td>
                     <td className={`px-4 py-3 text-sm font-semibold text-right ${
-                      entry.type === 'payment' ? 'text-green-600' : 'text-red-600'
+                      entry.type === 'payment' ? 'text-green-600' :
+                      entry.type === 'adjustment' && entry.amount > 0 ? 'text-green-600' :
+                      'text-red-600'
                     }`}>
-                      {entry.type === 'payment' ? '+' : '-'}{fmt(entry.amount)}
+                      {entry.type === 'payment' ? '+' : entry.type === 'adjustment' ? (entry.amount > 0 ? '+' : '') : '-'}{fmt(Math.abs(entry.amount))}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-500" title={
                       entry.charge_breakdown
                         ? Object.entries(entry.charge_breakdown).map(([k, v]) => `${chargeLabel(k)}: ${fmt(v)}`).join(', ')
                         : ''
                     }>
-                      {entry.charge_breakdown
-                        ? Object.keys(entry.charge_breakdown).map(k => chargeLabel(k)).join(', ')
-                        : '—'}
+                      {entry.type === 'expense' || entry.type === 'adjustment'
+                        ? '—'
+                        : entry.charge_breakdown
+                          ? Object.keys(entry.charge_breakdown).map(k => chargeLabel(k)).join(', ')
+                          : '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-500">{entry.recorded_by || '—'}</td>
                   </tr>

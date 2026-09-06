@@ -20,75 +20,209 @@ class ReportService {
    * @returns {Promise<Array>} - Ledger rows
    */
   async getLedger({ method, type, start_date, end_date, booking_id, page = 1, limit = 50 } = {}) {
-    let query = `
-      SELECT 
-        pt.id,
-        pt.booking_id,
-        pt.type,
-        pt.amount,
-        pt.method,
-        pt.charge_breakdown,
-        pt.notes,
-        pt.recorded_by,
-        pt.transaction_date,
-        pt.transaction_type,
-        u.name as customer_name,
-        u.phone as customer_phone
-      FROM payment_transactions pt
-      LEFT JOIN bookings b ON pt.booking_id = b.id
-      LEFT JOIN users u ON b.user_id = u.id
-      WHERE 1=1
-    `;
+    // When filtering by booking_id, only show payment_transactions (expenses are not booking-specific)
+    if (booking_id) {
+      let query = `
+        SELECT 
+          pt.id,
+          pt.booking_id,
+          pt.type,
+          pt.amount,
+          pt.method,
+          pt.charge_breakdown,
+          pt.notes,
+          pt.recorded_by,
+          pt.transaction_date,
+          pt.transaction_type,
+          u.name as customer_name,
+          u.phone as customer_phone
+        FROM payment_transactions pt
+        LEFT JOIN bookings b ON pt.booking_id = b.id
+        LEFT JOIN users u ON b.user_id = u.id
+        WHERE 1=1
+      `;
+      const params = [];
+
+      if (method) {
+        params.push(method);
+        query += ` AND pt.method = $${params.length}`;
+      }
+      if (type) {
+        if (type === 'credit') query += ` AND pt.type = 'payment'`;
+        else if (type === 'debit') query += ` AND pt.type = 'refund'`;
+        else if (type === 'adjustment') query += ` AND pt.type = 'adjustment'`;
+      }
+      if (start_date) { params.push(start_date); query += ` AND pt.transaction_date >= $${params.length}::date`; }
+      if (end_date) { params.push(end_date); query += ` AND pt.transaction_date < ($${params.length}::date + interval '1 day')`; }
+
+      params.push(booking_id);
+      query += ` AND pt.booking_id = $${params.length}`;
+
+      query += ' ORDER BY pt.transaction_date DESC';
+      const offset = (page - 1) * limit;
+      params.push(limit); query += ` LIMIT $${params.length}`;
+      params.push(offset); query += ` OFFSET $${params.length}`;
+
+      const result = await pool.query(query, params);
+      return result.rows;
+    }
+
+    // Build UNION of payment_transactions + approved Shop Cash expenses
+    // Skip expense rows when filtering by type = credit or adjustment (expenses are always debits)
+    if (type === 'credit' || type === 'adjustment') {
+      // Only show payment_transactions for credit/adjustment filters
+      let query = `
+        SELECT 
+          pt.id,
+          pt.booking_id,
+          pt.type,
+          pt.amount,
+          pt.method,
+          pt.charge_breakdown,
+          pt.notes,
+          pt.recorded_by,
+          pt.transaction_date,
+          pt.transaction_type,
+          u.name as customer_name,
+          u.phone as customer_phone
+        FROM payment_transactions pt
+        LEFT JOIN bookings b ON pt.booking_id = b.id
+        LEFT JOIN users u ON b.user_id = u.id
+        WHERE 1=1
+      `;
+      const params = [];
+      if (method) { params.push(method); query += ` AND pt.method = $${params.length}`; }
+      if (type === 'credit') query += ` AND pt.type = 'payment'`;
+      else if (type === 'adjustment') query += ` AND pt.type = 'adjustment'`;
+      if (start_date) { params.push(start_date); query += ` AND pt.transaction_date >= $${params.length}::date`; }
+      if (end_date) { params.push(end_date); query += ` AND pt.transaction_date < ($${params.length}::date + interval '1 day')`; }
+      query += ' ORDER BY pt.transaction_date DESC';
+      const offset = (page - 1) * limit;
+      params.push(limit); query += ` LIMIT $${params.length}`;
+      params.push(offset); query += ` OFFSET $${params.length}`;
+      const result = await pool.query(query, params);
+      return result.rows;
+    }
+
+    // UNION query: payment_transactions + approved Shop Cash expenses + approved cash adjustments
+    let ptWhere = '1=1';
+    let expWhere = "e.approval_status = 'approved' AND e.payment_source = 'Shop Cash'";
+    let adjWhere = "ca.approval_status = 'approved'";
     const params = [];
 
     if (method) {
       params.push(method);
-      query += ` AND pt.method = $${params.length}`;
+      ptWhere += ` AND pt.method = $${params.length}`;
+      // For expenses in the UNION, method is always 'Shop Cash'
+      // If filtering for a method other than 'Shop Cash', exclude expense rows
+      if (method !== 'Shop Cash') {
+        expWhere += ' AND FALSE';
+      }
+      // Cash adjustments are always cash-level, exclude when filtering by non-Cash method
+      if (method !== 'Cash') {
+        adjWhere += ' AND FALSE';
+      }
     }
 
-    if (type) {
-      if (type === 'credit') {
-        query += ` AND pt.type = 'payment'`;
-      } else if (type === 'debit') {
-        query += ` AND pt.type = 'refund'`;
-      } else if (type === 'adjustment') {
-        query += ` AND pt.type = 'adjustment'`;
-      }
+    if (type === 'debit') {
+      ptWhere += ` AND pt.type = 'refund'`;
+      // expenses are always debits, so include them
+      // adjustments can be positive or negative — only include negative (shortage) for debit filter
+      adjWhere += ' AND ca.amount < 0';
+    } else if (!type || type === '') {
+      // no type filter — include all
     }
 
     if (start_date) {
       params.push(start_date);
-      query += ` AND pt.transaction_date >= $${params.length}::date`;
+      ptWhere += ` AND pt.transaction_date >= $${params.length}::date`;
+      expWhere += ` AND e.expense_date >= $${params.length}::date`;
+      adjWhere += ` AND ca.adjustment_date >= $${params.length}::date`;
     }
 
     if (end_date) {
       params.push(end_date);
-      query += ` AND pt.transaction_date < ($${params.length}::date + interval '1 day')`;
+      ptWhere += ` AND pt.transaction_date < ($${params.length}::date + interval '1 day')`;
+      expWhere += ` AND e.expense_date < ($${params.length}::date + interval '1 day')`;
+      adjWhere += ` AND ca.adjustment_date < ($${params.length}::date + interval '1 day')`;
     }
 
-    if (booking_id) {
-      params.push(booking_id);
-      query += ` AND pt.booking_id = $${params.length}`;
-    }
+    const query = `
+      SELECT * FROM (
+        SELECT 
+          pt.id,
+          pt.booking_id,
+          pt.type,
+          pt.amount,
+          pt.method,
+          pt.charge_breakdown,
+          pt.notes,
+          pt.recorded_by,
+          pt.transaction_date,
+          pt.transaction_type,
+          u.name as customer_name,
+          u.phone as customer_phone
+        FROM payment_transactions pt
+        LEFT JOIN bookings b ON pt.booking_id = b.id
+        LEFT JOIN users u ON b.user_id = u.id
+        WHERE ${ptWhere}
 
-    // Order by date descending for chronological ledger
-    query += ' ORDER BY pt.transaction_date DESC';
+        UNION ALL
+
+        SELECT
+          e.id * -1 as id,
+          NULL::int as booking_id,
+          'expense' as type,
+          e.amount,
+          'Shop Cash' as method,
+          NULL::jsonb as charge_breakdown,
+          e.category || COALESCE(': ' || e.description, '') as notes,
+          e.recorded_by,
+          e.expense_date as transaction_date,
+          'expense' as transaction_type,
+          NULL as customer_name,
+          NULL as customer_phone
+        FROM expenses e
+        WHERE ${expWhere}
+
+        UNION ALL
+
+        SELECT
+          ca.id * -2 as id,
+          NULL::int as booking_id,
+          'adjustment' as type,
+          ca.amount,
+          'Cash' as method,
+          NULL::jsonb as charge_breakdown,
+          ca.reason as notes,
+          ca.recorded_by,
+          ca.adjustment_date as transaction_date,
+          'adjustment' as transaction_type,
+          NULL as customer_name,
+          NULL as customer_phone
+        FROM cash_adjustments ca
+        WHERE ${adjWhere}
+      ) combined
+      ORDER BY transaction_date DESC
+    `;
 
     // Pagination
     const offset = (page - 1) * limit;
     params.push(limit);
-    query += ` LIMIT $${params.length}`;
+    const fullQuery = query + ` LIMIT $${params.length}`;
     params.push(offset);
-    query += ` OFFSET $${params.length}`;
+    const finalQuery = fullQuery + ` OFFSET $${params.length}`;
 
-    const result = await pool.query(query, params);
+    const result = await pool.query(finalQuery, params);
     return result.rows;
   }
 
   /**
-   * Get ledger summary (total credits, debits, net) for filtered period.
+   * Get ledger summary (total credits, debits, expenses, adjustments, net) for filtered period.
+   * Only approved 'Shop Cash' expenses are included in the ledger totals.
+   * Approved cash adjustments (+surplus / -shortage) also affect the net balance.
    * @param {Object} filters - { method, start_date, end_date }
-   * @returns {Promise<Object>} - { total_credits, total_debits, net_balance, method_breakdown }
+   * @returns {Promise<Object>} - { total_credits, total_debits, total_expenses, total_adjustments, net_balance, method_breakdown }
    */
   async getLedgerSummary({ method, start_date, end_date } = {}) {
     let whereClause = 'WHERE 1=1';
@@ -109,19 +243,49 @@ class ReportService {
       whereClause += ` AND pt.transaction_date < ($${params.length}::date + interval '1 day')`;
     }
 
-    // Totals
+    // Totals from payment_transactions
     const totalsQuery = `
       SELECT 
         COALESCE(SUM(CASE WHEN pt.type = 'payment' THEN pt.amount ELSE 0 END), 0)::int as total_credits,
-        COALESCE(SUM(CASE WHEN pt.type = 'refund' THEN pt.amount ELSE 0 END), 0)::int as total_debits,
-        COALESCE(SUM(CASE WHEN pt.type = 'payment' THEN pt.amount 
-                           WHEN pt.type = 'refund' THEN -pt.amount 
-                           ELSE 0 END), 0)::int as net_balance
+        COALESCE(SUM(CASE WHEN pt.type = 'refund' THEN pt.amount ELSE 0 END), 0)::int as total_debits
       FROM payment_transactions pt
       ${whereClause}
     `;
-
     const totalsResult = await pool.query(totalsQuery, params);
+
+    // Shop Cash expense total (only if not filtering by a non-cash method)
+    let totalExpenses = 0;
+    if (!method || method === 'Shop Cash') {
+      let expWhere = "WHERE approval_status = 'approved' AND payment_source = 'Shop Cash'";
+      const expParams = [];
+      if (start_date) { expParams.push(start_date); expWhere += ` AND expense_date >= $${expParams.length}::date`; }
+      if (end_date) { expParams.push(end_date); expWhere += ` AND expense_date < ($${expParams.length}::date + interval '1 day')`; }
+
+      const expResult = await pool.query(
+        `SELECT COALESCE(SUM(amount), 0)::int as total FROM expenses ${expWhere}`,
+        expParams
+      );
+      totalExpenses = expResult.rows[0].total;
+    }
+
+    // Cash adjustments total (only if not filtering by a non-Cash method)
+    let totalAdjustments = 0;
+    if (!method || method === 'Cash') {
+      let adjWhere = "WHERE approval_status = 'approved'";
+      const adjParams = [];
+      if (start_date) { adjParams.push(start_date); adjWhere += ` AND adjustment_date >= $${adjParams.length}::date`; }
+      if (end_date) { adjParams.push(end_date); adjWhere += ` AND adjustment_date < ($${adjParams.length}::date + interval '1 day')`; }
+
+      const adjResult = await pool.query(
+        `SELECT COALESCE(SUM(amount), 0)::int as total FROM cash_adjustments ${adjWhere}`,
+        adjParams
+      );
+      totalAdjustments = adjResult.rows[0].total;
+    }
+
+    const { total_credits, total_debits } = totalsResult.rows[0];
+    // Adjustments can be positive (surplus) or negative (shortage)
+    const net_balance = total_credits - total_debits - totalExpenses + totalAdjustments;
 
     // Method breakdown
     const breakdownQuery = `
@@ -138,7 +302,11 @@ class ReportService {
     const breakdownResult = await pool.query(breakdownQuery, params);
 
     return {
-      ...totalsResult.rows[0],
+      total_credits,
+      total_debits,
+      total_expenses: totalExpenses,
+      total_adjustments: totalAdjustments,
+      net_balance,
       method_breakdown: breakdownResult.rows
     };
   }
