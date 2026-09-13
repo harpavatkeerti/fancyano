@@ -292,9 +292,9 @@ class ExpenseService {
 
   /**
    * Create a recurring expense.
-   * @param {Object} data - { category, amount, description, created_by, next_due_date }
+   * @param {Object} data - { category, amount, description, created_by, next_due_date, payment_source }
    */
-  async createRecurring({ category, amount, description, created_by, next_due_date, user_role }) {
+  async createRecurring({ category, amount, description, created_by, next_due_date, user_role, payment_source }) {
     if (!category?.trim()) { const e = new Error('Category is required'); e.status = 400; throw e; }
     if (!amount || amount <= 0) { const e = new Error('Amount must be positive'); e.status = 400; throw e; }
     if (!created_by) { const e = new Error('Created by is required'); e.status = 400; throw e; }
@@ -305,15 +305,16 @@ class ExpenseService {
       next_due_date = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().split('T')[0];
     }
 
+    const source = VALID_PAYMENT_SOURCES.includes(payment_source) ? payment_source : 'Shop Cash';
     const approvalStatus = user_role === 'admin' ? 'approved' : 'pending';
     const approvedBy = user_role === 'admin' ? created_by : null;
     const approvedAt = user_role === 'admin' ? new Date() : null;
 
     const result = await pool.query(
-      `INSERT INTO recurring_expenses (category, amount, description, created_by, next_due_date, approval_status, approved_by, approved_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO recurring_expenses (category, amount, description, created_by, next_due_date, approval_status, approved_by, approved_at, payment_source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [category.trim(), amount, description?.trim() || null, created_by, next_due_date, approvalStatus, approvedBy, approvedAt]
+      [category.trim(), amount, description?.trim() || null, created_by, next_due_date, approvalStatus, approvedBy, approvedAt, source]
     );
 
     const row = result.rows[0];
@@ -412,6 +413,7 @@ class ExpenseService {
         description: rec.description ? `${rec.description} (Recurring)` : `${rec.category} (Recurring)`,
         expense_date: rec.next_due_date,
         recorded_by: rec.created_by,
+        payment_source: rec.payment_source || 'Shop Cash',
         // Template already passed approval_status='approved' filter (line 393),
         // so generated entries are pre-approved — no need for re-approval each month
         user_role: 'admin'

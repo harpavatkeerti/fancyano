@@ -59,6 +59,7 @@ export default function ExpenseFormModal({
           amount: parseInt(form.amount),
           description: form.description || undefined,
           next_due_date: form.date,
+          payment_source: form.payment_source,
         });
         toast.success('Recurring expense created');
       }
@@ -129,9 +130,7 @@ export default function ExpenseFormModal({
             </select>
           </div>
 
-          {/* Payment Source — only for one-time expenses */}
-          {mode === 'one-time' && (
-            <div>
+          <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Paid From</label>
               <select
                 value={form.payment_source}
@@ -146,7 +145,6 @@ export default function ExpenseFormModal({
                 Only &quot;Shop Cash&quot; expenses appear in the Financial Ledger
               </p>
             </div>
-          )}
 
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">

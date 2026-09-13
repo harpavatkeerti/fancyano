@@ -36,7 +36,7 @@ export function createExpensesApi(api: AxiosInstance) {
 
     // Recurring expenses
     listRecurring: () => api.get('/expenses/recurring'),
-    createRecurring: (data: { category: string; amount: number; description?: string; next_due_date?: string }) =>
+    createRecurring: (data: { category: string; amount: number; description?: string; next_due_date?: string; payment_source?: string }) =>
       api.post('/expenses/recurring', data),
     deleteRecurring: (id: number) => api.delete(`/expenses/recurring/${id}`),
     activateRecurring: (id: number) => api.put(`/expenses/recurring/${id}/activate`),
