@@ -530,12 +530,12 @@ export default function OrderDetailsPage() {
     setShowChangeDateModal(true);
 
     // Fetch bookings for this product to show availability
-    fetchProductBookingsForChange(product.product_id);
+    fetchProductBookingsForChange(product.product_id, product.size);
   }
 
-  async function fetchProductBookingsForChange(productId: number) {
+  async function fetchProductBookingsForChange(productId: number, size?: string) {
     try {
-      const response = await bookingsApi.getByProductId(productId);
+      const response = await bookingsApi.getByProductId(productId, size);
       // Filter out the current booking's dates
       const bookings = (response.data || []).filter((b: any) => b.id !== booking?.id);
       setProductBookingsForChange(bookings);
@@ -546,10 +546,6 @@ export default function OrderDetailsPage() {
   }
 
   async function handleSaveDateChange() {
-    if (!changeReason.trim()) {
-      addAlert('Please provide a reason for date change', 'warning');
-      return;
-    }
 
     if (!changeDateFrom || !changeDateTo) {
       addAlert('Please select both start and end dates', 'warning');
@@ -587,23 +583,17 @@ export default function OrderDetailsPage() {
           id: selectedProduct.id,
           booked_from: changeDateFrom,
           booked_to: changeDateTo,
+          // Fee is added as a proper charge (product_charges) in the same DB transaction
+          date_change_fee: finalCharge > 0 ? finalCharge : undefined,
+          date_change_reason: finalCharge > 0
+            ? `Date change fee: ${oldFrom} to ${oldTo} → ${changeDateFrom} to ${changeDateTo}${changeReason.trim() ? `. Reason: ${changeReason}` : ''}`
+            : undefined,
         }],
       });
 
-      // Record the charge if any (as date_change_charge - does not affect payment calculations)
-      if (finalCharge > 0) {
-        await paymentTransactionsApi.create({
-          booking_id: bookingId,
-          amount: finalCharge,
-          type: 'date_change_charge',
-          method: 'Manual',
-          recorded_by: currentUser.name,
-          notes: `Date change charge for ${selectedProduct.name} (${selectedProduct.code}): ${oldFrom} to ${oldTo} → ${changeDateFrom} to ${changeDateTo}. Reason: ${changeReason}`,
-        });
-      }
-
-      // Store product ID before clearing state
+      // Store product ID and size before clearing state
       const updatedProductId = selectedProduct.id;
+      const updatedProductSize = selectedProduct.size;
 
       toast.success('Booking date updated successfully! The calendar has been updated.');
       setShowChangeDateModal(false);
@@ -618,7 +608,7 @@ export default function OrderDetailsPage() {
 
       // Refresh product bookings to update calendar availability
       // This will show the new dates as blocked and old dates as available
-      await fetchProductBookingsForChange(updatedProductId);
+      await fetchProductBookingsForChange(updatedProductId, updatedProductSize);
     } catch (error) {
       console.error('Error updating booking date:', error);
       addAlert('Error updating booking date. Please try again.');
@@ -1708,7 +1698,7 @@ export default function OrderDetailsPage() {
             {/* Reason for change */}
             <div className="mb-6">
               <label className="block text-sm text-gray-700 mb-2">
-                Reason for date change*
+                Reason for date change (optional)
               </label>
               <input
                 type="text"

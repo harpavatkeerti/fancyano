@@ -359,7 +359,6 @@ export function RefundSettlementSection({
                 method={paymentMethod}
                 onMethodChange={onPaymentMethodChange}
                 colorScheme="red"
-                showQR={false}
               />
             </div>
           )}
@@ -383,7 +382,6 @@ export function RefundSettlementSection({
                     method={paymentMethod}
                     onMethodChange={onPaymentMethodChange}
                     colorScheme="red"
-                    showQR={false}
                   />
                 </div>
               )}

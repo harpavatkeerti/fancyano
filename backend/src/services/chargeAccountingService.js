@@ -47,7 +47,8 @@ class ChargeAccountingService {
                   WHEN 'cancellation_penalty' THEN 4
                   WHEN 'late_fee' THEN 5
                   WHEN 'damage_fee' THEN 6
-                  WHEN 'security' THEN 7
+                  WHEN 'date_change_fee' THEN 7
+                  WHEN 'security' THEN 8
                 END
             ) FILTER (WHERE pc.id IS NOT NULL),
             '[]'
@@ -117,7 +118,7 @@ class ChargeAccountingService {
             summary.charges.penalties.due += charge.due_amount;
             summary.charges.penalties.paid += charge.paid_amount;
             dueToAdd = charge.due_amount;
-          } else if (['late_fee', 'damage_fee'].includes(chargeType)) {
+          } else if (['late_fee', 'damage_fee', 'date_change_fee'].includes(chargeType)) {
             summary.charges.fees.due += charge.due_amount;
             summary.charges.fees.paid += charge.paid_amount;
             dueToAdd = charge.due_amount;
@@ -215,7 +216,7 @@ class ChargeAccountingService {
    * @param {number[]|null} [securityProductIds] - Optional list of booking_product IDs to restrict security allocation
    * @returns {Promise<Object>} - Payment details with breakdown
    */
-  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient, securityProductIds = null, transactionTypeLabel = 'booking') {
+  async applyPayment(bookingId, paymentAmount, paymentMethod, recordedBy, notes, existingClient, securityProductIds = null, transactionTypeLabel = 'booking', qrCodeId = null) {
     return await this._applyPaymentOrAdjustment(
       bookingId,
       paymentAmount,
@@ -226,7 +227,8 @@ class ChargeAccountingService {
       'payment_applied',
       existingClient,
       securityProductIds,
-      transactionTypeLabel
+      transactionTypeLabel,
+      qrCodeId
     );
   }
 
@@ -410,7 +412,7 @@ class ChargeAccountingService {
        WHERE bp.booking_id = $1
        AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
        AND NOT (bp.id = ANY($2::int[]))
-       AND pc.charge_type IN ('late_fee', 'damage_fee')
+       AND pc.charge_type IN ('late_fee', 'damage_fee', 'date_change_fee')
        AND pc.paid_amount < pc.due_amount
        ORDER BY bp.id, pc.charge_type`,
       [bookingId, excludeProductIds]
@@ -578,7 +580,7 @@ class ChargeAccountingService {
    * @private
    * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation (payments only)
    */
-  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient, securityProductIds = null, transactionTypeLabel = null) {
+  async _applyPaymentOrAdjustment(bookingId, amount, paymentMethod, recordedBy, notes, transactionType, eventType, existingClient, securityProductIds = null, transactionTypeLabel = null, qrCodeId = null) {
     const ownClient = !existingClient;
     const client = existingClient || await pool.connect();
     try {
@@ -613,7 +615,7 @@ class ChargeAccountingService {
             JOIN booking_products bp ON pc.booking_product_id = bp.id
             WHERE bp.booking_id = $1 AND (
               bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
-              OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee')
+              OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee','date_change_fee')
             )`,
           [bookingId]
         );
@@ -681,9 +683,9 @@ class ChargeAccountingService {
 
       await client.query(
         `INSERT INTO payment_transactions 
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date, transaction_type, charge_breakdown)
-         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8)`,
-        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy, transactionTypeLabel || null, JSON.stringify(chargeBreakdown)]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, transaction_type, charge_breakdown, qr_code_id)
+         VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, $7, $8, $9)`,
+        [bookingId, amount, transactionType, paymentMethod, transactionNotes, recordedBy, transactionTypeLabel || null, JSON.stringify(chargeBreakdown), qrCodeId]
       );
 
       // Log in activity log
@@ -1053,7 +1055,7 @@ class ChargeAccountingService {
    * @param {string} notes
    * @param {Object} client
    */
-  async settleExchange(bookingId, oldBookingProductId, newBookingProductIds, paymentAmount, method, recordedBy, notes, client) {
+  async settleExchange(bookingId, oldBookingProductId, newBookingProductIds, paymentAmount, method, recordedBy, notes, client, qrCodeId = null) {
     const oldRentResult = await client.query(
       `SELECT paid_amount FROM product_charges
        WHERE booking_product_id = $1 AND charge_type = 'rent'`,
@@ -1096,9 +1098,9 @@ class ChargeAccountingService {
     if (paymentAmount > 0) {
       await client.query(
         `INSERT INTO payment_transactions
-         (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown)
-         VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP, $6)`,
-        [bookingId, paymentAmount, method, notes || 'Exchange payment', recordedBy, JSON.stringify({ exchange_payment: paymentAmount })]
+         (booking_id, amount, type, method, notes, recorded_by, transaction_date, charge_breakdown, qr_code_id)
+         VALUES ($1, $2, 'payment', $3, $4, $5, CURRENT_TIMESTAMP, $6, $7)`,
+        [bookingId, paymentAmount, method, notes || 'Exchange payment', recordedBy, JSON.stringify({ exchange_payment: paymentAmount }), qrCodeId]
       );
 
       await client.query(
@@ -1204,7 +1206,7 @@ class ChargeAccountingService {
     } else if (chargeCategory === 'security') {
       typeCondition = "pc.charge_type = 'security'";
     } else if (chargeCategory === 'fee') {
-      typeCondition = "pc.charge_type IN ('late_fee', 'damage_fee')";
+      typeCondition = "pc.charge_type IN ('late_fee', 'damage_fee', 'date_change_fee')";
     } else if (chargeCategory === 'penalty') {
       typeCondition = "pc.charge_type IN ('exchange_penalty', 'downgrade_penalty', 'cancellation_penalty')";
     } else {

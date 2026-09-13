@@ -403,14 +403,14 @@ class BookingService {
       }
 
       // ── Product date updates ──────────────────────────────────────────────────
-      // Accepts: products: [{ id: booking_product_id, booked_from, booked_to }]
+      // Accepts: products: [{ id: booking_product_id, booked_from, booked_to, date_change_fee? }]
       if (data.products && Array.isArray(data.products) && data.products.length > 0) {
         for (const p of data.products) {
           if (!p.id || !p.booked_from || !p.booked_to) continue;
 
           // Resolve the catalog product_id for this booking_product row
           const bpRow = await client.query(
-            'SELECT product_id FROM booking_products WHERE id = $1 AND booking_id = $2',
+            'SELECT product_id, size FROM booking_products WHERE id = $1 AND booking_id = $2',
             [p.id, bookingId]
           );
           if (bpRow.rows.length === 0) continue; // not owned by this booking
@@ -418,7 +418,7 @@ class BookingService {
           // Guard: reject if the new dates clash with another booking (exclude self)
           await checkProductAvailability(
             bpRow.rows[0].product_id, p.booked_from, p.booked_to,
-            { excludeBookingId: bookingId, client }
+            { size: bpRow.rows[0].size || null, excludeBookingId: bookingId, client }
           );
 
           await client.query(
@@ -427,6 +427,19 @@ class BookingService {
              WHERE id = $3 AND booking_id = $4`,
             [p.booked_from, p.booked_to, p.id, bookingId]
           );
+
+          // Add date change fee charge if provided (tracked in product_charges, paid later)
+          const fee = parseInt(p.date_change_fee) || 0;
+          if (fee > 0) {
+            await chargeAccountingService.addCharge(
+              p.id,
+              'date_change_fee',
+              fee,
+              null,
+              p.date_change_reason || 'Date change fee',
+              client
+            );
+          }
         }
 
         // Recalculate booking-level date range from the remaining active products
@@ -446,6 +459,7 @@ class BookingService {
                   booking_product_id: p.id,
                   booked_from: p.booked_from,
                   booked_to: p.booked_to,
+                  date_change_fee: parseInt(p.date_change_fee) || 0,
                 }))
             }),
             performed_by || 'system'

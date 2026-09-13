@@ -458,7 +458,6 @@ class InvoiceGenerator {
       else if (tType === 'exchange_lapsed') transTypeLabel = 'Exchange Lapsed';
       else if (tType === 'delayed_charges') transTypeLabel = 'Delayed Return Charges';
       else if (tType === 'cancellation_penalty') transTypeLabel = 'Cancellation Penalty';
-      else if (tType === 'date_change_charge') transTypeLabel = 'Date Change Charge';
 
       const detailRows = [
         ['Transaction Type', transTypeLabel],

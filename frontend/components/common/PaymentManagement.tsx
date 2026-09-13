@@ -7,6 +7,7 @@ import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
 import { Button } from '@/components/common';
 import { PaymentMethodInput } from './PaymentMethodInput';
+import { UpiQrConfirmModal } from './UpiQrConfirmModal';
 import { toast } from '@/lib/toast';
 import { useAlerts } from '@/lib/useAlerts';
 import { AlertBanner } from './AlertBanner';
@@ -71,6 +72,10 @@ export function PaymentManagement({
   const [refundProductId, setRefundProductId] = useState<number | null>(null);
   const [refundMethod, setRefundMethod] = useState('Cash');
 
+  // UPI QR confirmation modal state
+  const [showUpiQrModal, setShowUpiQrModal] = useState(false);
+  const [activeQrCodeId, setActiveQrCodeId] = useState<number | null>(null);
+
   // Boundary warning + security allocation state
   const {
     securityPortion, rentPortion,
@@ -92,6 +97,15 @@ export function PaymentManagement({
     calculateAndUpdateBookingStatus();
   }, [bookingId, refreshTrigger]);
 
+  // Outstanding amounts — single computation shared by security split + QR tab control
+  const nonSecOutstanding = summary ? Math.max(0,
+    (summary.charges.rent.due - summary.charges.rent.paid) +
+    (summary.charges.transport.due - summary.charges.transport.paid) +
+    (summary.charges.penalties.due - summary.charges.penalties.paid) +
+    (summary.charges.fees.due - summary.charges.fees.paid)
+  ) : 0;
+  const securityOutstanding = summary ? Math.max(0, summary.charges.security.due - summary.charges.security.paid) : 0;
+
   // Recompute security/rent portions live as the admin types the amount
   useEffect(() => {
     if (transactionType !== 'payment' || !summary) {
@@ -103,15 +117,17 @@ export function PaymentManagement({
       resetSecurityState();
       return;
     }
-    const nonSecOutstanding = Math.max(0,
-      (summary.charges.rent.due - summary.charges.rent.paid) +
-      (summary.charges.transport.due - summary.charges.transport.paid) +
-      (summary.charges.penalties.due - summary.charges.penalties.paid) +
-      (summary.charges.fees.due - summary.charges.fees.paid)
-    );
     const secAmt = Math.max(0, amount - nonSecOutstanding);
     updateSplit(secAmt, amount - secAmt, summary.products ?? []);
   }, [formData.amount, summary, transactionType]);
+
+  // Derive payment category for QR tab control
+  const paymentCategory: 'rent' | 'security' | 'mixed' | undefined =
+    transactionType === 'payment' && (parseFloat(formData.amount) || 0) > 0
+      ? (securityPortion > 0 && rentPortion > 0 ? 'mixed'
+        : securityPortion > 0 ? 'security'
+        : 'rent')
+      : undefined;
 
   // Helper function to extract username from recorded_by field
   function getRecordedByName(recordedBy: any): string {
@@ -198,7 +214,7 @@ export function PaymentManagement({
     return Math.max(0, (summary.totals as any)?.outstanding_balance ?? 0);
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(overrideQrCodeId?: number | null) {
     try {
       const amount = parseFloat(formData.amount);
       if (isNaN(amount) || amount <= 0) {
@@ -222,6 +238,9 @@ export function PaymentManagement({
         }
       }
 
+      // Use override if provided (from UPI QR modal), else fall back to state
+      const qrCodeId = overrideQrCodeId !== undefined ? overrideQrCodeId : activeQrCodeId;
+
       const payload: any = {
         booking_id: bookingId,
         amount: amount,
@@ -232,6 +251,7 @@ export function PaymentManagement({
         method: formData.method,
         recorded_by: userRole === 'admin' ? 'Admin' : 'Salesman',
         notes: formData.notes || undefined,
+        qr_code_id: qrCodeId || undefined,
       };
 
       if (transactionType === 'payment' && securityPortion > 0 && selectedSecProductIds.length > 0) {
@@ -249,8 +269,10 @@ export function PaymentManagement({
 
       toast.success(transactionType === 'payment' ? 'Payment collected successfully!' : transactionType === 'refund' ? 'Refund processed successfully!' : 'Adjustment recorded successfully!');
       setShowRecordModal(false);
+      setShowUpiQrModal(false);
       setFormData({ amount: '', method: 'Cash', notes: '' });
       resetSecurityState();
+      setActiveQrCodeId(null);
 
       // Refresh transactions and summary
       await fetchTransactions();
@@ -292,8 +314,6 @@ export function PaymentManagement({
         return 'text-red-600 bg-red-50';
       case 'adjustment':
         return 'text-blue-600 bg-blue-50';
-      case 'date_change_charge':
-        return 'text-purple-600 bg-purple-50';
       default:
         return 'text-gray-600 bg-gray-50';
     }
@@ -442,12 +462,13 @@ export function PaymentManagement({
                       cancellation_penalty: 'Cancellation Penalty',
                       damage_fee: 'Damage Fee',
                       late_fee: 'Late Fee',
+                      date_change_fee: 'Date Change Fee',
                       security: 'Security Deposit',
                     };
                     const orderedKeys = [
                       'rent', 'transport',
                       'exchange_penalty', 'downgrade_penalty', 'cancellation_penalty',
-                      'damage_fee', 'late_fee',
+                      'damage_fee', 'late_fee', 'date_change_fee',
                       'security',
                     ];
                     return orderedKeys
@@ -529,7 +550,7 @@ export function PaymentManagement({
                   transactionType === 'cancellation_penalty') &&
                 method === 'adjustment'
               );
-              return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+              return !isAutoAdjustmentPenalty;
             }).length > 0 && (
                 <div className="space-y-3">
                   {transactions
@@ -544,7 +565,7 @@ export function PaymentManagement({
                           transactionType === 'cancellation_penalty') &&
                         method === 'adjustment'
                       );
-                      return t.type !== 'date_change_charge' && !isAutoAdjustmentPenalty;
+                      return !isAutoAdjustmentPenalty;
                     })
                     .map((transaction) => {
                       const isAdjustment = transaction.type === 'adjustment';
@@ -612,57 +633,6 @@ export function PaymentManagement({
                 </div>
               )}
 
-            {/* Date Change Charges - Displayed Separately */}
-            {transactions.filter((t: any) => t.type === 'date_change_charge').length > 0 && (
-              <div className="mt-6 pt-6 border-t-2 border-purple-200">
-                <h4 className="text-md font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                  <span className="text-purple-600">📅</span>
-                  Date Change Charges
-                  <span className="text-xs font-normal text-gray-500">
-                    (These charges do not affect payment calculations)
-                  </span>
-                </h4>
-                <div className="space-y-3">
-                  {transactions
-                    .filter((t: any) => t.type === 'date_change_charge')
-                    .map((transaction) => (
-                      <div
-                        key={transaction.id}
-                        className="border border-purple-200 rounded-lg p-4 hover:bg-purple-50 transition-colors bg-purple-50/30"
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className={`px-2 py-1 rounded text-xs font-semibold uppercase ${getTransactionColor(transaction.type)}`}>
-                                Date Change Charge
-                              </span>
-                              <span className="text-sm text-gray-600">
-                                {formatDate(transaction.created_at)}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-4 mb-2">
-                              <span className="text-lg font-bold text-purple-700">
-                                +{formatCurrency(transaction.amount)}
-                              </span>
-                              {transaction.method && (
-                                <span className="text-sm text-gray-600">
-                                  via {transaction.method}
-                                </span>
-                              )}
-                            </div>
-                            {transaction.notes && (
-                              <p className="text-sm text-gray-700 mb-2">{transaction.notes}</p>
-                            )}
-                            <p className="text-xs text-gray-500">
-                              Recorded by: {getRecordedByName(transaction.recorded_by)}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              </div>
-            )}
           </div>
         )}
       </div>
@@ -798,11 +768,9 @@ export function PaymentManagement({
                 onMethodChange={(m) => setFormData({ ...formData, method: m })}
                 notes={formData.notes}
                 onNotesChange={(n) => setFormData({ ...formData, notes: n })}
-                amount={parseFloat(formData.amount) || undefined}
                 notesLabel="Notes"
                 notesPlaceholder={`Enter reason for ${transactionType}...`}
                 colorScheme={transactionType === 'payment' ? 'green' : transactionType === 'refund' ? 'red' : 'blue'}
-                showQR={transactionType === 'payment'}
               />
             </div>
 
@@ -909,7 +877,14 @@ export function PaymentManagement({
                 Cancel
               </Button>
               <Button
-                onClick={handleSubmit}
+                onClick={() => {
+                  // For UPI payments, show QR confirmation modal instead of submitting directly
+                  if (formData.method === 'UPI' && transactionType === 'payment') {
+                    setShowUpiQrModal(true);
+                  } else {
+                    handleSubmit();
+                  }
+                }}
                 disabled={transactionType === 'payment' && (
                   !canConfirmSecurity ||
                   (!!summary && (Number(formData.amount) || 0) > 0 && (Number(formData.amount) || 0) > getOutstandingBalance())
@@ -927,6 +902,21 @@ export function PaymentManagement({
           </div>
         </div>
       ) : null}
+
+      {/* UPI QR Confirmation Modal */}
+      {showUpiQrModal && (
+        <UpiQrConfirmModal
+          amount={parseFloat(formData.amount) || 0}
+          paymentCategory={paymentCategory}
+          rentRemaining={nonSecOutstanding}
+          securityRemaining={securityOutstanding}
+          onConfirm={(qrCodeId) => {
+            setShowUpiQrModal(false);
+            handleSubmit(qrCodeId);
+          }}
+          onCancel={() => { setShowUpiQrModal(false); setActiveQrCodeId(null); }}
+        />
+      )}
 
 
 

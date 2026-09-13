@@ -1,6 +1,6 @@
 'use client';
 
-import { settingsApi, policiesApi, productCategoriesApi, ProductCategory, ProductTypeDefinition } from '@/lib/api';
+import { settingsApi, policiesApi, productCategoriesApi, measurementTemplatesApi, bankAccountsApi, qrCodesApi, ProductCategory, ProductTypeDefinition, MeasurementTemplate, MeasurementTemplateField } from '@/lib/api';
 import { useState, useEffect, useRef } from 'react';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 
@@ -25,6 +25,7 @@ interface SalesmanPermissions {
   exchange_allowed: boolean;
   update_payment_methods: boolean;
   discount_allowed: boolean;
+  recurring_expenses_allowed: boolean;
 }
 
 export default function SettingsPage() {
@@ -48,7 +49,10 @@ export default function SettingsPage() {
     exchange_allowed: false,
     update_payment_methods: false,
     discount_allowed: false,
+    recurring_expenses_allowed: false,
   });
+
+
 
 
 
@@ -65,13 +69,36 @@ export default function SettingsPage() {
   const [showAddTypeForm, setShowAddTypeForm] = useState<number | null>(null);
   const [newTypeName, setNewTypeName] = useState('');
   const [newTypeSizeType, setNewTypeSizeType] = useState('standard');
-  const [editingType, setEditingType] = useState<{ id: number; name: string; size_type: string } | null>(null);
+  const [editingType, setEditingType] = useState<{ id: number; name: string; size_type: string; measurement_template_id: number | null } | null>(null);
 
-  // Payment QR Codes (dual)
-  const [rentQrCode, setRentQrCode] = useState<string>('');
-  const [securityQrCode, setSecurityQrCode] = useState<string>('');
-  const rentQrFileInputRef = useRef<HTMLInputElement>(null);
-  const securityQrFileInputRef = useRef<HTMLInputElement>(null);
+  // ── Measurement Templates state ────────────────────────────────────────────
+  const [measurementTemplates, setMeasurementTemplates] = useState<MeasurementTemplate[]>([]);
+  const [newTypeMeasurementTemplateId, setNewTypeMeasurementTemplateId] = useState<number | null>(null);
+
+  // ── Measurement Template CRUD state ────────────────────────────────────────
+  const [showAddTemplateForm, setShowAddTemplateForm] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState('');
+  const [newTemplateFields, setNewTemplateFields] = useState<{ key: string; label: string; group: string }[]>([{ key: '', label: '', group: '' }]);
+  const [editingTemplate, setEditingTemplate] = useState<{ id: number; name: string; fields: { key: string; label: string; group: string }[] } | null>(null);
+  const [expandedTemplate, setExpandedTemplate] = useState<number | null>(null);
+  const [isMeasurementSectionOpen, setIsMeasurementSectionOpen] = useState(false);
+  const [isSalesmanPermissionsOpen, setIsSalesmanPermissionsOpen] = useState(false);
+
+
+
+
+  // Bank Accounts Manager
+  const [bankAccounts, setBankAccounts] = useState<any[]>([]);
+  const [showAddBankForm, setShowAddBankForm] = useState(false);
+  const [newBankName, setNewBankName] = useState('');
+  const [bankLoading, setBankLoading] = useState(false);
+
+  // QR Code Manager
+  const [qrCodes, setQrCodes] = useState<any[]>([]);
+  const [showAddQrForm, setShowAddQrForm] = useState(false);
+  const [newQr, setNewQr] = useState({ qr_type: 'rent', name: '', bank_account_id: '', qr_image: '' });
+  const qrImageInputRef = useRef<HTMLInputElement>(null);
+  const [qrLoading, setQrLoading] = useState(false);
 
   useEffect(() => {
     fetchSettings();
@@ -140,15 +167,7 @@ export default function SettingsPage() {
 
 
 
-      // Fetch payment QR codes (rent + security)
-      try {
-        const rentQr = await settingsApi.getByKey('payment_qr_rent');
-        if (rentQr.data?.setting_value) setRentQrCode(rentQr.data.setting_value);
-      } catch { }
-      try {
-        const secQr = await settingsApi.getByKey('payment_qr_security');
-        if (secQr.data?.setting_value) setSecurityQrCode(secQr.data.setting_value);
-      } catch { }
+
 
       // Fetch late fee policy from rental_policies table
       try {
@@ -158,6 +177,16 @@ export default function SettingsPage() {
           setLateFeePolicy(policy);
           setLateFeeValue(policy.value?.toString() || '200');
         }
+      } catch { }
+
+      // Fetch bank accounts and QR codes
+      try {
+        const [bankRes, qrRes] = await Promise.all([
+          bankAccountsApi.list(),
+          qrCodesApi.list()
+        ]);
+        setBankAccounts(bankRes.data);
+        setQrCodes(qrRes.data);
       } catch { }
     } catch (error) {
       console.error('Error fetching settings:', error);
@@ -273,6 +302,170 @@ export default function SettingsPage() {
     }
   }
 
+  // ── Measurement Templates CRUD ────────────────────────────────────────────
+
+  async function handleAddTemplate() {
+    if (!newTemplateName.trim()) return;
+    const validFields = newTemplateFields
+      .filter(f => f.key.trim() && f.label.trim())
+      .map(f => ({ key: f.key.trim(), label: f.label.trim(), ...(f.group.trim() ? { group: f.group.trim() } : {}) }));
+    if (validFields.length === 0) { toast.error('At least one field with key and label is required'); return; }
+    try {
+      await measurementTemplatesApi.create({ name: newTemplateName.trim(), fields: validFields });
+      toast.success(`Template "${newTemplateName.trim()}" created`);
+      setNewTemplateName('');
+      setNewTemplateFields([{ key: '', label: '', group: '' }]);
+      setShowAddTemplateForm(false);
+      fetchMeasurementTemplates();
+    } catch (error: any) {
+      const msg = error?.response?.data?.error || 'Failed to create template';
+      if (error?.response?.status === 409) {
+        toast.error('A template with that name already exists');
+      } else {
+        addAlert(msg);
+      }
+    }
+  }
+
+  async function handleUpdateTemplate() {
+    if (!editingTemplate) return;
+    const validFields = editingTemplate.fields
+      .filter(f => f.key.trim() && f.label.trim())
+      .map(f => ({ key: f.key.trim(), label: f.label.trim(), ...(f.group.trim() ? { group: f.group.trim() } : {}) }));
+    if (validFields.length === 0) { toast.error('At least one field with key and label is required'); return; }
+    try {
+      await measurementTemplatesApi.update(editingTemplate.id, {
+        name: editingTemplate.name.trim(),
+        fields: validFields,
+      });
+      toast.success('Template updated');
+      setEditingTemplate(null);
+      fetchMeasurementTemplates();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to update template');
+    }
+  }
+
+  async function handleDeleteTemplate(id: number, name: string) {
+    if (!confirm(`Delete measurement template "${name}"? Product types using this template will no longer have a measurement form.`)) return;
+    try {
+      await measurementTemplatesApi.delete(id);
+      toast.success(`Template "${name}" deleted`);
+      fetchMeasurementTemplates();
+    } catch (error: any) {
+      addAlert(error?.response?.data?.error || 'Failed to delete template');
+    }
+  }
+
+  // ── Bank Accounts CRUD ──────────────────────────────────────────────────
+
+  async function loadBankAccounts() {
+    try {
+      const res = await bankAccountsApi.list();
+      setBankAccounts(res.data);
+    } catch { }
+  }
+
+  async function handleCreateBankAccount() {
+    if (!newBankName.trim()) { toast.error('Account name is required'); return; }
+    setBankLoading(true);
+    try {
+      await bankAccountsApi.create({ account_name: newBankName.trim() });
+      toast.success('Bank account added');
+      setNewBankName('');
+      setShowAddBankForm(false);
+      loadBankAccounts();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to add bank account');
+    } finally {
+      setBankLoading(false);
+    }
+  }
+
+  async function handleDeleteBankAccount(id: number, name: string) {
+    if (!confirm(`Delete bank account "${name}"? All linked QR codes must be removed first.`)) return;
+    try {
+      await bankAccountsApi.delete(id);
+      toast.success('Bank account deleted');
+      loadBankAccounts();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to delete bank account');
+    }
+  }
+
+  // ── QR Codes CRUD ───────────────────────────────────────────────────────
+
+  async function loadQrCodes() {
+    try {
+      const res = await qrCodesApi.list();
+      setQrCodes(res.data);
+    } catch { }
+  }
+
+  async function handleCreateQrCode() {
+    if (!newQr.name.trim()) { toast.error('QR name is required'); return; }
+    if (!newQr.bank_account_id) { toast.error('Select a bank account'); return; }
+    if (!newQr.qr_image) { toast.error('Upload a QR image'); return; }
+    setQrLoading(true);
+    try {
+      await qrCodesApi.create({
+        qr_type: newQr.qr_type,
+        name: newQr.name.trim(),
+        bank_account_id: parseInt(newQr.bank_account_id),
+        qr_image: newQr.qr_image
+      });
+      toast.success('QR code added');
+      setNewQr({ qr_type: 'rent', name: '', bank_account_id: '', qr_image: '' });
+      setShowAddQrForm(false);
+      loadQrCodes();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to add QR code');
+    } finally {
+      setQrLoading(false);
+    }
+  }
+
+  async function handleActivateQr(id: number) {
+    try {
+      await qrCodesApi.activate(id);
+      toast.success('QR code activated');
+      loadQrCodes();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to activate QR code');
+    }
+  }
+
+  async function handleDeactivateQr(id: number) {
+    try {
+      await qrCodesApi.deactivate(id);
+      toast.success('QR code deactivated');
+      loadQrCodes();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to deactivate QR code');
+    }
+  }
+
+  async function handleDeleteQr(id: number) {
+    if (!confirm('Delete this QR code?')) return;
+    try {
+      await qrCodesApi.delete(id);
+      toast.success('QR code deleted');
+      loadQrCodes();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.error || 'Failed to delete QR code');
+    }
+  }
+
+  function handleQrImageUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      setNewQr(prev => ({ ...prev, qr_image: ev.target?.result as string }));
+    };
+    reader.readAsDataURL(file);
+  }
+
   /**
    * Save modal day thresholds + percentages as rental_policies rows.
    * Uses batch replace: deactivates all old tiers and creates fresh ones.
@@ -344,20 +537,6 @@ export default function SettingsPage() {
           description: 'Salesman permissions settings',
         },
 
-        {
-          key: 'payment_qr_rent',
-          value: rentQrCode,
-          type: 'string',
-          category: 'payment',
-          description: 'UPI QR Code for Rent Collection (base64)',
-        },
-        {
-          key: 'payment_qr_security',
-          value: securityQrCode,
-          type: 'string',
-          category: 'payment',
-          description: 'UPI QR Code for Security Deposit Collection (base64)',
-        },
       ];
 
       for (const setting of settingsToSave) {
@@ -1038,7 +1217,7 @@ export default function SettingsPage() {
             })}
           </div>
         )}
-          </div>
+        </div>
         )}
       </div>
 
@@ -1131,8 +1310,30 @@ export default function SettingsPage() {
       </div>
 
       {/* Salesman Permissions Section */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <h2 className="text-xl font-semibold text-gray-800 mb-5">Salesman Permissions</h2>
+      <div className="bg-white rounded-lg shadow-sm border border-gray-200">
+        <button
+          onClick={() => setIsSalesmanPermissionsOpen(!isSalesmanPermissionsOpen)}
+          className="w-full flex justify-between items-center p-6 text-left hover:bg-gray-50 transition-colors rounded-lg"
+        >
+          <div className="flex items-center gap-3">
+            <svg
+              className={`w-5 h-5 text-gray-500 transition-transform duration-200 ${isSalesmanPermissionsOpen ? 'rotate-90' : ''}`}
+              fill="none" stroke="currentColor" viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+            <div>
+              <h2 className="text-xl font-semibold text-gray-800">Salesman Permissions</h2>
+              <p className="text-sm text-gray-500 mt-1">Control what actions salesmen can perform</p>
+            </div>
+          </div>
+          <span className="text-xs text-gray-500 bg-gray-200 px-2 py-0.5 rounded">
+            {Object.values(salesmanPermissions).filter(Boolean).length} of {Object.keys(salesmanPermissions).length} enabled
+          </span>
+        </button>
+
+        {isSalesmanPermissionsOpen && (
+        <div className="px-6 pb-6">
         <div className="space-y-0">
           {/* Rental price update */}
           <div className="flex items-center justify-between py-3 border-b border-gray-200">
@@ -1195,7 +1396,7 @@ export default function SettingsPage() {
           </div>
 
           {/* Discount Allowed */}
-          <div className="flex items-center justify-between py-3">
+          <div className="flex items-center justify-between py-3 border-b border-gray-200">
             <span className="text-sm font-medium text-gray-700">Discount Allowed</span>
             <button
               onClick={() => togglePermission('discount_allowed')}
@@ -1208,7 +1409,25 @@ export default function SettingsPage() {
               />
             </button>
           </div>
+
+          {/* Recurring Expenses Allowed */}
+          <div className="flex items-center justify-between py-3">
+            <span className="text-sm font-medium text-gray-700">Recurring Expenses Allowed</span>
+            <button
+              onClick={() => togglePermission('recurring_expenses_allowed')}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 ${salesmanPermissions.recurring_expenses_allowed ? 'bg-red-600' : 'bg-gray-300'
+                }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${salesmanPermissions.recurring_expenses_allowed ? 'translate-x-6' : 'translate-x-1'
+                  }`}
+              />
+            </button>
+          </div>
+
         </div>
+        </div>
+        )}
       </div>
 
       {/* Late Fee Policy Section */}
@@ -1256,83 +1475,170 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Payment QR Codes Section */}
-      <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-        <div className="mb-5">
-          <h2 className="text-xl font-semibold text-gray-800">Payment QR Codes</h2>
-          <p className="text-sm text-gray-600 mt-1">
-            Upload separate UPI QR codes for rent collection and security deposit collection. These will be shown on all portals when collecting payments.
-          </p>
+      {/* Bank Accounts Manager */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-gray-800">🏦 Bank Accounts</h2>
+          <button
+            onClick={() => setShowAddBankForm(!showAddBankForm)}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {showAddBankForm ? 'Cancel' : '+ Add Bank Account'}
+          </button>
         </div>
+        <p className="text-sm text-gray-500 mb-4">Manage bank accounts that QR codes are linked to.</p>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Rent Collection QR */}
-          <div className="border border-blue-200 rounded-lg p-4 bg-blue-50/30">
-            <h3 className="text-sm font-semibold text-blue-800 mb-3 flex items-center gap-2">
-              📋 Rent Collection QR
-            </h3>
-            <div className="flex flex-col items-center">
-              {rentQrCode ? (
-                <div className="relative group mb-3">
-                  <img src={rentQrCode} alt="Rent QR" className="w-40 h-40 object-contain border-2 border-blue-200 rounded-lg bg-white p-2" />
-                  <button onClick={() => setRentQrCode('')} className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700" title="Remove">×</button>
+        {showAddBankForm && (
+          <div className="flex items-center gap-3 mb-4 p-3 bg-gray-50 rounded-lg">
+            <input
+              type="text"
+              value={newBankName}
+              onChange={e => setNewBankName(e.target.value)}
+              placeholder="Bank Account Name (e.g., HDFC Savings)"
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              onKeyDown={e => e.key === 'Enter' && handleCreateBankAccount()}
+            />
+            <button
+              onClick={handleCreateBankAccount}
+              disabled={bankLoading}
+              className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50"
+            >
+              {bankLoading ? 'Adding...' : 'Add'}
+            </button>
+          </div>
+        )}
+
+        <div className="divide-y divide-gray-100">
+          {bankAccounts.length === 0 ? (
+            <p className="text-sm text-gray-400 py-4 text-center">No bank accounts added yet</p>
+          ) : bankAccounts.map(ba => (
+            <div key={ba.id} className="flex items-center justify-between py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-sm font-bold">
+                  {ba.account_name.charAt(0)}
                 </div>
+                <div>
+                  <p className="text-sm font-medium text-gray-900">{ba.account_name}</p>
+                  <p className="text-xs text-gray-400">
+                    {ba.qr_code_count || 0} QR code{ba.qr_code_count !== 1 ? 's' : ''} linked
+                    {!ba.is_active && <span className="ml-2 text-red-500">(Inactive)</span>}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => handleDeleteBankAccount(ba.id, ba.account_name)}
+                className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* QR Code Manager */}
+      <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-gray-800">📱 QR Code Manager</h2>
+          <button
+            onClick={() => setShowAddQrForm(!showAddQrForm)}
+            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            {showAddQrForm ? 'Cancel' : '+ Add QR Code'}
+          </button>
+        </div>
+        <p className="text-sm text-gray-500 mb-4">Manage QR codes linked to bank accounts. Only one QR code per type (rent/security) can be active at a time.</p>
+
+        {showAddQrForm && (
+          <div className="p-4 mb-4 bg-gray-50 rounded-lg space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <select
+                value={newQr.qr_type}
+                onChange={e => setNewQr(prev => ({ ...prev, qr_type: e.target.value }))}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 bg-white"
+              >
+                <option value="rent">Rent Collection</option>
+                <option value="security">Security Deposit</option>
+              </select>
+              <input
+                type="text"
+                value={newQr.name}
+                onChange={e => setNewQr(prev => ({ ...prev, name: e.target.value }))}
+                placeholder="QR Code Name"
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+              />
+              <select
+                value={newQr.bank_account_id}
+                onChange={e => setNewQr(prev => ({ ...prev, bank_account_id: e.target.value }))}
+                className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 bg-white"
+              >
+                <option value="">Select Bank Account</option>
+                {bankAccounts.filter(ba => ba.is_active).map(ba => (
+                  <option key={ba.id} value={ba.id}>{ba.account_name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              {newQr.qr_image ? (
+                <img src={newQr.qr_image} alt="QR Preview" className="w-20 h-20 object-contain border rounded-lg bg-white p-1" />
               ) : (
-                <div className="w-40 h-40 border-2 border-dashed border-blue-300 rounded-lg flex flex-col items-center justify-center text-blue-400 bg-white mb-3">
-                  <svg className="w-10 h-10 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                  <span className="text-xs">No QR uploaded</span>
+                <div className="w-20 h-20 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center text-gray-400 text-xs">
+                  No image
                 </div>
               )}
-              <input ref={rentQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                if (file.size > 5 * 1024 * 1024) { addAlert('Image too large (max 5MB).'); return; }
-                const reader = new FileReader();
-                reader.onload = (ev) => { setRentQrCode(ev.target?.result as string); toast.success('Rent QR loaded! Click Save Changes to apply.'); };
-                reader.readAsDataURL(file);
-              }} />
-              <button onClick={() => rentQrFileInputRef.current?.click()} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium rounded-lg transition-colors">
-                📷 {rentQrCode ? 'Change' : 'Upload'}
+              <input ref={qrImageInputRef} type="file" accept="image/*" className="hidden" onChange={handleQrImageUpload} />
+              <button
+                onClick={() => qrImageInputRef.current?.click()}
+                className="px-3 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 text-xs font-medium rounded-lg transition-colors"
+              >
+                📷 Upload QR Image
+              </button>
+              <button
+                onClick={handleCreateQrCode}
+                disabled={qrLoading}
+                className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-50 ml-auto"
+              >
+                {qrLoading ? 'Adding...' : 'Add QR Code'}
               </button>
             </div>
           </div>
+        )}
 
-          {/* Security Deposit QR */}
-          <div className="border border-green-200 rounded-lg p-4 bg-green-50/30">
-            <h3 className="text-sm font-semibold text-green-800 mb-3 flex items-center gap-2">
-              🔒 Security Deposit QR
-            </h3>
-            <div className="flex flex-col items-center">
-              {securityQrCode ? (
-                <div className="relative group mb-3">
-                  <img src={securityQrCode} alt="Security QR" className="w-40 h-40 object-contain border-2 border-green-200 rounded-lg bg-white p-2" />
-                  <button onClick={() => setSecurityQrCode('')} className="absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white rounded-full flex items-center justify-center text-xs font-bold opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-700" title="Remove">×</button>
+        {/* QR Codes List */}
+        <div className="space-y-3">
+          {qrCodes.length === 0 ? (
+            <p className="text-sm text-gray-400 py-4 text-center">No QR codes added yet. Add a bank account first, then create QR codes.</p>
+          ) : qrCodes.map(qr => (
+            <div key={qr.id} className={`flex items-center gap-4 p-3 rounded-lg border transition-colors ${qr.is_active ? 'border-green-200 bg-green-50' : 'border-gray-200 bg-gray-50'}`}>
+              <img src={qr.qr_image} alt={qr.name} className="w-16 h-16 object-contain rounded-lg border bg-white p-1 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2">
+                  <p className="text-sm font-medium text-gray-900">{qr.name}</p>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${qr.qr_type === 'rent' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {qr.qr_type === 'rent' ? 'Rent' : 'Security'}
+                  </span>
+                  {qr.is_active && (
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">Active</span>
+                  )}
                 </div>
-              ) : (
-                <div className="w-40 h-40 border-2 border-dashed border-green-300 rounded-lg flex flex-col items-center justify-center text-green-400 bg-white mb-3">
-                  <svg className="w-10 h-10 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                  <span className="text-xs">No QR uploaded</span>
-                </div>
-              )}
-              <input ref={securityQrFileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (!file) return;
-                if (file.size > 5 * 1024 * 1024) { addAlert('Image too large (max 5MB).'); return; }
-                const reader = new FileReader();
-                reader.onload = (ev) => { setSecurityQrCode(ev.target?.result as string); toast.success('Security QR loaded! Click Save Changes to apply.'); };
-                reader.readAsDataURL(file);
-              }} />
-              <button onClick={() => securityQrFileInputRef.current?.click()} className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors">
-                📷 {securityQrCode ? 'Change' : 'Upload'}
-              </button>
+                <p className="text-xs text-gray-500 mt-0.5">Bank: {qr.bank_account_name}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {qr.is_active ? (
+                  <button onClick={() => handleDeactivateQr(qr.id)} className="px-3 py-1.5 bg-yellow-100 hover:bg-yellow-200 text-yellow-700 text-xs font-medium rounded-lg transition-colors">
+                    Deactivate
+                  </button>
+                ) : (
+                  <button onClick={() => handleActivateQr(qr.id)} className="px-3 py-1.5 bg-green-100 hover:bg-green-200 text-green-700 text-xs font-medium rounded-lg transition-colors">
+                    Activate
+                  </button>
+                )}
+                <button onClick={() => handleDeleteQr(qr.id)} className="px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 text-xs font-medium rounded-lg transition-colors">
+                  Delete
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-
-        <div className="bg-amber-50 border-l-4 border-amber-400 p-3 mt-4">
-          <p className="text-xs text-amber-800">
-            <strong>Note:</strong> After uploading, click <strong>SAVE CHANGES</strong> below to apply. Rent QR is shown for rent/penalty payments, Security QR is shown for security deposit collection.
-          </p>
+          ))}
         </div>
       </div>
 

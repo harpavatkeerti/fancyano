@@ -28,6 +28,10 @@ export function createPaymentTransactionsApi(api: ApiClient) {
       booking_product_id?: number;
       deduction_amount?: number;
       deduction_type?: string;
+      // Security allocation for payments that include security
+      security_product_ids?: number[];
+      // QR code used for UPI payments
+      qr_code_id?: number;
     }) => api.post<any>('/payment-transactions', data),
     
     // Apply payment (auto-distributes according to priority)

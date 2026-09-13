@@ -215,7 +215,8 @@ class ProductLifecycleService {
         payment.method || 'Cash',
         payment.recorded_by || userId,
         payment.notes || 'Exchange payment',
-        client
+        client,
+        payment.qr_code_id || null
       );
 
       const paymentResult = paymentAmount > 0 ? {

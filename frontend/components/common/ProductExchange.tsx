@@ -1,6 +1,7 @@
 'use client';
 
-import { productExchangesApi, productsApi, bookingsApi, settingsApi, availabilityApi, paymentTransactionsApi } from '@/lib/api';
+import { productExchangesApi, productsApi, bookingsApi, qrCodesApi, availabilityApi, paymentTransactionsApi } from '@/lib/api';
+import { UpiQrConfirmModal } from './UpiQrConfirmModal';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import React, { useState, useEffect } from 'react';
 
@@ -41,7 +42,8 @@ export function ProductExchange({
   const [selectedExchangeSize, setSelectedExchangeSize] = useState<string | null>(null);
   const [additionalProducts, setAdditionalProducts] = useState<number[]>([]); // For multiple product selection
   const [additionalProductSizes, setAdditionalProductSizes] = useState<Record<number, string | null>>({}); // Size per additional product
-  const [productSearchTerm, setProductSearchTerm] = useState(''); // For searching products
+  const [productSearchTerm, setProductSearchTerm] = useState(''); // For searching additional products
+  const [mainProductSearchTerm, setMainProductSearchTerm] = useState(''); // For searching main exchange product
   const [availableProducts, setAvailableProducts] = useState<any[]>([]);
   const [exchangeReason, setExchangeReason] = useState('');
   const [loading, setLoading] = useState(false);
@@ -72,6 +74,10 @@ export function ProductExchange({
   const [pendingExchangeData, setPendingExchangeData] = useState<any>(null); // Store exchange data before creating it
   const [paymentType, setPaymentType] = useState<'penalty' | 'rent' | 'both'>('penalty');
 
+  // UPI QR confirmation modal state
+  const [showUpiQrModal, setShowUpiQrModal] = useState(false);
+  const [activeQrCodeId, setActiveQrCodeId] = useState<number | null>(null);
+
   // Exchange preview from backend API
   const [exchangePreview, setExchangePreview] = useState<any>(null);
   const [rentDifference, setRentDifference] = useState<number>(0);
@@ -81,10 +87,6 @@ export function ProductExchange({
   useEffect(() => {
     fetchExchanges();
     fetchBookingDates();
-    // Fetch rent QR code from settings (exchange = rent/penalty payment)
-    settingsApi.getByKey('payment_qr_rent')
-      .then(res => { if (res.data?.setting_value) setPaymentQrCode(res.data.setting_value); })
-      .catch(() => { });
   }, [bookingId]);
 
   async function fetchBookingDates() {
@@ -193,9 +195,9 @@ export function ProductExchange({
     }
   }
 
-  async function fetchProductBookings(productId: number) {
+  async function fetchProductBookings(productId: number, size?: string | null) {
     try {
-      const response = await bookingsApi.getByProductId(productId);
+      const response = await bookingsApi.getByProductId(productId, size ?? undefined);
       setProductBookings(prev => ({
         ...prev,
         [productId]: response.data || []
@@ -209,7 +211,7 @@ export function ProductExchange({
     }
   }
 
-  async function checkProductAvailability(productId: number, dateFrom: string, dateTo: string): Promise<{ available: boolean; message?: string; isUrgent?: boolean; conflicts?: UrgentConflict[] }> {
+  async function checkProductAvailability(productId: number, dateFrom: string, dateTo: string, size?: string | null): Promise<{ available: boolean; message?: string; isUrgent?: boolean; conflicts?: UrgentConflict[] }> {
     if (!dateFrom || !dateTo) {
       return { available: false, message: 'Please select both pickup and drop dates' };
     }
@@ -218,7 +220,8 @@ export function ProductExchange({
       const response = await availabilityApi.check({
         product_id: productId,
         date_from: dateFrom,
-        date_to: dateTo
+        date_to: dateTo,
+        ...(size ? { size } : {})
       });
 
       if (!response.data.available) {
@@ -232,6 +235,7 @@ export function ProductExchange({
       try {
         const tightResponse = await availabilityApi.checkTightSchedule([{
           product_id: productId,
+          size: size ?? undefined,
           booked_from: dateFrom,
           booked_to: dateTo,
         }]);
@@ -292,8 +296,12 @@ export function ProductExchange({
             booked_to: ''
           }
         }));
-        // Fetch bookings for main product
-        await fetchProductBookings(selectedExchangedProduct);
+        // Only fetch if sizeless or a size is already selected (calendar is gated behind size)
+        const selected = available.find(p => p.id === selectedExchangedProduct);
+        const hasSizes = selected?.available_sizes?.length > 0;
+        if (!hasSizes || selectedExchangeSize) {
+          await fetchProductBookings(selectedExchangedProduct, selectedExchangeSize);
+        }
       }
     } catch (error) {
       console.error('Error fetching products:', error);
@@ -330,11 +338,12 @@ export function ProductExchange({
         return;
       }
 
-      // Check availability for main product
+      // Check availability for main product (with size)
       const mainAvailability = await checkProductAvailability(
         selectedExchangedProduct,
         mainProductDates.booked_from,
-        mainProductDates.booked_to
+        mainProductDates.booked_to,
+        selectedExchangeSize
       );
       if (!mainAvailability.available && !mainAvailability.isUrgent) {
         addAlert(mainAvailability.message || 'Main product is not available for selected dates');
@@ -352,7 +361,8 @@ export function ProductExchange({
         const availability = await checkProductAvailability(
           additionalProductId,
           dates.booked_from,
-          dates.booked_to
+          dates.booked_to,
+          additionalProductSizes[additionalProductId]
         );
         if (!availability.available && !availability.isUrgent) {
           const product = availableProducts.find(p => p.id === additionalProductId);
@@ -512,6 +522,7 @@ export function ProductExchange({
         payment_method: paymentMethod.trim(),
         payment_recorded_by: userName,
         payment_notes: detailedNarration,
+        payment_qr_code_id: activeQrCodeId || undefined,
       });
 
       toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
@@ -524,6 +535,8 @@ export function ProductExchange({
       setRentDifferenceAmount(0);
       setPaymentMethod('Cash');
       setPaymentNarration('');
+      setShowUpiQrModal(false);
+      setActiveQrCodeId(null);
       setSelectedOriginalProduct(null);
       setSelectedExchangedProduct(null);
       setAdditionalProducts([]);
@@ -671,6 +684,7 @@ export function ProductExchange({
               setSelectedExchangedProduct(null);
               setAdditionalProducts([]);
               setProductSearchTerm('');
+              setMainProductSearchTerm('');
               setProductDates({});
               setProductBookings({});
               setAvailabilityErrors({});
@@ -827,6 +841,7 @@ export function ProductExchange({
                     setSelectedExchangedProduct(null);
                     setAdditionalProducts([]); // Reset additional products when original changes
                     setProductSearchTerm(''); // Reset search when original changes
+                    setMainProductSearchTerm('');
                     setProductDates({}); // Reset dates
                     setProductBookings({}); // Reset bookings
                     setAvailabilityErrors({}); // Reset errors
@@ -859,52 +874,118 @@ export function ProductExchange({
                   {availableProducts.length === 0 ? (
                     <p className="text-sm text-gray-500 py-2">No available products for exchange</p>
                   ) : (
-                    <select
-                      value={selectedExchangedProduct || ''}
-                      onChange={async (e) => {
-                        const productId = Number(e.target.value);
-                        setSelectedExchangedProduct(productId);
-                        setSelectedExchangeSize(null); // Reset size when product changes
-                        setAdditionalProducts([]); // Reset additional products when main product changes
-                        setProductSearchTerm(''); // Reset search when main product changes
+                    <div>
+                      {/* Search Input */}
+                      <div className="mb-2">
+                        <input
+                          type="text"
+                          value={mainProductSearchTerm}
+                          onChange={(e) => setMainProductSearchTerm(e.target.value)}
+                          placeholder="Search by product name or code..."
+                          className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white text-sm"
+                        />
+                      </div>
 
-                        // Initialize dates for new product (use empty strings to allow fresh selection)
-                        if (productId) {
-                          setProductDates(prev => ({
-                            ...prev,
-                            [productId]: {
-                              booked_from: '',
-                              booked_to: ''
-                            }
-                          }));
-                          // Fetch bookings for availability checking
-                          await fetchProductBookings(productId);
-                        }
-                      }}
-                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 bg-white"
-                    >
-                      <option value="">Select replacement product</option>
-                      {(() => {
-                        const activeProductPairs = new Set(
-                          currentProducts
-                            .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
-                            .map(p => `${p.product_id}:${p.size || ''}`)
-                        );
-                        return availableProducts.map((product) => {
-                          // Sized product: disabled only if ALL its sizes are in booking
-                          const hasSizes = product.available_sizes && product.available_sizes.length > 0;
-                          const isDisabled = hasSizes
-                            ? product.available_sizes.every((sz: string) => activeProductPairs.has(`${product.id}:${sz}`))
-                            : activeProductPairs.has(`${product.id}:`);
-                          return (
-                            <option key={product.id} value={product.id} disabled={isDisabled}>
-                              {product.name} ({product.code}) - ₹{product.rent}/day{product.security_deposit > 0 ? ` | Security: ₹${parseFloat(String(product.security_deposit)).toLocaleString('en-IN')}` : ''}
-                              {isDisabled ? ' (already in this booking)' : ''}
-                            </option>
+                      {/* Product List — single select */}
+                      <div className="border border-gray-300 rounded-lg bg-white max-h-[200px] overflow-y-auto">
+                        {(() => {
+                          const activeProductPairs = new Set(
+                            currentProducts
+                              .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
+                              .map(p => `${p.product_id}:${p.size || ''}`)
                           );
-                        });
-                      })()}
-                    </select>
+                          const filteredProducts = availableProducts.filter(p => {
+                            if (!mainProductSearchTerm) return true;
+                            const search = mainProductSearchTerm.toLowerCase();
+                            return (
+                              p.name?.toLowerCase().includes(search) ||
+                              p.code?.toLowerCase().includes(search)
+                            );
+                          });
+
+                          if (filteredProducts.length === 0) {
+                            return (
+                              <div className="p-4 text-center text-sm text-gray-500">
+                                {mainProductSearchTerm ? 'No products found matching your search' : 'No products available'}
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="divide-y divide-gray-200">
+                              {filteredProducts.map((product) => {
+                                const hasSizes = product.available_sizes && product.available_sizes.length > 0;
+                                const isDisabled = hasSizes
+                                  ? product.available_sizes.every((sz: string) => activeProductPairs.has(`${product.id}:${sz}`))
+                                  : activeProductPairs.has(`${product.id}:`);
+                                const isSelected = selectedExchangedProduct === product.id;
+                                return (
+                                  <label
+                                    key={product.id}
+                                    className={`flex items-center p-3 transition-colors ${isDisabled
+                                      ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                      : `hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-red-50' : ''}`
+                                      }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      name="exchangedProduct"
+                                      checked={isSelected}
+                                      disabled={isDisabled}
+                                      onChange={async () => {
+                                        if (isDisabled) return;
+                                        setSelectedExchangedProduct(product.id);
+                                        setSelectedExchangeSize(null);
+                                        setAdditionalProducts([]);
+                                        setProductSearchTerm('');
+
+                                        // Initialize dates
+                                        setProductDates(prev => ({
+                                          ...prev,
+                                          [product.id]: { booked_from: '', booked_to: '' }
+                                        }));
+                                        // For sizeless products, fetch bookings now.
+                                        // For sized products, the size selector onClick fetches with the correct size.
+                                        if (!hasSizes) {
+                                          await fetchProductBookings(product.id);
+                                        }
+                                      }}
+                                      className="w-4 h-4 text-red-600 border-gray-300 focus:ring-red-500 mr-3 flex-shrink-0"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-sm font-medium text-gray-900 truncate">
+                                            {product.name}
+                                          </p>
+                                          <p className="text-xs text-gray-500 mt-0.5">
+                                            Code: {product.code}
+                                            {isDisabled && (
+                                              <span className="ml-2 text-amber-600 font-medium">(already in this booking)</span>
+                                            )}
+                                          </p>
+                                        </div>
+                                        <div className="ml-3 text-right">
+                                          <p className="text-sm font-semibold text-gray-900">
+                                            ₹{parseFloat(String(product.rent || '0')).toLocaleString('en-IN')}
+                                          </p>
+                                          <p className="text-xs text-gray-500">per day</p>
+                                          {parseFloat(String(product.security_deposit || '0')) > 0 && (
+                                            <p className="text-xs text-gray-400 mt-0.5">
+                                              Security: ₹{parseFloat(String(product.security_deposit || '0')).toLocaleString('en-IN')}
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
                   )}
                 </div>
               )}
@@ -936,12 +1017,18 @@ export function ProductExchange({
                             key={sz}
                             type="button"
                             disabled={isInBooking}
-                            onClick={() => setSelectedExchangeSize(sz)}
+                            onClick={async () => {
+                              setSelectedExchangeSize(sz);
+                              // Re-fetch bookings filtered by the chosen size so the calendar is accurate
+                              if (selectedExchangedProduct) {
+                                await fetchProductBookings(selectedExchangedProduct, sz);
+                              }
+                            }}
                             className={`px-4 py-2 rounded-full text-sm font-medium border-2 transition-all duration-200 ${isInBooking
-                                ? 'opacity-40 cursor-not-allowed bg-gray-100 border-gray-200 text-gray-400'
-                                : isSelected
-                                  ? 'bg-red-600 text-white border-red-600 shadow-sm'
-                                  : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
+                              ? 'opacity-40 cursor-not-allowed bg-gray-100 border-gray-200 text-gray-400'
+                              : isSelected
+                                ? 'bg-red-600 text-white border-red-600 shadow-sm'
+                                : 'bg-white text-gray-600 border-gray-300 hover:border-red-400 hover:text-red-600'
                               }`}
                           >
                             {sz}
@@ -972,18 +1059,18 @@ export function ProductExchange({
 
               {/* Exchange Reason — only shown after size is selected (if required) */}
               {!sizeSelectionPending && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Reason (Optional)
-                </label>
-                <textarea
-                  value={exchangeReason}
-                  onChange={(e) => setExchangeReason(e.target.value)}
-                  placeholder="Enter reason for exchange..."
-                  rows={3}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                />
-              </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Reason (Optional)
+                  </label>
+                  <textarea
+                    value={exchangeReason}
+                    onChange={(e) => setExchangeReason(e.target.value)}
+                    placeholder="Enter reason for exchange..."
+                    rows={3}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  />
+                </div>
               )}
 
               {/* Add More Products Section - Only visible when size is selected */}
@@ -1043,8 +1130,8 @@ export function ProductExchange({
                               <label
                                 key={product.id}
                                 className={`flex items-center p-3 transition-colors ${isActiveInBooking
-                                    ? 'opacity-50 cursor-not-allowed bg-gray-50'
-                                    : `hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`
+                                  ? 'opacity-50 cursor-not-allowed bg-gray-50'
+                                  : `hover:bg-gray-50 cursor-pointer ${isSelected ? 'bg-blue-50' : ''}`
                                   }`}
                               >
                                 <input
@@ -1063,8 +1150,12 @@ export function ProductExchange({
                                           booked_to: ''
                                         }
                                       }));
-                                      // Fetch bookings for availability checking
-                                      await fetchProductBookings(product.id);
+                                      // For sizeless products, fetch bookings now.
+                                      // For sized products, the size selector onClick fetches with the correct size.
+                                      const hasSizes = product.available_sizes?.length > 0;
+                                      if (!hasSizes) {
+                                        await fetchProductBookings(product.id);
+                                      }
                                     } else {
                                       setAdditionalProducts(additionalProducts.filter(id => id !== product.id));
                                       // Clear dates for removed product
@@ -1183,10 +1274,14 @@ export function ProductExchange({
                                       <button
                                         key={sz}
                                         type="button"
-                                        onClick={() => setAdditionalProductSizes(prev => ({ ...prev, [productId]: sz }))}
+                                        onClick={async () => {
+                                          setAdditionalProductSizes(prev => ({ ...prev, [productId]: sz }));
+                                          // Re-fetch bookings filtered by the chosen size
+                                          await fetchProductBookings(productId, sz);
+                                        }}
                                         className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${isSelected
-                                            ? 'bg-red-600 text-white border-red-600'
-                                            : 'bg-white text-gray-600 border-gray-300 hover:border-red-400'
+                                          ? 'bg-red-600 text-white border-red-600'
+                                          : 'bg-white text-gray-600 border-gray-300 hover:border-red-400'
                                           }`}
                                       >
                                         {sz}
@@ -1315,12 +1410,14 @@ export function ProductExchange({
                                           }
                                         }));
 
-                                        // Check availability when both dates are set
+                                        // Check availability when both dates are set (with size)
                                         if (date && currentFrom) {
+                                          const productSize = product.isMain ? selectedExchangeSize : additionalProductSizes[product.id];
                                           checkProductAvailability(
                                             product.id,
                                             currentFrom,
-                                            date
+                                            date,
+                                            productSize
                                           ).then(availability => {
                                             if (!availability.available) {
                                               setAvailabilityErrors(prev => ({
@@ -1519,7 +1616,6 @@ export function ProductExchange({
                     onMethodChange={setPaymentMethod}
                     notes={paymentNarration}
                     onNotesChange={setPaymentNarration}
-                    amount={totalPaymentDue}
                     notesLabel="Narration / Notes (Optional)"
                     notesPlaceholder="Enter transaction details, reference number, etc."
                     colorScheme="green"
@@ -1548,7 +1644,15 @@ export function ProductExchange({
                   CANCEL
                 </button>
                 <button
-                  onClick={totalPaymentDue > 0 ? handlePaymentCollection : handleExchange}
+                  onClick={() => {
+                    if (totalPaymentDue > 0 && paymentMethod === 'UPI') {
+                      setShowUpiQrModal(true);
+                    } else if (totalPaymentDue > 0) {
+                      handlePaymentCollection();
+                    } else {
+                      handleExchange();
+                    }
+                  }}
                   disabled={loading || !selectedOriginalProduct || !selectedExchangedProduct || !allProductDatesSet || sizeSelectionPending}
                   title={!allProductDatesSet && selectedExchangedProduct ? 'Please select dates for all replacement products' : undefined}
                   className="px-6 py-2.5 bg-green-600 text-white font-semibold rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1559,6 +1663,20 @@ export function ProductExchange({
             </div>
           </div>
         </div>
+      )}
+
+      {/* UPI QR Confirmation Modal for Exchange Payment */}
+      {showUpiQrModal && (
+        <UpiQrConfirmModal
+          amount={totalPaymentDue}
+          paymentCategory="rent"
+          onConfirm={(qrCodeId) => {
+            setActiveQrCodeId(qrCodeId);
+            setShowUpiQrModal(false);
+            handlePaymentCollection();
+          }}
+          onCancel={() => { setShowUpiQrModal(false); setActiveQrCodeId(null); }}
+        />
       )}
 
       {/* Refund Modal for Lapsed Amount */}

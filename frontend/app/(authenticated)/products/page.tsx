@@ -101,24 +101,31 @@ export default function ProductsPage() {
 
     const fromDate = new Date(availabilityFrom);
     const toDate = new Date(availabilityTo);
+    fromDate.setHours(0, 0, 0, 0);
+    toDate.setHours(0, 0, 0, 0);
 
-    for (const booking of bookings) {
-      if (!booking.booked_from || !booking.booked_to) continue;
-
+    // Check if a booking conflicts with the selected date range
+    function hasConflict(booking: any): boolean {
+      if (!booking.booked_from || !booking.booked_to) return false;
       const bookingFrom = new Date(booking.booked_from);
       const bookingTo = new Date(booking.booked_to);
-
-      fromDate.setHours(0, 0, 0, 0);
-      toDate.setHours(0, 0, 0, 0);
       bookingFrom.setHours(0, 0, 0, 0);
       bookingTo.setHours(0, 0, 0, 0);
-
-      if (fromDate <= bookingTo && toDate >= bookingFrom) {
-        return false;
-      }
+      return fromDate <= bookingTo && toDate >= bookingFrom;
     }
 
-    return true;
+    // For sized products, check if at least one size has no conflicts
+    const product = products.find(p => p.id === productId);
+    const hasSizes = product?.available_sizes?.length > 0;
+    if (hasSizes) {
+      return product.available_sizes.some((sz: string) => {
+        const sizeBookings = bookings.filter((b: any) => b.size === sz);
+        return !sizeBookings.some(hasConflict);
+      });
+    }
+
+    // Sizeless product: any conflict means unavailable
+    return !bookings.some(hasConflict);
   }
 
   // Get filtered products

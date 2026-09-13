@@ -789,9 +789,7 @@ export function BookingCancellation({
                                   onMethodChange={setRefundMethod}
                                   notes={extraRefundNote}
                                   onNotesChange={setExtraRefundNote}
-                                  amount={remainder}
                                   colorScheme="green"
-                                  showQR={false}
                                 />
                               </div>
                             )}
@@ -836,9 +834,7 @@ export function BookingCancellation({
                                         onMethodChange={setRefundMethod}
                                         notes={extraRefundNote}
                                         onNotesChange={setExtraRefundNote}
-                                        amount={secExcess}
                                         colorScheme="green"
-                                        showQR={false}
                                       />
                                     </div>
                                   )}
