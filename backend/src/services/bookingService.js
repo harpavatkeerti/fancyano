@@ -470,6 +470,14 @@ class BookingService {
       // ── Transport details update ────────────────────────────────────────────
       // Accepts: transport_details: { [booking_product_id]: { transporter_id?, transporter_name?, phone?, bus_no?, destination? } }
       if (data.transport_details && typeof data.transport_details === 'object') {
+        // Guard: block transport edits on completed / discarded orders
+        const effectiveStatus = status || currentStatus;
+        if (['completed', 'discarded'].includes(effectiveStatus)) {
+          throw Object.assign(
+            new Error('Cannot update transport details for a completed or discarded order'),
+            { status: 400 }
+          );
+        }
         // Fetch valid booking_product IDs for this booking
         const bpTransportResult = await client.query(
           'SELECT id FROM booking_products WHERE booking_id = $1',
@@ -514,6 +522,34 @@ class BookingService {
             bookingId,
             'transport_details_updated',
             JSON.stringify({ updated_products: Object.keys(data.transport_details) }),
+            performed_by || 'system'
+          ]
+        );
+      }
+
+      // ── Add transport charge (additive) ─────────────────────────────────────
+      if (data.add_transport_charge && typeof data.add_transport_charge === 'number' && data.add_transport_charge > 0) {
+        const effectiveStatusForTransportCharge = status || currentStatus;
+        if (['completed', 'discarded'].includes(effectiveStatusForTransportCharge)) {
+          throw Object.assign(
+            new Error('Cannot update transport charge for a completed or discarded order'),
+            { status: 400 }
+          );
+        }
+
+        await client.query(
+          'UPDATE bookings SET transport_charge = COALESCE(transport_charge, 0) + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
+          [data.add_transport_charge, bookingId]
+        );
+
+        // Activity log
+        await client.query(
+          `INSERT INTO booking_activity_log (booking_id, event_type, details, performed_by)
+           VALUES ($1, $2, $3, $4)`,
+          [
+            bookingId,
+            'transport_charge_updated',
+            JSON.stringify({ added_amount: data.add_transport_charge }),
             performed_by || 'system'
           ]
         );

@@ -1845,5 +1845,156 @@ describe('BookingService', () => {
         }
       })).rejects.toThrow('Invalid vehicle number');
     });
+
+    test('updateBooking should reject transport_details when order is completed', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-05-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-05-10'),
+          bookedTo: new Date('2026-05-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      // Move the booking to completed status
+      await bookingService.updateBooking(result.booking_id, {
+        status: 'completed',
+        performed_by: 'test-user',
+      });
+
+      const bpId = result.booking_product_ids[0];
+      await expect(bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          [bpId]: { transporter_name: 'Late Update', destination: 'Rajkot' }
+        }
+      })).rejects.toThrow('Cannot update transport details for a completed or discarded order');
+    });
+
+    test('updateBooking should reject transport_details when order is discarded', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date('2026-06-01'),
+        products: [{
+          productId: testProductId1,
+          size: 'M',
+          bookedFrom: new Date('2026-06-10'),
+          bookedTo: new Date('2026-06-15'),
+          rent: 500,
+          securityDeposit: 1000,
+          quantity: 1,
+        }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      // Move the booking to discarded status
+      await bookingService.updateBooking(result.booking_id, {
+        status: 'discarded',
+        performed_by: 'test-user',
+      });
+
+      const bpId = result.booking_product_ids[0];
+      await expect(bookingService.updateBooking(result.booking_id, {
+        transport_details: {
+          [bpId]: { transporter_name: 'Late Update', destination: 'Surat' }
+        }
+      })).rejects.toThrow('Cannot update transport details for a completed or discarded order');
+    });
+  });
+
+  describe('add_transport_charge', () => {
+    test('should additively increase transport_charge', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date(),
+        products: [{ productId: testProductId1, size: 'M', quantity: 1, rent: 500, securityDeposit: 1000, bookedFrom: new Date(), bookedTo: new Date(Date.now() + 5 * 864e5) }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      await bookingService.updateBooking(result.booking_id, {
+        add_transport_charge: 50,
+      }, 'test-user');
+
+      const booking = await pool.query('SELECT transport_charge FROM bookings WHERE id = $1', [result.booking_id]);
+      expect(booking.rows[0].transport_charge).toBe(150);
+    });
+
+    test('should add transport_charge to booking with zero initial charge', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date(),
+        products: [{ productId: testProductId1, size: 'M', quantity: 1, rent: 500, securityDeposit: 1000, bookedFrom: new Date(), bookedTo: new Date(Date.now() + 5 * 864e5) }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      await bookingService.updateBooking(result.booking_id, {
+        add_transport_charge: 200,
+      }, 'test-user');
+
+      const booking = await pool.query('SELECT transport_charge FROM bookings WHERE id = $1', [result.booking_id]);
+      expect(booking.rows[0].transport_charge).toBe(200);
+    });
+
+    test('should log activity for transport charge update', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date(),
+        products: [{ productId: testProductId1, size: 'M', quantity: 1, rent: 500, securityDeposit: 1000, bookedFrom: new Date(), bookedTo: new Date(Date.now() + 5 * 864e5) }],
+        transportCharge: 0,
+        createdBy: 'test-user',
+      });
+
+      await bookingService.updateBooking(result.booking_id, {
+        add_transport_charge: 75,
+      }, 'test-user');
+
+      const log = await pool.query(
+        `SELECT * FROM booking_activity_log WHERE booking_id = $1 AND event_type = 'transport_charge_updated'`,
+        [result.booking_id]
+      );
+      expect(log.rows.length).toBe(1);
+      expect(log.rows[0].details.added_amount).toBe(75);
+    });
+
+    test('should reject add_transport_charge for completed booking', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date(),
+        products: [{ productId: testProductId1, size: 'M', quantity: 1, rent: 500, securityDeposit: 1000, bookedFrom: new Date(), bookedTo: new Date(Date.now() + 5 * 864e5) }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      await pool.query('UPDATE bookings SET status = $1 WHERE id = $2', ['completed', result.booking_id]);
+
+      await expect(
+        bookingService.updateBooking(result.booking_id, { add_transport_charge: 50 }, 'test-user')
+      ).rejects.toThrow('Cannot update transport charge for a completed or discarded order');
+    });
+
+    test('should reject add_transport_charge for discarded booking', async () => {
+      const result = await bookingService.createBooking({
+        userId: 1,
+        bookingDate: new Date(),
+        products: [{ productId: testProductId1, size: 'M', quantity: 1, rent: 500, securityDeposit: 1000, bookedFrom: new Date(), bookedTo: new Date(Date.now() + 5 * 864e5) }],
+        transportCharge: 100,
+        createdBy: 'test-user',
+      });
+
+      await pool.query('UPDATE bookings SET status = $1 WHERE id = $2', ['discarded', result.booking_id]);
+
+      await expect(
+        bookingService.updateBooking(result.booking_id, { add_transport_charge: 50 }, 'test-user')
+      ).rejects.toThrow('Cannot update transport charge for a completed or discarded order');
+    });
   });
 });

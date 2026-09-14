@@ -36,10 +36,11 @@ interface TransportDetailsModalProps {
   onClose: () => void;
   onApplyToAll?: (data: TransportFormData) => Promise<void>;
   title?: string;
+  readOnly?: boolean;
 }
 
 export function TransportDetailsModal({
-  products, initialValues, onSave, onClose, onApplyToAll, title,
+  products, initialValues, onSave, onClose, onApplyToAll, title, readOnly,
 }: TransportDetailsModalProps) {
   // Per-product form state
   const [forms, setForms] = useState<Record<string | number, TransportFormData>>(() => {
@@ -221,6 +222,19 @@ export function TransportDetailsModal({
             <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">{error}</div>
           )}
 
+          {readOnly && (
+            <div className="bg-yellow-50 border-l-4 border-yellow-400 rounded-lg p-4 mb-4">
+              <div className="flex items-center">
+                <svg className="w-5 h-5 text-yellow-600 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+                <p className="text-yellow-800 font-medium">
+                  Transport details cannot be changed after the order is completed.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Per-product forms — scrollable list like MeasurementModal */}
           {products.map((product) => (
             <ProductTransportForm
@@ -229,8 +243,9 @@ export function TransportDetailsModal({
               form={forms[product.id] || EMPTY_FORM}
               onUpdateField={(field, value) => updateField(product.id, field, value)}
               onSelectTransporter={(t) => selectTransporter(product.id, t)}
-              showApplyToAll={products.length > 1 || !!onApplyToAll}
+              showApplyToAll={!readOnly && (products.length > 1 || !!onApplyToAll)}
               onApplyToAll={() => handleApplyToAll(product.id)}
+              readOnly={readOnly}
             />
           ))}
 
@@ -238,12 +253,14 @@ export function TransportDetailsModal({
           <div className="flex justify-end gap-3 mt-4 pt-4 border-t border-gray-200">
             <button onClick={onClose}
               className="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors">
-              Cancel
+              {readOnly ? 'Close' : 'Cancel'}
             </button>
-            <button onClick={handleSubmit} disabled={saving}
-              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium disabled:opacity-50">
-              {saving ? 'Saving...' : 'Save'}
-            </button>
+            {!readOnly && (
+              <button onClick={handleSubmit} disabled={saving}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium disabled:opacity-50">
+                {saving ? 'Saving...' : 'Save'}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -281,7 +298,7 @@ export function TransportDetailsModal({
 /* ─── Per-product form card ──────────────────────────────────────────────── */
 
 function ProductTransportForm({
-  product, form, onUpdateField, onSelectTransporter, showApplyToAll, onApplyToAll,
+  product, form, onUpdateField, onSelectTransporter, showApplyToAll, onApplyToAll, readOnly,
 }: {
   product: TransportProduct;
   form: TransportFormData;
@@ -289,6 +306,7 @@ function ProductTransportForm({
   onSelectTransporter: (t: Transporter) => void;
   showApplyToAll: boolean;
   onApplyToAll: () => void;
+  readOnly?: boolean;
 }) {
   // Transporter autocomplete
   const [searchQuery, setSearchQuery] = useState(form.transporter_name || '');
@@ -380,7 +398,8 @@ function ProductTransportForm({
           <input type="text" value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
             placeholder="Search or type name"
-            className={inputOk} />
+            disabled={readOnly}
+            className={`${inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
           {showDropdown && searchResults.length > 0 && (
             <div className="absolute z-10 w-full bg-white border border-gray-300 rounded-lg shadow-lg mt-1 max-h-40 overflow-y-auto">
               {searchResults.map((t) => (
@@ -402,7 +421,8 @@ function ProductTransportForm({
           <input type="text" value={phoneVal}
             onChange={(e) => { const v = e.target.value.replace(/\D/g, '').slice(0, 10); onUpdateField('phone', v); }}
             placeholder="9876543210" maxLength={10}
-            className={phoneInvalid ? inputErr : inputOk} />
+            disabled={readOnly}
+            className={`${phoneInvalid ? inputErr : inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
           {phoneInvalid && <p className="text-xs text-red-500 mt-1">Must be 10 digits</p>}
         </div>
 
@@ -412,7 +432,8 @@ function ProductTransportForm({
           <input type="text" value={busVal}
             onChange={(e) => onUpdateField('bus_no', e.target.value.toUpperCase())}
             placeholder="GJ05AB1234"
-            className={busInvalid ? inputErr : inputOk} />
+            disabled={readOnly}
+            className={`${busInvalid ? inputErr : inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
           {busInvalid && <p className="text-xs text-red-500 mt-1">Format: RJ27CD6709</p>}
         </div>
 
@@ -422,7 +443,8 @@ function ProductTransportForm({
           <input type="text" value={form.destination}
             onChange={(e) => onUpdateField('destination', e.target.value)}
             placeholder="Rajkot, Gujarat"
-            className={inputOk} />
+            disabled={readOnly}
+            className={`${inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
         </div>
 
         {/* Source Office */}
@@ -431,7 +453,8 @@ function ProductTransportForm({
           <input type="text" value={form.source_address}
             onChange={(e) => onUpdateField('source_address', e.target.value)}
             placeholder="Near Railway Station, Kalupur, Ahmedabad"
-            className={inputOk} />
+            disabled={readOnly}
+            className={`${inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
         </div>
 
         {/* Destination Office */}
@@ -440,7 +463,8 @@ function ProductTransportForm({
           <input type="text" value={form.destination_address}
             onChange={(e) => onUpdateField('destination_address', e.target.value)}
             placeholder="Near Bus Stand, Rajkot"
-            className={inputOk} />
+            disabled={readOnly}
+            className={`${inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
         </div>
 
         {/* Destination Phone */}
@@ -449,7 +473,8 @@ function ProductTransportForm({
           <input type="text" value={destPhoneVal}
             onChange={(e) => { const v = e.target.value.replace(/\D/g, '').slice(0, 10); onUpdateField('destination_phone', v); }}
             placeholder="9123456780" maxLength={10}
-            className={destPhoneInvalid ? inputErr : inputOk} />
+            disabled={readOnly}
+            className={`${destPhoneInvalid ? inputErr : inputOk}${readOnly ? ' bg-gray-100 cursor-not-allowed' : ''}`} />
           {destPhoneInvalid && <p className="text-xs text-red-500 mt-1">Must be 10 digits</p>}
         </div>
       </div>

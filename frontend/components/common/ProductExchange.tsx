@@ -2,6 +2,8 @@
 
 import { productExchangesApi, productsApi, bookingsApi, qrCodesApi, availabilityApi, paymentTransactionsApi } from '@/lib/api';
 import { UpiQrConfirmModal } from './UpiQrConfirmModal';
+import { TransportDetailsModal } from './TransportDetailsModal';
+import type { TransportFormData } from './TransportDetailsModal';
 import { integerKeyDown, isIntegerInput } from '@/lib/integerInput';
 import React, { useState, useEffect } from 'react';
 
@@ -23,6 +25,7 @@ interface ProductExchangeProps {
   userName: string;
   bookingStatus?: string;
   securityPaidByProduct?: Record<number, number>; // bookingProductId → security paid amount
+  bookingTransportCharge?: number; // booking-level transport_charge
 }
 
 export function ProductExchange({
@@ -33,9 +36,13 @@ export function ProductExchange({
   userRole,
   userName,
   bookingStatus,
-  securityPaidByProduct = {}
+  securityPaidByProduct = {},
+  bookingTransportCharge = 0
 }: ProductExchangeProps) {
   const [exchanges, setExchanges] = useState<any[]>([]);
+  // Utility: composite key for product+size
+  const makeKey = (pid: number, size?: string | null) => size ? `${pid}:${size}` : `${pid}`;
+
   const [showExchangeModal, setShowExchangeModal] = useState(false);
   const [selectedOriginalProduct, setSelectedOriginalProduct] = useState<number | null>(null);
   const [selectedExchangedProduct, setSelectedExchangedProduct] = useState<number | null>(null);
@@ -57,11 +64,11 @@ export function ProductExchange({
   const [pendingDeleteExchangeId, setPendingDeleteExchangeId] = useState<number | null>(null);
 
   // Date selection for each product
-  const [productDates, setProductDates] = useState<Record<number, { booked_from: string; booked_to: string }>>({});
-  const [productBookings, setProductBookings] = useState<Record<number, any[]>>({}); // Bookings for each product for availability checking
-  const [availabilityErrors, setAvailabilityErrors] = useState<Record<number, string>>({});
-  const [urgentConflictsMap, setUrgentConflictsMap] = useState<Record<number, UrgentConflict[]>>({});
-  const [showUrgentDetailProductId, setShowUrgentDetailProductId] = useState<number | null>(null);
+  const [productDates, setProductDates] = useState<Record<string, { booked_from: string; booked_to: string }>>({});
+  const [productBookings, setProductBookings] = useState<Record<string, any[]>>({}); // Bookings for each product for availability checking
+  const [availabilityErrors, setAvailabilityErrors] = useState<Record<string, string>>({});
+  const [urgentConflictsMap, setUrgentConflictsMap] = useState<Record<string, UrgentConflict[]>>({});
+  const [showUrgentDetailProductId, setShowUrgentDetailProductId] = useState<string | null>(null);
 
   // Payment collection state
 
@@ -77,6 +84,28 @@ export function ProductExchange({
   // UPI QR confirmation modal state
   const [showUpiQrModal, setShowUpiQrModal] = useState(false);
   const [activeQrCodeId, setActiveQrCodeId] = useState<number | null>(null);
+
+  // Transport details state for exchanged products
+  const [exchangeTransportDetails, setExchangeTransportDetails] = useState<Record<string, Partial<TransportFormData>>>({});
+  const [showTransportModal, setShowTransportModal] = useState(false);
+
+  // Transport is enabled if the booking has a transport charge or any current product has transport_details
+  const transportEnabled = (bookingTransportCharge || 0) > 0 || currentProducts.some(p => p.transport_details);
+
+  // Pre-fill transport details from old product when selected
+  useEffect(() => {
+    if (!selectedOriginalProduct || !transportEnabled) {
+      setExchangeTransportDetails({});
+      return;
+    }
+    const oldProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
+    if (oldProduct?.transport_details) {
+      // Pre-fill with old product's transport details (will be applied to new products)
+      setExchangeTransportDetails({ prefill: oldProduct.transport_details });
+    } else {
+      setExchangeTransportDetails({});
+    }
+  }, [selectedOriginalProduct, transportEnabled]);
 
   // Exchange preview from backend API
   const [exchangePreview, setExchangePreview] = useState<any>(null);
@@ -161,12 +190,12 @@ export function ProductExchange({
             additionalProducts: additionalProducts.map(productId => ({
               product_id: productId,
               size: additionalProductSizes[productId] || null,
-              booked_from: productDates[productId]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
-              booked_to: productDates[productId]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+              booked_from: productDates[makeKey(productId, additionalProductSizes[productId])]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+              booked_to: productDates[makeKey(productId, additionalProductSizes[productId])]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
             })),
             exchanged_product_dates: {
-              booked_from: productDates[selectedExchangedProduct]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
-              booked_to: productDates[selectedExchangedProduct]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
+              booked_from: productDates[makeKey(selectedExchangedProduct, selectedExchangeSize)]?.booked_from || bookingDates?.booked_from?.split('T')[0] || '',
+              booked_to: productDates[makeKey(selectedExchangedProduct, selectedExchangeSize)]?.booked_to || bookingDates?.booked_to?.split('T')[0] || ''
             }
           };
           setPendingExchangeData(exchangeDataToCreate);
@@ -196,17 +225,18 @@ export function ProductExchange({
   }
 
   async function fetchProductBookings(productId: number, size?: string | null) {
+    const bookingKey = makeKey(productId, size);
     try {
       const response = await bookingsApi.getByProductId(productId, size ?? undefined);
       setProductBookings(prev => ({
         ...prev,
-        [productId]: response.data || []
+        [bookingKey]: response.data || []
       }));
     } catch (error) {
       console.error(`Error fetching bookings for product ${productId}:`, error);
       setProductBookings(prev => ({
         ...prev,
-        [productId]: []
+        [bookingKey]: []
       }));
     }
   }
@@ -272,7 +302,7 @@ export function ProductExchange({
       const currentProductPairs = new Set(
         currentProducts
           .filter(p => p.id !== selectedOriginalProduct)
-          .map(p => `${p.product_id}:${p.size || ''}`)
+          .map(p => makeKey(p.product_id, p.size))
       );
       const available = response.data.filter((p: any) => {
         // Allow same product if it has sizes not already in the booking
@@ -332,7 +362,7 @@ export function ProductExchange({
       const exchangeBy = userName;
 
       // Validate dates for all products
-      const mainProductDates = productDates[selectedExchangedProduct];
+      const mainProductDates = productDates[makeKey(selectedExchangedProduct, selectedExchangeSize)];
       if (!mainProductDates?.booked_from || !mainProductDates?.booked_to) {
         addAlert('Please select dates for the main exchanged product');
         return;
@@ -352,7 +382,7 @@ export function ProductExchange({
 
       // Validate dates for additional products
       for (const additionalProductId of additionalProducts) {
-        const dates = productDates[additionalProductId];
+        const dates = productDates[makeKey(additionalProductId, additionalProductSizes[additionalProductId])];
         if (!dates?.booked_from || !dates?.booked_to) {
           addAlert(`Please select dates for all additional products`);
           return;
@@ -397,18 +427,19 @@ export function ProductExchange({
         ...additionalProducts.map(productId => ({
           product_id: productId,
           size: additionalProductSizes[productId] || null,
-          booked_from: productDates[productId].booked_from,
-          booked_to: productDates[productId].booked_to,
+          booked_from: productDates[makeKey(productId, additionalProductSizes[productId])].booked_from,
+          booked_to: productDates[makeKey(productId, additionalProductSizes[productId])].booked_to,
         }))
       ];
 
-      const exchangeResult = await productExchangesApi.exchange({
+        const exchangeResult = await productExchangesApi.exchange({
         old_booking_product_id: selectedOriginalProduct,
         new_product_ids: newProductIds,
         exchange_penalty: exchangePreview?.calculations?.exchange_penalty || 0,
         downgrade_penalty: exchangePreview?.calculations?.downgrade_penalty || 0,
         exchange_reason: combinedReason,
         exchanged_by: exchangeBy,
+        transport_details: buildTransportPayload(newProductIds),
       });
 
       toast.success(`Product${additionalProducts.length > 0 ? 's' : ''} exchanged successfully`);
@@ -523,6 +554,7 @@ export function ProductExchange({
         payment_recorded_by: userName,
         payment_notes: detailedNarration,
         payment_qr_code_id: activeQrCodeId || undefined,
+        transport_details: buildTransportPayload(newProductIds),
       });
 
       toast.success(`Total ₹${totalPaymentDue.toLocaleString('en-IN')} collected via ${paymentMethod}`);
@@ -659,15 +691,28 @@ export function ProductExchange({
 
   const originalProduct = currentProducts.find(p => p.id === selectedOriginalProduct);
 
+  // Helper: build transport details payload for exchange API
+  // Keyed by composite 'productId:size' to support same product in different sizes
+  function buildTransportPayload(newProductIds: Array<{ product_id: number; size?: string | null }>) {
+    if (!transportEnabled || Object.keys(exchangeTransportDetails).length === 0) return undefined;
+    return Object.fromEntries(
+      newProductIds.map(p => {
+        const compositeKey = makeKey(p.product_id, p.size);
+        const details = exchangeTransportDetails[compositeKey] || exchangeTransportDetails['prefill'];
+        return details ? [compositeKey, details] : null;
+      }).filter(Boolean) as [string, any][]
+    );
+  }
+
   const canExchange = bookingStatus !== 'pending' && bookingStatus !== 'completed' && bookingStatus !== 'cancelled' && bookingStatus !== 'discarded';
 
   // All newly-added products (main + additional) must have both dates set before proceeding
   const allProductDatesSet = (() => {
     if (!selectedExchangedProduct) return false;
-    const mainDates = productDates[selectedExchangedProduct];
+    const mainDates = productDates[makeKey(selectedExchangedProduct, selectedExchangeSize)];
     if (!mainDates?.booked_from || !mainDates?.booked_to) return false;
     for (const pid of additionalProducts) {
-      const d = productDates[pid];
+      const d = productDates[makeKey(pid, additionalProductSizes[pid])];
       if (!d?.booked_from || !d?.booked_to) return false;
     }
     return true;
@@ -892,7 +937,7 @@ export function ProductExchange({
                           const activeProductPairs = new Set(
                             currentProducts
                               .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
-                              .map(p => `${p.product_id}:${p.size || ''}`)
+                              .map(p => makeKey(p.product_id, p.size))
                           );
                           const filteredProducts = availableProducts.filter(p => {
                             if (!mainProductSearchTerm) return true;
@@ -998,7 +1043,7 @@ export function ProductExchange({
                 const activeProductPairs = new Set(
                   currentProducts
                     .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
-                    .map(p => `${p.product_id}:${p.size || ''}`)
+                    .map(p => makeKey(p.product_id, p.size))
                 );
                 return (
                   <div>
@@ -1073,6 +1118,80 @@ export function ProductExchange({
                 </div>
               )}
 
+              {/* Transport Details Section — shown when transport is enabled for this booking */}
+              {!sizeSelectionPending && transportEnabled && selectedExchangedProduct && (() => {
+                // Build the list of new products for the transport modal
+                // Use composite id (productId:size) to distinguish same product in different sizes
+                const mainProd = availableProducts.find(p => p.id === selectedExchangedProduct);
+
+                const newTransportProducts = [
+                  { id: makeKey(selectedExchangedProduct, selectedExchangeSize), name: mainProd?.name || 'Product', code: mainProd?.code, size: selectedExchangeSize || undefined },
+                  ...additionalProducts.map(pid => {
+                    const p = availableProducts.find(prod => prod.id === pid);
+                    const sz = additionalProductSizes[pid] || undefined;
+                    return { id: makeKey(pid, sz), name: p?.name || 'Product', code: p?.code, size: sz };
+                  })
+                ];
+
+                // Build initialValues: use per-product values if set, or fall back to prefill
+                const modalInitialValues: Record<string, Partial<TransportFormData>> = {};
+                for (const p of newTransportProducts) {
+                  modalInitialValues[p.id] = exchangeTransportDetails[p.id] || exchangeTransportDetails['prefill'] || {};
+                }
+
+                const hasAnyDetails = Object.values(exchangeTransportDetails).some(d => d && (d.transporter_name || d.destination));
+
+                return (
+                  <div className="bg-teal-50 border border-teal-200 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-sm font-semibold text-teal-800">📍 Transport Details</h3>
+                      <button
+                        type="button"
+                        onClick={() => setShowTransportModal(true)}
+                        className="text-sm bg-teal-600 text-white px-4 py-1.5 rounded-lg hover:bg-teal-700 transition-colors font-medium"
+                      >
+                        {hasAnyDetails ? '✏️ Edit Transport Details' : '📍 Set Transport Details'}
+                      </button>
+                    </div>
+                    {hasAnyDetails && (
+                      <div className="space-y-1">
+                        {newTransportProducts.map(p => {
+                          const d = exchangeTransportDetails[p.id] || exchangeTransportDetails['prefill'];
+                          if (!d || (!d.transporter_name && !d.destination)) return null;
+                          return (
+                            <div key={p.id} className="flex items-center gap-2 text-xs text-teal-700 py-1 border-t border-teal-100 first:border-t-0">
+                              <span className="font-medium text-gray-800">{p.name}</span>
+                              {d.transporter_name && <span>• {d.transporter_name}</span>}
+                              {d.destination && <span>→ {d.destination}</span>}
+                              {d.transporter_id && <span className="text-teal-600">✅</span>}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {!hasAnyDetails && (
+                      <p className="text-xs text-teal-600">
+                        {exchangeTransportDetails['prefill'] ? 'Transport details will be copied from the old product.' : 'No transport details set yet. Click above to add.'}
+                      </p>
+                    )}
+
+                    {/* Transport Details Modal */}
+                    {showTransportModal && (
+                      <TransportDetailsModal
+                        products={newTransportProducts as any}
+                        initialValues={modalInitialValues}
+                        onSave={async (data) => {
+                          setExchangeTransportDetails(data as Record<string, Partial<TransportFormData>>);
+                          setShowTransportModal(false);
+                        }}
+                        onClose={() => setShowTransportModal(false)}
+                        title="📍 Transport Details for Exchanged Products"
+                      />
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Add More Products Section - Only visible when size is selected */}
               {!sizeSelectionPending && selectedOriginalProduct && selectedExchangedProduct && (
                 <div className="bg-blue-50 border-2 border-blue-300 rounded-lg p-4">
@@ -1097,13 +1216,21 @@ export function ProductExchange({
                   {/* Product List with Checkboxes */}
                   <div className="border-2 border-blue-300 rounded-lg bg-white max-h-[200px] overflow-y-auto">
                     {(() => {
-                      const activeProductIds = new Set(
+                      const activeProductKeys = new Set(
                         currentProducts
                           .filter(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status))
-                          .map(p => p.product_id)
+                          .map(p => makeKey(p.product_id, p.size))
                       );
+                      // Also mark the main exchange product's selected size as taken
+                      if (selectedExchangedProduct && selectedExchangeSize) {
+                        activeProductKeys.add(makeKey(selectedExchangedProduct, selectedExchangeSize));
+                      }
                       const filteredProducts = availableProducts
-                        .filter(p => p.id !== selectedExchangedProduct)
+                        .filter(p => {
+                          // Only exclude the main exchange product if it has no sizes (adding it again would be redundant)
+                          if (p.id === selectedExchangedProduct && !(p.available_sizes?.length > 0)) return false;
+                          return true;
+                        })
                         .filter(p => {
                           if (!productSearchTerm) return true;
                           const search = productSearchTerm.toLowerCase();
@@ -1125,7 +1252,12 @@ export function ProductExchange({
                         <div className="divide-y divide-gray-200">
                           {filteredProducts.map((product) => {
                             const isSelected = additionalProducts.includes(product.id);
-                            const isActiveInBooking = activeProductIds.has(product.id);
+                            // Only disable if all sizes of this product are already active in the booking
+                            // (products with sizes can be added again in a different size)
+                            const hasSizes = product.available_sizes?.length > 0;
+                            const isActiveInBooking = hasSizes
+                              ? product.available_sizes.every((sz: string) => activeProductKeys.has(makeKey(product.id, sz)))
+                              : activeProductKeys.has(makeKey(product.id));
                             return (
                               <label
                                 key={product.id}
@@ -1265,24 +1397,33 @@ export function ProductExchange({
                               {/* Size selector for this additional product */}
                               {hasSizes && (
                                 <div className="mt-2 flex flex-wrap gap-1">
-                                  {sortSizes(product.available_sizes).map((sz: string) => {
+                                {sortSizes(product.available_sizes).map((sz: string) => {
                                     const isSelected = selectedSz === sz;
                                     const rentsBySize = product.rents_by_size || {};
                                     const sizeRent = rentsBySize[sz] ?? product.rent;
                                     const isOverridden = sizeRent !== product.rent;
+                                    // Disable sizes already taken by active booking products or the main exchange product
+                                    const isSizeTaken = 
+                                      currentProducts.some(p => !['cancelled', 'exchanged', 'completed', 'discarded'].includes(p.status) && p.product_id === productId && p.size === sz) ||
+                                      (selectedExchangedProduct === productId && selectedExchangeSize === sz);
                                     return (
                                       <button
                                         key={sz}
                                         type="button"
+                                        disabled={isSizeTaken}
                                         onClick={async () => {
+                                          if (isSizeTaken) return;
                                           setAdditionalProductSizes(prev => ({ ...prev, [productId]: sz }));
                                           // Re-fetch bookings filtered by the chosen size
                                           await fetchProductBookings(productId, sz);
                                         }}
-                                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${isSelected
-                                          ? 'bg-red-600 text-white border-red-600'
-                                          : 'bg-white text-gray-600 border-gray-300 hover:border-red-400'
+                                        className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${isSizeTaken
+                                          ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed line-through'
+                                          : isSelected
+                                            ? 'bg-red-600 text-white border-red-600'
+                                            : 'bg-white text-gray-600 border-gray-300 hover:border-red-400'
                                           }`}
+                                        title={isSizeTaken ? 'This size is already in the booking or selected as main exchange' : undefined}
                                       >
                                         {sz}
                                         {isOverridden && <span className="ml-0.5 opacity-70">₹{sizeRent}</span>}
@@ -1336,13 +1477,14 @@ export function ProductExchange({
                     <div className="space-y-3">
                       {allSelectedProducts.map((product, index) => {
                         const selectedSize = product.isMain ? selectedExchangeSize : additionalProductSizes[product.id];
+                        const dateKey = makeKey(product.id, selectedSize);
                         const productRent = (selectedSize && product.rents_by_size?.[selectedSize])
                           ? parseFloat(String(product.rents_by_size[selectedSize])) || 0
                           : parseFloat(String(product.rent || '0')) || 0;
                         const productSecurity = parseFloat(product.security_deposit || '0') || 0;
 
                         return (
-                          <div key={product.id || index} className="bg-white rounded-lg p-3 border border-blue-200">
+                          <div key={dateKey} className="bg-white rounded-lg p-3 border border-blue-200">
                             <div className="flex items-start gap-3">
                               <div className="flex-1">
                                 <div className="flex items-center gap-2 mb-1">
@@ -1379,33 +1521,33 @@ export function ProductExchange({
                                   </h3>
                                   <div>
                                     <DateRangePicker
-                                      key={`date-picker-${product.id}-${index}`}
+                                      key={`date-picker-${dateKey}-${index}`}
                                       label=""
-                                      startDate={productDates[product.id]?.booked_from || ''}
-                                      endDate={productDates[product.id]?.booked_to || ''}
-                                      bookings={productBookings[product.id] || []}
+                                      startDate={productDates[dateKey]?.booked_from || ''}
+                                      endDate={productDates[dateKey]?.booked_to || ''}
+                                      bookings={productBookings[dateKey] || []}
                                       productName={product.name}
                                       onStartDateChange={(date) => {
                                         setProductDates(prev => ({
                                           ...prev,
-                                          [product.id]: {
-                                            ...prev[product.id],
+                                          [dateKey]: {
+                                            ...prev[dateKey],
                                             booked_from: date || ''
                                           }
                                         }));
                                         // Clear error when date changes
                                         setAvailabilityErrors(prev => {
                                           const newErrors = { ...prev };
-                                          delete newErrors[product.id];
+                                          delete newErrors[dateKey];
                                           return newErrors;
                                         });
                                       }}
                                       onEndDateChange={(date) => {
-                                        const currentFrom = productDates[product.id]?.booked_from || '';
+                                        const currentFrom = productDates[dateKey]?.booked_from || '';
                                         setProductDates(prev => ({
                                           ...prev,
-                                          [product.id]: {
-                                            ...prev[product.id],
+                                          [dateKey]: {
+                                            ...prev[dateKey],
                                             booked_to: date || ''
                                           }
                                         }));
@@ -1422,33 +1564,33 @@ export function ProductExchange({
                                             if (!availability.available) {
                                               setAvailabilityErrors(prev => ({
                                                 ...prev,
-                                                [product.id]: availability.message || 'Not available'
+                                                [dateKey]: availability.message || 'Not available'
                                               }));
                                               setUrgentConflictsMap(prev => {
                                                 const m = { ...prev };
-                                                delete m[product.id];
+                                                delete m[dateKey];
                                                 return m;
                                               });
                                             } else if (availability.isUrgent) {
                                               setAvailabilityErrors(prev => ({
                                                 ...prev,
-                                                [product.id]: `⚠️ ${availability.message || 'Tight schedule'}`
+                                                [dateKey]: `⚠️ ${availability.message || 'Tight schedule'}`
                                               }));
                                               if (availability.conflicts && availability.conflicts.length > 0) {
                                                 setUrgentConflictsMap(prev => ({
                                                   ...prev,
-                                                  [product.id]: availability.conflicts!
+                                                  [dateKey]: availability.conflicts!
                                                 }));
                                               }
                                             } else {
                                               setAvailabilityErrors(prev => {
                                                 const newErrors = { ...prev };
-                                                delete newErrors[product.id];
+                                                delete newErrors[dateKey];
                                                 return newErrors;
                                               });
                                               setUrgentConflictsMap(prev => {
                                                 const m = { ...prev };
-                                                delete m[product.id];
+                                                delete m[dateKey];
                                                 return m;
                                               });
                                             }
@@ -1458,23 +1600,23 @@ export function ProductExchange({
                                       minDate={new Date().toISOString().split('T')[0]}
                                     />
                                   </div>
-                                  {availabilityErrors[product.id] && (
+                                  {availabilityErrors[dateKey] && (
                                     <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-lg">
                                       <div className="flex items-start">
                                         <svg className="w-5 h-5 text-red-600 mr-2 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                                         </svg>
                                         <div className="flex-1">
-                                          <p className={`text-sm font-medium ${availabilityErrors[product.id].includes('⚠️')
+                                          <p className={`text-sm font-medium ${availabilityErrors[dateKey].includes('⚠️')
                                             ? 'text-orange-700'
                                             : 'text-red-700'
                                             }`}>
-                                            {availabilityErrors[product.id]}
+                                            {availabilityErrors[dateKey]}
                                           </p>
-                                          {urgentConflictsMap[product.id] && urgentConflictsMap[product.id].length > 0 && (
+                                          {urgentConflictsMap[dateKey] && urgentConflictsMap[dateKey].length > 0 && (
                                             <button
                                               type="button"
-                                              onClick={() => setShowUrgentDetailProductId(product.id)}
+                                              onClick={() => setShowUrgentDetailProductId(dateKey)}
                                               className="mt-1 text-xs text-blue-600 hover:text-blue-800 font-medium underline"
                                             >
                                               View Details

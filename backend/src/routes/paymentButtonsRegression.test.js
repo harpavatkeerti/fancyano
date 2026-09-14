@@ -1105,4 +1105,84 @@ describe('Payment Buttons Regression Tests (Step 0)', () => {
     });
   });
 
+  // ══════════════════════════════════════════════════════════════════════════════
+  // VALIDATE (DRY-RUN) ENDPOINT — used by UPI QR flow
+  // ══════════════════════════════════════════════════════════════════════════════
+
+  describe('POST /payments/validate (dry-run)', () => {
+
+    it('returns 200 when payment amount meets 50% minimum', async () => {
+      const { bookingId } = await makeConfirmedBooking(testProductId);
+      // Total rent = 50000, 50% = 25000
+      const res = await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: bookingId, amount: 25000 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+    });
+
+    it('returns 400 when first payment is below 50% of rent', async () => {
+      const { bookingId } = await makeConfirmedBooking(testProductId);
+      // Total rent = 50000, 50% = 25000, trying 10000
+      const res = await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: bookingId, amount: 10000 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/50%.*rent|minimum required/i);
+    });
+
+    it('returns 400 when amount exceeds outstanding balance', async () => {
+      const { bookingId } = await makeConfirmedBooking(testProductId);
+      // Total outstanding = 75000 (rent 50000 + security 20000 + transport 5000)
+      const res = await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: bookingId, amount: 100000 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/exceeds outstanding balance/i);
+    });
+
+    it('returns 404 for non-existent booking', async () => {
+      const res = await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: 999999, amount: 1000 });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('does NOT create any transaction (dry-run)', async () => {
+      const { bookingId } = await makeConfirmedBooking(testProductId);
+
+      await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: bookingId, amount: 25000 });
+
+      // Verify no transaction was recorded
+      const txns = await pool.query(
+        'SELECT id FROM payment_transactions WHERE booking_id = $1',
+        [bookingId]
+      );
+      expect(txns.rows).toHaveLength(0);
+    });
+
+    it('returns 200 for second payment of any amount after first payment meets minimum', async () => {
+      const { bookingId } = await makeConfirmedBooking(testProductId);
+
+      // First real payment at 50%
+      await chargeAccountingService.applyPayment(
+        bookingId, 25000, 'Cash', 'test-user', 'First payment'
+      );
+
+      // Validate a small second payment — should pass (no 50% rule for subsequent payments)
+      const res = await request(app)
+        .post('/payments/validate')
+        .send({ booking_id: bookingId, amount: 100 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.valid).toBe(true);
+    });
+  });
+
 });

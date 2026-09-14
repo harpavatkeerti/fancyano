@@ -77,7 +77,9 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
       payment_method,
       payment_notes,
       payment_recorded_by,
-      payment_qr_code_id
+      payment_qr_code_id,
+      // Optional transport details for new products
+      transport_details
     } = req.body;
 
     if (!old_booking_product_id || !new_product_ids || !Array.isArray(new_product_ids) || new_product_ids.length === 0) {
@@ -136,7 +138,8 @@ router.post('/', checkSalesmanPermission('exchange_allowed'), async (req, res) =
         recorded_by: payment_recorded_by || exchanged_by || 'system',
         notes: payment_notes,
         qr_code_id: payment_qr_code_id || null
-      }
+      },
+      transport_details || null
     );
 
     res.json({

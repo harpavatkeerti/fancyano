@@ -44,9 +44,10 @@ class ProductLifecycleService {
    * @param {string} reason - Reason for exchange
    * @param {number} userId - User performing the exchange
    * @param {Object} payment - Optional payment to record atomically {amount, method, recorded_by, notes}
+   * @param {Object|null} transportDetails - Optional per-product transport details keyed by product_id
    * @returns {Promise<Object>} - Exchange details
    */
-  async exchangeProduct(bookingProductId, newProducts, reason, userId, payment = {}) {
+  async exchangeProduct(bookingProductId, newProducts, reason, userId, payment = {}, transportDetails = null) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -195,6 +196,21 @@ class ProductLifecycleService {
           newProd.securityDeposit,
           client
         );
+
+        // Save transport details if provided for this product
+        // Frontend sends keys as 'productId:size' (composite) to support same product in different sizes
+        const transportKey = newProd.size ? `${newProd.productId}:${newProd.size}` : `${newProd.productId}`;
+        if (transportDetails && transportDetails[transportKey]) {
+          const details = transportDetails[transportKey];
+          const updTransporterId = details.transporter_id || null;
+          // Split: transporter_id as FK column, per-shipment fields in JSONB
+          const { transporter_id: _tid, transporter_name: _tn, phone: _ph, bus_no: _bn, ...shipmentFields } = details;
+          const updPerShipment = Object.keys(shipmentFields).length > 0 ? shipmentFields : null;
+          await client.query(
+            'UPDATE booking_products SET transporter_id = $1, transport_details = $2 WHERE id = $3',
+            [updTransporterId, updPerShipment ? JSON.stringify(updPerShipment) : null, newBookingProductId]
+          );
+        }
       }
 
       // STEP 3: Mark old product as exchanged FIRST — waterfall now excludes it

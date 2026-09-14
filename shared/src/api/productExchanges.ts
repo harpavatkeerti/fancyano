@@ -38,6 +38,16 @@ export function createProductExchangesApi(api: ApiClient) {
       downgrade_penalty?: number;
       exchange_reason?: string;
       exchanged_by: string;
+      transport_details?: Record<number, {
+        transporter_id?: number;
+        transporter_name?: string;
+        phone?: string;
+        bus_no?: string;
+        destination?: string;
+        source_address?: string;
+        destination_address?: string;
+        destination_phone?: string;
+      }>;
     }) => api.post<any>('/product-exchanges', data),
   };
 }

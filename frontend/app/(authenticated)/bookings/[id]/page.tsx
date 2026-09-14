@@ -971,7 +971,9 @@ export default function OrderDetailsPage() {
                       <div className="bg-teal-50 border border-teal-200 rounded-lg px-3 py-2">
                         <div className="flex items-center justify-between mb-1">
                           <p className="text-xs font-semibold text-teal-800">📍 Transport Details</p>
-                          <button onClick={() => setTransportEditProduct(product)} className="text-xs text-teal-600 hover:text-teal-800 underline">Edit</button>
+                          <button onClick={() => setTransportEditProduct(product)} className="text-xs text-teal-600 hover:text-teal-800 underline">
+                            {isOrderCompleted || isDiscarded ? 'View' : 'Edit'}
+                          </button>
                         </div>
                         <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs text-teal-700">
                           {product.transport_details.transporter_name && (
@@ -998,8 +1000,10 @@ export default function OrderDetailsPage() {
                         </div>
                       </div>
                     ) : (
-                      <button onClick={() => setTransportEditProduct(product)}
-                        className="text-xs text-teal-600 hover:text-teal-800 underline">+ Add Transport Details</button>
+                      !isOrderCompleted && !isDiscarded && (
+                        <button onClick={() => setTransportEditProduct(product)}
+                          className="text-xs text-teal-600 hover:text-teal-800 underline">+ Add Transport Details</button>
+                      )
                     )}
                   </div>
                   <div className="mt-4">
@@ -1148,6 +1152,7 @@ export default function OrderDetailsPage() {
                 bookingStatus={booking.status}
                 userName={userName}
                 securityPaidByProduct={securityByProduct}
+                bookingTransportCharge={booking.transport_charge || 0}
               />
             </div>
           )}
@@ -1356,6 +1361,74 @@ export default function OrderDetailsPage() {
           </div>
 
 
+
+          {/* Transport Charge Management */}
+          {!isOrderCompleted && !isDiscarded && (
+            <div className="bg-white border border-gray-200 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                🚚 Transport Charge
+              </h3>
+              <div className="space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600">Current Transport Charge:</span>
+                  <span className="font-medium text-gray-900">₹{(booking.transport_charge || 0).toLocaleString('en-IN')}</span>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Add Transport Charge</label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-gray-700 font-medium">₹</span>
+                    <input
+                      type="number"
+                      id="add-transport-charge"
+                      min="0"
+                      step="1"
+                      placeholder="Enter amount to add"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500"
+                      onKeyDown={(e) => {
+                        if (e.key === '.' || e.key === 'e' || e.key === 'E') e.preventDefault();
+                      }}
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={async () => {
+                    const input = document.getElementById('add-transport-charge') as HTMLInputElement;
+                    const amount = parseInt(input?.value || '0');
+                    if (!amount || amount <= 0) {
+                      addAlert('Please enter a valid transport charge amount', 'warning');
+                      return;
+                    }
+                    try {
+                      await bookingsApi.update(booking.id, { add_transport_charge: amount });
+                      toast.success(`₹${amount.toLocaleString('en-IN')} transport charge added successfully`);
+                      input.value = '';
+                      fetchBooking();
+                    } catch (error: any) {
+                      addAlert(error?.response?.data?.error || 'Failed to update transport charge');
+                    }
+                  }}
+                  className="w-full px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white font-medium rounded-lg transition-colors"
+                >
+                  💾 Add Transport Charge
+                </button>
+
+                {/* Edit transport details for all active products */}
+                <div className="border-t border-gray-200 pt-3">
+                  <button
+                    onClick={() => {
+                      const activeProducts = booking.products.filter((p: any) => !['cancelled', 'exchanged', 'discarded'].includes(p.status));
+                      if (activeProducts.length > 0) {
+                        setTransportEditProduct(activeProducts[0]);
+                      }
+                    }}
+                    className="w-full px-4 py-2 bg-white border border-teal-300 text-teal-700 hover:bg-teal-50 font-medium rounded-lg transition-colors text-sm"
+                  >
+                    📍 Edit Transport Details
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Payment management - shared component handles all payment/refund UI */}
           <PaymentManagement
@@ -1803,12 +1876,14 @@ export default function OrderDetailsPage() {
       {/* Transport Details Edit Modal */}
       {transportEditProduct && booking && (
         <TransportDetailsModal
-          products={booking.products.map((p: any) => ({
-            id: p.id,
-            name: p.name || 'Product',
-            code: p.code,
-            size: p.size,
-          }))}
+          products={booking.products
+            .filter((p: any) => !['cancelled', 'exchanged', 'discarded'].includes(p.status))
+            .map((p: any) => ({
+              id: p.id,
+              name: p.name || 'Product',
+              code: p.code,
+              size: p.size,
+            }))}
           initialValues={booking.products.reduce((acc: any, p: any) => {
             acc[p.id] = p.transport_details || {};
             return acc;
@@ -1817,6 +1892,7 @@ export default function OrderDetailsPage() {
           onSave={handleSaveTransport}
           onClose={() => setTransportEditProduct(null)}
           title={`📍 Transport Details`}
+          readOnly={isOrderCompleted || isDiscarded}
         />
       )}
       {ConfirmDialogComponent}

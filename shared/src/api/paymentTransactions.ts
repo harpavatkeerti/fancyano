@@ -51,6 +51,10 @@ export function createPaymentTransactionsApi(api: ApiClient) {
       adjusted_by: string;
       reason?: string;
     }) => api.post<any>('/payment-transactions/adjustment', data),
+
+    // Validate a payment without recording it (dry-run for UPI QR flow)
+    validate: (data: { booking_id: number; amount: number }) =>
+      api.post<{ valid: boolean }>('/payment-transactions/validate', data),
   };
 }
 

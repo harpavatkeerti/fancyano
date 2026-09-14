@@ -576,6 +576,107 @@ class ChargeAccountingService {
   }
 
   /**
+   * Validate a payment without actually applying it (dry-run).
+   * Runs all the same checks as applyPayment: booking exists, not discarded,
+   * amount > 0, overpayment cap, and 50% first-payment rule.
+   * Throws on validation failure; resolves silently on success.
+   */
+  async validatePayment(bookingId, amount) {
+    const client = await pool.connect();
+    try {
+      await this._validatePaymentChecks(bookingId, amount, 'payment', client);
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
+   * Shared validation checks for payments/adjustments.
+   * @private
+   */
+  async _validatePaymentChecks(bookingId, amount, transactionType, client) {
+    // Verify booking exists
+    const bookingResult = await client.query(
+      'SELECT id, status FROM bookings WHERE id = $1',
+      [bookingId]
+    );
+
+    if (bookingResult.rows.length === 0) {
+      throw new Error('Booking not found');
+    }
+
+    if (bookingResult.rows[0].status === 'discarded') {
+      throw new Error('Cannot process payments or adjustments for a discarded booking');
+    }
+
+    if (amount <= 0) {
+      throw new Error(`${transactionType === 'payment' ? 'Payment' : 'Adjustment'} amount must be greater than 0`);
+    }
+
+    // For payments and adjustments, cap at the outstanding balance — excess must not be accepted
+    if (transactionType === 'payment' || transactionType === 'adjustment') {
+      // Get current balance to enforce hard cap
+      const summaryResult = await client.query(
+         `SELECT 
+           COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_charge_due,
+           COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_charge_paid
+          FROM product_charges pc
+          JOIN booking_products bp ON pc.booking_product_id = bp.id
+          WHERE bp.booking_id = $1 AND (
+            bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
+            OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee','date_change_fee')
+          )`,
+        [bookingId]
+      );
+      const booking = await client.query(
+        'SELECT transport_charge, transport_paid, final_discount FROM bookings WHERE id = $1',
+        [bookingId]
+      );
+      const b = booking.rows[0];
+      const totalDue = (summaryResult.rows[0].total_charge_due || 0) +
+        (b.transport_charge || 0);
+      const totalPaid = (summaryResult.rows[0].total_charge_paid || 0) +
+        (b.transport_paid || 0);
+      const remainingBalance = totalDue - totalPaid;
+
+      if (remainingBalance <= 0) {
+        throw new Error('Payment rejected: all charges are already fully paid');
+      }
+      if (amount > remainingBalance) {
+        throw new Error(`Payment amount (${amount}) exceeds outstanding balance (${remainingBalance}). Maximum allowed: ${remainingBalance}`);
+      }
+    }
+
+    // 50% minimum rule: first payment must cover ≥ 50% of total rent
+    if (transactionType === 'payment') {
+      const rentStatus = await client.query(
+        `SELECT
+           COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_rent_paid,
+           COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_rent_due
+         FROM product_charges pc
+         JOIN booking_products bp ON pc.booking_product_id = bp.id
+         WHERE bp.booking_id = $1
+           AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
+           AND pc.charge_type = 'rent'`,
+        [bookingId]
+      );
+
+      const totalRentPaid = rentStatus.rows[0].total_rent_paid || 0;
+      const totalRentDue = rentStatus.rows[0].total_rent_due || 0;
+
+      if (totalRentPaid === 0 && totalRentDue > 0) {
+        const minimumRequired = Math.ceil(totalRentDue / 2);
+        if (amount < minimumRequired) {
+          throw new Error(
+            `First payment must be at least 50% of total rent. ` +
+            `Minimum required: ₹${minimumRequired}, provided: ₹${amount}`
+          );
+        }
+      }
+    }
+  }
+
+  /**
    * Internal method to apply payment or adjustment (shared logic)
    * @private
    * @param {number[]|null} [securityProductIds] - Optional booking_product IDs to restrict security allocation (payments only)
@@ -586,85 +687,8 @@ class ChargeAccountingService {
     try {
       if (ownClient) await client.query('BEGIN');
 
-      // Verify booking exists
-      const bookingResult = await client.query(
-        'SELECT id, status FROM bookings WHERE id = $1',
-        [bookingId]
-      );
-
-      if (bookingResult.rows.length === 0) {
-        throw new Error('Booking not found');
-      }
-
-      if (bookingResult.rows[0].status === 'discarded') {
-        throw new Error('Cannot process payments or adjustments for a discarded booking');
-      }
-
-      if (amount <= 0) {
-        throw new Error(`${transactionType === 'payment' ? 'Payment' : 'Adjustment'} amount must be greater than 0`);
-      }
-
-      // For payments and adjustments, cap at the outstanding balance — excess must not be accepted
-      if (transactionType === 'payment' || transactionType === 'adjustment') {
-        // Get current balance to enforce hard cap
-        const summaryResult = await client.query(
-           `SELECT 
-             COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_charge_due,
-             COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_charge_paid
-            FROM product_charges pc
-            JOIN booking_products bp ON pc.booking_product_id = bp.id
-            WHERE bp.booking_id = $1 AND (
-              bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
-              OR pc.charge_type IN ('exchange_penalty','downgrade_penalty','cancellation_penalty','late_fee','damage_fee','date_change_fee')
-            )`,
-          [bookingId]
-        );
-        const booking = await client.query(
-          'SELECT transport_charge, transport_paid, final_discount FROM bookings WHERE id = $1',
-          [bookingId]
-        );
-        const b = booking.rows[0];
-        const totalDue = (summaryResult.rows[0].total_charge_due || 0) +
-          (b.transport_charge || 0);
-        const totalPaid = (summaryResult.rows[0].total_charge_paid || 0) +
-          (b.transport_paid || 0);
-        const remainingBalance = totalDue - totalPaid;
-
-        if (remainingBalance <= 0) {
-          throw new Error('Payment rejected: all charges are already fully paid');
-        }
-        if (amount > remainingBalance) {
-          throw new Error(`Payment amount (${amount}) exceeds outstanding balance (${remainingBalance}). Maximum allowed: ${remainingBalance}`);
-        }
-      }
-
-      // 50% minimum rule: first payment must cover ≥ 50% of total rent
-      if (transactionType === 'payment') {
-        const rentStatus = await client.query(
-          `SELECT
-             COALESCE(SUM(pc.paid_amount), 0)::INTEGER as total_rent_paid,
-             COALESCE(SUM(pc.due_amount), 0)::INTEGER as total_rent_due
-           FROM product_charges pc
-           JOIN booking_products bp ON pc.booking_product_id = bp.id
-           WHERE bp.booking_id = $1
-             AND bp.status NOT IN ('exchanged', 'cancelled', 'discarded')
-             AND pc.charge_type = 'rent'`,
-          [bookingId]
-        );
-
-        const totalRentPaid = rentStatus.rows[0].total_rent_paid || 0;
-        const totalRentDue = rentStatus.rows[0].total_rent_due || 0;
-
-        if (totalRentPaid === 0 && totalRentDue > 0) {
-          const minimumRequired = Math.ceil(totalRentDue / 2);
-          if (amount < minimumRequired) {
-            throw new Error(
-              `First payment must be at least 50% of total rent. ` +
-              `Minimum required: ₹${minimumRequired}, provided: ₹${amount}`
-            );
-          }
-        }
-      }
+      // Run all validation checks (booking exists, amount, caps, 50% rule)
+      await this._validatePaymentChecks(bookingId, amount, transactionType, client);
 
       // Apply payment using internal helper
       const breakdown = await this._applyPaymentInternal(bookingId, amount, client, securityProductIds);

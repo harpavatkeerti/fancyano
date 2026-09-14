@@ -136,6 +136,24 @@ router.post('/', async (req, res) => {
   }
 });
 
+// POST validate a payment without recording it (dry-run for UPI QR flow)
+router.post('/validate', async (req, res) => {
+  try {
+    const { booking_id, amount } = req.body;
+    await chargeAccountingService.validatePayment(
+      parseInt(booking_id),
+      parseFloat(amount)
+    );
+    res.json({ valid: true });
+  } catch (error) {
+    if (error.message === 'Booking not found') {
+      return res.status(404).json({ error: 'Booking not found' });
+    }
+    // All validation errors → 400
+    return res.status(400).json({ error: error.message });
+  }
+});
+
 // POST apply adjustments to charges
 router.post('/adjustment', async (req, res) => {
   try {

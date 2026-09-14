@@ -748,6 +748,178 @@ describe('ProductLifecycleService', () => {
         ).resolves.toBeUndefined();
       });
     });
+
+    describe('transport details on exchange (composite key)', () => {
+      let testTransporterId;
+      let multiSizeProductId;
+
+      beforeEach(async () => {
+        // Create a transporter for FK references
+        const t = await pool.query(
+          `INSERT INTO transporters (name, phone, bus_no) VALUES ('TEST-LIFECYCLE-TRANS', '9876500000', 'GJ01AA0001') RETURNING id`
+        );
+        testTransporterId = t.rows[0].id;
+
+        // Create a product with multiple sizes for same-product-different-size testing
+        const p = await pool.query(
+          `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+           VALUES ('Multi Size Product', 'TESTMULTI', 'Test', '{S,M,L}', 500, 1000)
+           ON CONFLICT ((LOWER(code))) WHERE status != 'archived' DO UPDATE SET name = EXCLUDED.name, available_sizes = EXCLUDED.available_sizes
+           RETURNING id`
+        );
+        multiSizeProductId = p.rows[0].id;
+      });
+
+      afterEach(async () => {
+        // Clean up booking_products referencing test transporter before deleting it
+        await pool.query(`DELETE FROM product_charges WHERE booking_product_id IN (SELECT id FROM booking_products WHERE transporter_id = $1)`, [testTransporterId]);
+        await pool.query(`DELETE FROM booking_products WHERE transporter_id = $1`, [testTransporterId]);
+        await pool.query(`DELETE FROM transporters WHERE name = 'TEST-LIFECYCLE-TRANS'`);
+      });
+
+      test('should save transport details using composite key (productId:size)', async () => {
+        const newFrom = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+
+        const transportDetails = {
+          [`${testProductId2}:L`]: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-LIFECYCLE-TRANS',
+            destination: 'Rajkot',
+            phone: '9876500000',
+          }
+        };
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, size: 'L', bookedFrom: newFrom, bookedTo: newTo, rent: 600, securityDeposit: 1200 }],
+          'Transport composite key test',
+          String(testUserId),
+          {},
+          transportDetails
+        );
+
+        // Verify transport details were saved on the new booking product
+        const bp = await pool.query(
+          'SELECT transporter_id, transport_details FROM booking_products WHERE id = $1',
+          [result.new_booking_product_ids[0]]
+        );
+        expect(bp.rows[0].transporter_id).toBe(testTransporterId);
+        expect(bp.rows[0].transport_details.destination).toBe('Rajkot');
+        // Master fields should NOT be in JSONB
+        expect(bp.rows[0].transport_details.transporter_name).toBeUndefined();
+      });
+
+      test('should save different transport details for same product in different sizes', async () => {
+        const newFrom = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+        const newFrom2 = new Date(Date.now() + 15 * 864e5).toISOString().slice(0, 10);
+        const newTo2   = new Date(Date.now() + 19 * 864e5).toISOString().slice(0, 10);
+
+        const transportDetails = {
+          [`${multiSizeProductId}:S`]: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-LIFECYCLE-TRANS',
+            destination: 'Ahmedabad',
+            phone: '9876500000',
+          },
+          [`${multiSizeProductId}:M`]: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-LIFECYCLE-TRANS',
+            destination: 'Surat',
+            phone: '9876500000',
+          }
+        };
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [
+            { productId: multiSizeProductId, size: 'S', bookedFrom: newFrom, bookedTo: newTo, rent: 500, securityDeposit: 1000 },
+            { productId: multiSizeProductId, size: 'M', bookedFrom: newFrom2, bookedTo: newTo2, rent: 500, securityDeposit: 1000 },
+          ],
+          'Same product different sizes transport test',
+          String(testUserId),
+          {},
+          transportDetails
+        );
+
+        // Verify both booking products got different transport details
+        const bps = await pool.query(
+          'SELECT transporter_id, transport_details, size FROM booking_products WHERE id = ANY($1) ORDER BY size',
+          [result.new_booking_product_ids]
+        );
+        expect(bps.rows).toHaveLength(2);
+
+        const sizeM = bps.rows.find(r => r.size === 'M');
+        const sizeS = bps.rows.find(r => r.size === 'S');
+
+        expect(sizeS.transporter_id).toBe(testTransporterId);
+        expect(sizeS.transport_details.destination).toBe('Ahmedabad');
+
+        expect(sizeM.transporter_id).toBe(testTransporterId);
+        expect(sizeM.transport_details.destination).toBe('Surat');
+      });
+
+      test('should handle sizeless product transport key (no colon)', async () => {
+        // Create a sizeless product
+        const sizeless = await pool.query(
+          `INSERT INTO products (name, code, category, available_sizes, rent, security_deposit)
+           VALUES ('Sizeless Product', 'TESTNOSIZ', 'Test', '{}', 400, 800)
+           ON CONFLICT ((LOWER(code))) WHERE status != 'archived' DO UPDATE SET name = EXCLUDED.name
+           RETURNING id`
+        );
+        const sizelessId = sizeless.rows[0].id;
+
+        const newFrom = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+
+        const transportDetails = {
+          [`${sizelessId}`]: {
+            transporter_id: testTransporterId,
+            transporter_name: 'TEST-LIFECYCLE-TRANS',
+            destination: 'Vadodara',
+            phone: '9876500000',
+          }
+        };
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: sizelessId, size: null, bookedFrom: newFrom, bookedTo: newTo, rent: 400, securityDeposit: 800 }],
+          'Sizeless transport test',
+          String(testUserId),
+          {},
+          transportDetails
+        );
+
+        const bp = await pool.query(
+          'SELECT transporter_id, transport_details FROM booking_products WHERE id = $1',
+          [result.new_booking_product_ids[0]]
+        );
+        expect(bp.rows[0].transporter_id).toBe(testTransporterId);
+        expect(bp.rows[0].transport_details.destination).toBe('Vadodara');
+      });
+
+      test('should not save transport when transportDetails is null', async () => {
+        const newFrom = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+        const newTo   = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+
+        const result = await productLifecycleService.exchangeProduct(
+          testBookingProductId,
+          [{ productId: testProductId2, size: 'L', bookedFrom: newFrom, bookedTo: newTo, rent: 600, securityDeposit: 1200 }],
+          'No transport test',
+          String(testUserId),
+          {},
+          null
+        );
+
+        const bp = await pool.query(
+          'SELECT transporter_id, transport_details FROM booking_products WHERE id = $1',
+          [result.new_booking_product_ids[0]]
+        );
+        expect(bp.rows[0].transporter_id).toBeNull();
+        expect(bp.rows[0].transport_details).toBeNull();
+      });
+    });
   });
 
   describe('cancelProduct', () => {

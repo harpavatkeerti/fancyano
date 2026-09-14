@@ -214,7 +214,7 @@ export function PaymentManagement({
     return Math.max(0, (summary.totals as any)?.outstanding_balance ?? 0);
   }
 
-  async function handleSubmit(overrideQrCodeId?: number | null) {
+  async function handleSubmit(opts?: { qrCodeId: number | null }) {
     try {
       const amount = parseFloat(formData.amount);
       if (isNaN(amount) || amount <= 0) {
@@ -238,8 +238,16 @@ export function PaymentManagement({
         }
       }
 
-      // Use override if provided (from UPI QR modal), else fall back to state
-      const qrCodeId = overrideQrCodeId !== undefined ? overrideQrCodeId : activeQrCodeId;
+      // UPI payments: validate via backend BEFORE showing QR (catches 50% rule, etc.)
+      // When called from QR modal callback, opts.qrCodeId is set — skip straight to API.
+      if (formData.method === 'UPI' && transactionType === 'payment' && !opts) {
+        await paymentTransactionsApi.validate({ booking_id: bookingId, amount });
+        setShowUpiQrModal(true);
+        return;
+      }
+
+      // Use QR code ID from modal if provided, else fall back to state
+      const qrCodeId = opts?.qrCodeId ?? activeQrCodeId;
 
       const payload: any = {
         booking_id: bookingId,
@@ -877,14 +885,7 @@ export function PaymentManagement({
                 Cancel
               </Button>
               <Button
-                onClick={() => {
-                  // For UPI payments, show QR confirmation modal instead of submitting directly
-                  if (formData.method === 'UPI' && transactionType === 'payment') {
-                    setShowUpiQrModal(true);
-                  } else {
-                    handleSubmit();
-                  }
-                }}
+                onClick={() => handleSubmit()}
                 disabled={transactionType === 'payment' && (
                   !canConfirmSecurity ||
                   (!!summary && (Number(formData.amount) || 0) > 0 && (Number(formData.amount) || 0) > getOutstandingBalance())
@@ -912,7 +913,7 @@ export function PaymentManagement({
           securityRemaining={securityOutstanding}
           onConfirm={(qrCodeId) => {
             setShowUpiQrModal(false);
-            handleSubmit(qrCodeId);
+            handleSubmit({ qrCodeId });
           }}
           onCancel={() => { setShowUpiQrModal(false); setActiveQrCodeId(null); }}
         />
